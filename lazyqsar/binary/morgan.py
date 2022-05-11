@@ -56,6 +56,7 @@ class MorganBinaryClassifier(object):
             "auroc": self._auroc
         }
         self.model = model.model.estimator
+        self.model.fit(X)
 
     def predict(self, smiles):
         X = featurizer(smiles)

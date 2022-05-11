@@ -1,6 +1,6 @@
 # Lazy QSAR
 
-A library to build fast QSAR models
+A library to build QSAR models fastly
 
 ## Installation
 
