@@ -38,7 +38,7 @@ def featurizer(smiles):
     return X
 
 
-class MorganBinaryClassifier(object):
+class MorganRegressor(object):
 
     def __init__(self, automl=True, time_budget_sec=20, estimator_list=["rf"]):
         self.time_budget_sec=time_budget_sec
@@ -57,7 +57,7 @@ class MorganBinaryClassifier(object):
         self.meta = {
             "n_pos": self._n_pos,
             "n_neg": self._n_neg,
-            "r2_score": self._rmse
+            "r2_score": self._r2_score
         }
         self.model = model.model.estimator
         self.model.fit(X, y)
