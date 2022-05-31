@@ -1,2 +1,3 @@
 flaml
 rdkit-pypi
+mordred

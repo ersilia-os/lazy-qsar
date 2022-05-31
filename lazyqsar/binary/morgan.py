@@ -4,38 +4,7 @@ from sklearn.ensemble import RandomForestClassifier
 import numpy as np
 import joblib
 
-from rdkit.Chem import rdMolDescriptors as rd
-from rdkit import Chem
-
-RADIUS = 3
-NBITS = 2048
-DTYPE = np.uint8
-
-def clip_sparse(vect, nbits):
-    l = [0]*nbits
-    for i,v in vect.GetNonzeroElements().items():
-        l[i] = v if v < 255 else 255
-    return l
-
-
-class Descriptor(object):
-
-    def __init__(self):
-        self.nbits = NBITS
-        self.radius = RADIUS
-
-    def calc(self, mol):
-        v = rd.GetHashedMorganFingerprint(mol, radius=self.radius, nBits=self.nbits)
-        return clip_sparse(v, self.nbits)
-
-
-def featurizer(smiles):
-    d = Descriptor()
-    X = np.zeros((len(smiles), NBITS))
-    for i, smi in enumerate(smiles):
-        mol = Chem.MolFromSmiles(smi)
-        X[i,:] = d.calc(mol)
-    return X
+from ..descriptors.descriptors import MorganDescriptor
 
 
 class MorganBinaryClassifier(object):
@@ -45,10 +14,11 @@ class MorganBinaryClassifier(object):
         self.estimator_list=estimator_list
         self.model = None
         self._automl = automl
+        self.descriptor = MorganDescriptor()
 
     def fit_automl(self, smiles, y):
         model = AutoML(task="classification", time_budget=self.time_budget_sec)
-        X = featurizer(smiles)
+        X = np.array(self.descriptor.fit(smiles))
         y = np.array(y)
         model.fit(X, y, time_budget=self.time_budget_sec, estimator_list=self.estimator_list)
         self._n_pos = int(np.sum(y))
@@ -64,7 +34,7 @@ class MorganBinaryClassifier(object):
 
     def fit_default(self, smiles, y):
         model = RandomForestClassifier()
-        X = featurizer(smiles)
+        X = np.array(self.descriptor.fit(smiles))
         y = np.array(y)
         model.fit(X, y)
         self.model = model
@@ -76,11 +46,11 @@ class MorganBinaryClassifier(object):
             self.fit_default(smiles, y)
 
     def predict(self, smiles):
-        X = featurizer(smiles)
+        X = np.array(self.descriptor.transform(smiles))
         return self.model.predict(X)
 
     def predict_proba(self, smiles):
-        X = featurizer(smiles)
+        X = np.array(self.descriptor.transform(smiles))
         return self.model.predict_proba(X)
 
     def save(self, path):

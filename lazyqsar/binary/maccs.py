@@ -6,22 +6,22 @@ import joblib
 
 import shap
 
-from ..descriptors.descriptors import MordredDescriptor
+from ..descriptors.descriptors import MaccsDescriptor
 
 
-class MordredBinaryClassifier(object):
+class MaccsBinaryClassifier(object):
 
-    def __init__(self, automl=True, time_budget_sec=20, estimator_list=["rf"]):
+    def __init__(self, automl=True, time_budget_sec=20, estimator_list=["xgboost", "lgbm"]):
         self.time_budget_sec=time_budget_sec
         self.estimator_list=estimator_list
         self.model = None
         self.explainer = None
         self._automl = automl
-        self.descriptor = MordredDescriptor()
+        self.descriptor = MaccsDescriptor()
         
     def fit_automl(self, smiles, y):
         model = AutoML(task="classification", time_budget=self.time_budget_sec)
-        X = self.descriptor.fit(smiles)
+        X = np.array(self.descriptor.fit(smiles))
         y = np.array(y)
         model.fit(X, y, time_budget=self.time_budget_sec, estimator_list=self.estimator_list)
         self._n_pos = int(np.sum(y))
@@ -37,7 +37,7 @@ class MordredBinaryClassifier(object):
 
     def fit_default(self, smiles, y):
         model = RandomForestClassifier()
-        X = self.descriptor.fit(smiles)
+        X = np.array(self.descriptor.fit(smiles))
         y = np.array(y)
         model.fit(X, y)
         self.model = model
@@ -49,11 +49,11 @@ class MordredBinaryClassifier(object):
             self.fit_default(smiles, y)
 
     def predict(self, smiles):
-        X = self.descriptor.transform(smiles)
+        X = np.array(self.descriptor.transform(smiles))
         return self.model.predict(X)
 
     def predict_proba(self, smiles):
-        X = self.descriptor.transform(smiles)
+        X = np.array(self.descriptor.transform(smiles))
         return self.model.predict_proba(X)
 
     def explain(self, smiles):
