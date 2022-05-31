@@ -1,6 +1,8 @@
 from flaml import AutoML
 from sklearn.ensemble import RandomForestClassifier
 
+import shap
+
 import numpy as np
 import joblib
 
@@ -13,6 +15,7 @@ class MorganBinaryClassifier(object):
         self.time_budget_sec=time_budget_sec
         self.estimator_list=estimator_list
         self.model = None
+        self.explainer = None
         self._automl = automl
         self.descriptor = MorganDescriptor()
 
@@ -44,6 +47,13 @@ class MorganBinaryClassifier(object):
             self.fit_automl(smiles, y)
         else:
             self.fit_default(smiles, y)
+
+    def explain(self, smiles):
+        X = self.descriptor.transform(smiles)
+        if self.explainer is None:
+            self.explainer = shap.Explainer(self.model)
+        shap_values = self.explainer(X)
+        return shap_values
 
     def predict(self, smiles):
         X = np.array(self.descriptor.transform(smiles))
