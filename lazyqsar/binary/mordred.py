@@ -60,7 +60,7 @@ class MordredBinaryClassifier(object):
         X = self.descriptor.transform(smiles)
         if self.explainer is None:
             self.explainer = shap.Explainer(self.model)
-        shap_values = self.explainer(X)
+        shap_values = self.explainer(X, check_additivity=False)
         return shap_values
 
     def save(self, path):
