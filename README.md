@@ -5,7 +5,7 @@ A library to build QSAR models fastly
 ## Installation
 
 ```bash
-git clone https:/github.com/ersilia-os/lazy-qsar.git
+git clone https://github.com/ersilia-os/lazy-qsar.git
 cd lazy-qsar
 python -m pip install -e .
 ```
