@@ -1,5 +1,5 @@
 requests
-flaml
+flaml==1.0.2
 rdkit-pypi
 mordred
 PyTDC
