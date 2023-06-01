@@ -6,10 +6,10 @@ import shap
 import numpy as np
 import joblib
 
-from ..descriptors.descriptors import MorganDescriptor
+from ..descriptors.descriptors import ErsiliaEmbedding
 
 
-class MorganBinaryClassifier(object):
+class ErsiliaBinaryClassifier(object):
 
     def __init__(self, automl=True, time_budget_sec=20, estimator_list=None):
         self.time_budget_sec=time_budget_sec
@@ -17,11 +17,11 @@ class MorganBinaryClassifier(object):
         self.model = None
         self.explainer = None
         self._automl = automl
-        self.descriptor = MorganDescriptor()
+        self.descriptor = ErsiliaEmbedding()
 
     def fit_automl(self, smiles, y):
         model = AutoML(task="classification", time_budget=self.time_budget_sec)
-        X = np.array(self.descriptor.fit(smiles))
+        X = np.array(self.descriptor.transform(smiles))
         y = np.array(y)
         model.fit(X, y, time_budget=self.time_budget_sec, estimator_list=self.estimator_list)
         self._n_pos = int(np.sum(y))
@@ -37,7 +37,7 @@ class MorganBinaryClassifier(object):
 
     def fit_default(self, smiles, y):
         model = RandomForestClassifier()
-        X = np.array(self.descriptor.fit(smiles))
+        X = np.array(self.descriptor.transform(smiles))
         y = np.array(y)
         model.fit(X, y)
         self.model = model

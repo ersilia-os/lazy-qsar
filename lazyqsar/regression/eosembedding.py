@@ -1,43 +1,40 @@
 from flaml import AutoML
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import RandomForestRegressor
 
-import shap
 
 import numpy as np
 import joblib
 
-from ..descriptors.descriptors import MorganDescriptor
+from ..descriptors.descriptors import ErsiliaEmbedding
 
+class ErsiliaRegressor(object):
 
-class MorganBinaryClassifier(object):
-
-    def __init__(self, automl=True, time_budget_sec=20, estimator_list=None):
+    def __init__(self, automl=True, time_budget_sec=20, estimator_list=["rf"]):
         self.time_budget_sec=time_budget_sec
         self.estimator_list=estimator_list
         self.model = None
-        self.explainer = None
         self._automl = automl
-        self.descriptor = MorganDescriptor()
+        self.descriptor = ErsiliaEmbedding()
 
     def fit_automl(self, smiles, y):
-        model = AutoML(task="classification", time_budget=self.time_budget_sec)
-        X = np.array(self.descriptor.fit(smiles))
+        model = AutoML(task="regression", time_budget=self.time_budget_sec)
+        X = np.array(self.descriptor.transform(smiles))
         y = np.array(y)
         model.fit(X, y, time_budget=self.time_budget_sec, estimator_list=self.estimator_list)
         self._n_pos = int(np.sum(y))
         self._n_neg = len(y) - self._n_pos
-        self._auroc = 1-model.best_loss
+        self._r2_score = 1-model.best_loss
         self.meta = {
             "n_pos": self._n_pos,
             "n_neg": self._n_neg,
-            "auroc": self._auroc
+            "r2_score": self._r2_score
         }
         self.model = model.model.estimator
         self.model.fit(X, y)
 
     def fit_default(self, smiles, y):
-        model = RandomForestClassifier()
-        X = np.array(self.descriptor.fit(smiles))
+        model = RandomForestRegressor()
+        X = np.array(self.descriptor.transform(smiles))
         y = np.array(y)
         model.fit(X, y)
         self.model = model
@@ -48,20 +45,9 @@ class MorganBinaryClassifier(object):
         else:
             self.fit_default(smiles, y)
 
-    def explain(self, smiles):
-        X = self.descriptor.transform(smiles)
-        if self.explainer is None:
-            self.explainer = shap.Explainer(self.model)
-        shap_values = self.explainer(X, check_additivity=False)
-        return shap_values
-
     def predict(self, smiles):
         X = np.array(self.descriptor.transform(smiles))
         return self.model.predict(X)
-
-    def predict_proba(self, smiles):
-        X = np.array(self.descriptor.transform(smiles))
-        return self.model.predict_proba(X)
 
     def save(self, path):
         joblib.dump(self, path)

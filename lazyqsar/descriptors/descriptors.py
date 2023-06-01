@@ -13,6 +13,8 @@ from rdkit.Chem import MolFromSmarts
 
 from mordred import Calculator, descriptors
 
+from eosce.models import ErsiliaCompoundEmbeddings
+
 # VARIABLES
 
 PATH = os.path.abspath(os.path.dirname(__file__))
@@ -525,3 +527,15 @@ class MaccsDescriptor(object):
 
     def transform(self, smiles):
         return maccs_featurizer(smiles)
+    
+## ERSILIA COMPOUND EMBEDDINGS
+
+class ErsiliaEmbedding(object):
+    def __init__(self):
+        pass
+
+    def transform(self, smiles):
+        mdl = ErsiliaCompoundEmbeddings()
+        X = mdl.transform(smiles)
+        self.headers = ["ft-{}".format(x) for x in range(1024)]
+        return pd.DataFrame(X, columns = self.headers)

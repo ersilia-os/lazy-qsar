@@ -1,6 +1,7 @@
 requests
-flaml==1.0.2
+flaml
 rdkit-pypi
 mordred
 PyTDC
 shap
+eosce

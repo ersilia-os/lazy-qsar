@@ -11,7 +11,7 @@ from ..descriptors.descriptors import ClassicDescriptor
 
 class ClassicBinaryClassifier(object):
 
-    def __init__(self, automl=True, time_budget_sec=20, estimator_list=["xgboost", "lgbm"]):
+    def __init__(self, automl=True, time_budget_sec=20, estimator_list=None):
         self.time_budget_sec=time_budget_sec
         self.estimator_list=estimator_list
         self.model = None
