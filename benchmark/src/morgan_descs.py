@@ -19,12 +19,12 @@ def get_data():
     return names
 
 def fit_clf(X, y):
-    model = lq.MorganBinaryClassifier(time_budget_sec = 600, estimator_list = ["rf"]) 
+    model = lq.MorganBinaryClassifier(time_budget_sec = 600, estimator_list = ["rf"], reduced=True) 
     model.fit(X, y)
     return model
 
 def fit_reg(X,y):
-    model = lq.MorganRegressor(time_budget_sec = 600, estimator_list = ["rf"]) 
+    model = lq.MorganRegressor(time_budget_sec = 600, estimator_list = ["rf"], reduced=True) 
     model.fit(X, y)
     return model
 
@@ -43,7 +43,7 @@ if __name__ == '__main__':
             y_pred_test = model.predict_proba(test["Drug"])
             test["pred"] = y_pred_test[:,1]
             test["bin_pred"] = [0 if x < 0.5 else 1 for x in y_pred_test[:,1]]
-            test.to_csv(os.path.join(DATAPATH, "tdc_preds_morgan", "{}_test_{}.csv".format(a,seed)), index=False)
+            test.to_csv(os.path.join(DATAPATH, "tdc_preds_morgan_100", "{}_test_{}.csv".format(a,seed)), index=False)
     
     for seed in [1, 2, 3, 4, 5]:
         for a in reg_datasets:
@@ -54,4 +54,4 @@ if __name__ == '__main__':
             model = fit_reg(train_val["Drug"], train_val["Y"])
             y_pred_test = model.predict(test["Drug"])
             test["pred"] = y_pred_test
-            test.to_csv(os.path.join(DATAPATH, "tdc_preds_morgan", "{}_test_{}.csv".format(a,seed)), index=False)
+            test.to_csv(os.path.join(DATAPATH, "tdc_preds_morgan_100", "{}_test_{}.csv".format(a,seed)), index=False)

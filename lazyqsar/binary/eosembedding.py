@@ -1,5 +1,6 @@
 from flaml import AutoML
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.decomposition import PCA
 
 import shap
 
@@ -11,18 +12,24 @@ from ..descriptors.descriptors import ErsiliaEmbedding
 
 class ErsiliaBinaryClassifier(object):
 
-    def __init__(self, automl=True, time_budget_sec=20, estimator_list=None):
+    def __init__(self, automl=True, reduced=False, time_budget_sec=20, estimator_list=None):
         self.time_budget_sec=time_budget_sec
         self.estimator_list=estimator_list
         self.model = None
+        self.reducer=None
         self.explainer = None
         self._automl = automl
+        self._reduced = reduced
         self.descriptor = ErsiliaEmbedding()
 
     def fit_automl(self, smiles, y):
         model = AutoML(task="classification", time_budget=self.time_budget_sec)
         X = np.array(self.descriptor.transform(smiles))
         y = np.array(y)
+        if self._reduced:
+            self.reducer = PCA(n_components=100)
+            self.reducer.fit(X)
+            X = self.reducer.transform(X)
         model.fit(X, y, time_budget=self.time_budget_sec, estimator_list=self.estimator_list)
         self._n_pos = int(np.sum(y))
         self._n_neg = len(y) - self._n_pos
@@ -39,6 +46,10 @@ class ErsiliaBinaryClassifier(object):
         model = RandomForestClassifier()
         X = np.array(self.descriptor.transform(smiles))
         y = np.array(y)
+        if self._reduced:
+            self.reducer = PCA(n_components=100)
+            self.reducer.fit(X)
+            X = self.reducer.transform(X)
         model.fit(X, y)
         self.model = model
 
@@ -50,6 +61,8 @@ class ErsiliaBinaryClassifier(object):
 
     def explain(self, smiles):
         X = self.descriptor.transform(smiles)
+        if self._reduced:
+            X = self.reducer.transform(X)
         if self.explainer is None:
             self.explainer = shap.Explainer(self.model)
         shap_values = self.explainer(X, check_additivity=False)
@@ -57,10 +70,14 @@ class ErsiliaBinaryClassifier(object):
 
     def predict(self, smiles):
         X = np.array(self.descriptor.transform(smiles))
+        if self._reduced:
+            X = self.reducer.transform(X)
         return self.model.predict(X)
 
     def predict_proba(self, smiles):
         X = np.array(self.descriptor.transform(smiles))
+        if self._reduced:
+            X = self.reducer.transform(X)
         return self.model.predict_proba(X)
 
     def save(self, path):

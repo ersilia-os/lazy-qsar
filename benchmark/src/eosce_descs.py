@@ -21,29 +21,14 @@ def get_data():
     return names
 
 def fit_clf(X, y):
-    model = lq.ErsiliaBinaryClassifier(time_budget_sec = 600, estimator_list = ["rf"]) 
+    model = lq.ErsiliaBinaryClassifier(time_budget_sec = 600, reduced= True, estimator_list = ["rf"]) 
     model.fit(X, y)
     return model
 
 def fit_reg(X,y):
-    model = lq.ErsiliaRegressor(time_budget_sec = 600, estimator_list = ["rf"]) 
+    model = lq.ErsiliaRegressor(time_budget_sec = 600,reduced =True,  estimator_list = ["rf"]) 
     model.fit(X, y)
     return model
-
-def evaluate():
-    names = utils.retrieve_benchmark_names('ADMET_Group')
-    predictions_list = []
-    for seed in range(5):
-        predictions = {}
-        for n in names:
-            benchmark = group.get(n)
-            name = benchmark['name']
-            test = pd.read_csv(os.path.join(DATAPATH, "tdc_preds_eosce", "{}_test_{}.csv".format(n,seed)))
-            #append predictions to predictions list
-            predictions[name] = test["pred"]
-            predictions_list.append(predictions)
-    results = group.evaluate_many(predictions_list)
-    return results
 
 
 if __name__ == '__main__':
@@ -58,8 +43,7 @@ if __name__ == '__main__':
             model = fit_reg(train_val["Drug"], train_val["Y"])
             y_pred_test = model.predict(test["Drug"])
             test["pred"] = y_pred_test
-            test.to_csv(os.path.join(DATAPATH, "tdc_preds_eosce", "{}_test_{}.csv".format(a,seed)), index=False)
-"""
+            test.to_csv(os.path.join(DATAPATH, "tdc_preds_eosce_100", "{}_test_{}.csv".format(a,seed)), index=False)
     for seed in [1, 2, 3, 4, 5]:
         for a in clf_datasets:
             print(seed, a)
@@ -70,6 +54,5 @@ if __name__ == '__main__':
             y_pred_test = model.predict_proba(test["Drug"])
             test["pred"] = y_pred_test[:,1]
             test["bin_pred"] = [0 if x < 0.5 else 1 for x in y_pred_test[:,1]]
-            test.to_csv(os.path.join(DATAPATH, "tdc_preds_eosce", "{}_test_{}.csv".format(a,seed)), index=False)
-"""    
+            test.to_csv(os.path.join(DATAPATH, "tdc_preds_eosce_100", "{}_test_{}.csv".format(a,seed)), index=False)    
     
