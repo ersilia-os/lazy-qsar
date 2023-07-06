@@ -102,6 +102,9 @@ r2 = r2_score(y_valid, y_hat)
 print("MAE", mae, "R2", r2)
 ```
 
+## Benchmark
+The pipeline has been validated using the Therapeutic Data Commons ADMET datasets. More information about its results can be found in the /benchmark folder.
+
 ## Disclaimer
 
 This library is only intended for quick-and-dirty QSAR modeling.
