@@ -34,7 +34,7 @@ def fit_reg(X,y):
 if __name__ == '__main__':
 
     group = admet_group(path = '../data/')
-    for seed in [1, 2, 3, 4, 5]:
+    for seed in [3, 4, 5]:
         for a in reg_datasets:
             print(seed, a)
             benchmark = group.get(a) 

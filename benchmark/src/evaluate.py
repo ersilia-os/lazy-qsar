@@ -22,8 +22,7 @@ for seed in [1, 2, 3, 4, 5]:
     for a in clf_datasets:
         benchmark = group.get(a)
         name = benchmark['name']
-        test = pd.read_csv(os.path.join("..", "data", "tdc_preds_morgan", "{}_test_{}.csv".format(a,seed)))
-        test.to_csv(os.path.join("..", "data", "tdc_preds_morgan", "{}_test_{}.csv".format(a,seed)), index=False)
+        test = pd.read_csv(os.path.join("..", "data", "tdc_preds_morgan_100", "{}_test_{}.csv".format(a,seed)))
         #append predictions to predictions list
         predictions[name] = test["pred"]
         predictions_list.append(predictions)
@@ -36,8 +35,7 @@ for seed in [1, 2, 3, 4, 5]:
     for a in clf_datasets:
         benchmark = group.get(a)
         name = benchmark['name']
-        test = pd.read_csv(os.path.join("..", "data", "tdc_preds_eosce", "{}_test_{}.csv".format(a,seed)))
-        test.to_csv(os.path.join("..", "data", "tdc_preds_eosce", "{}_test_{}.csv".format(a,seed)), index=False)
+        test = pd.read_csv(os.path.join("..", "data", "tdc_preds_eosce_100", "{}_test_{}.csv".format(a,seed)))
         #append predictions to predictions list
         predictions[name] = test["pred"]
         predictions_list.append(predictions)
@@ -69,7 +67,7 @@ plt.xlabel('Assay')
 plt.ylabel('Model Performance')
 plt.legend()
 plt.tight_layout()
-plt.savefig(os.path.join(FIGUREPATH, "clf_comparison.png"), dpi = 300)
+plt.savefig(os.path.join(FIGUREPATH, "clf_comparison_100.png"), dpi = 300)
 
 predictions_list = []
 for seed in [1, 2, 3, 4, 5]:
@@ -77,9 +75,7 @@ for seed in [1, 2, 3, 4, 5]:
     for a in reg_datasets:
         benchmark = group.get(a)
         name = benchmark['name']
-        test = pd.read_csv(os.path.join("..", "data", "tdc_preds_morgan", "{}_test_{}.csv".format(a,seed)))
-        test.rename(columns={"proba1": "pred"}, inplace=True)
-        test.to_csv(os.path.join("..", "data", "tdc_preds_morgan", "{}_test_{}.csv".format(a,seed)), index=False)
+        test = pd.read_csv(os.path.join("..", "data", "tdc_preds_morgan_100", "{}_test_{}.csv".format(a,seed)))
         #append predictions to predictions list
         predictions[name] = test["pred"]
         predictions_list.append(predictions)
@@ -92,9 +88,7 @@ for seed in [1, 2, 3, 4, 5]:
     for a in reg_datasets:
         benchmark = group.get(a)
         name = benchmark['name']
-        test = pd.read_csv(os.path.join("..", "data", "tdc_preds_eosce", "{}_test_{}.csv".format(a,seed)))
-        test.rename(columns={"proba1": "pred"}, inplace=True)
-        test.to_csv(os.path.join("..", "data", "tdc_preds_eosce", "{}_test_{}.csv".format(a,seed)), index=False)
+        test = pd.read_csv(os.path.join("..", "data", "tdc_preds_eosce_100", "{}_test_{}.csv".format(a,seed)))
         #append predictions to predictions list
         predictions[name] = test["pred"]
         predictions_list.append(predictions)
@@ -125,4 +119,4 @@ plt.xlabel('Assay')
 plt.ylabel('Model Performance')
 plt.legend()
 plt.tight_layout()
-plt.savefig(os.path.join(FIGUREPATH, "reg_comparison.png"), dpi = 300)
+plt.savefig(os.path.join(FIGUREPATH, "reg_comparison_100.png"), dpi = 300)
