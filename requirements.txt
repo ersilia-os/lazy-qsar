@@ -1,5 +1,5 @@
 requests
-flaml
+flaml[automl]
 rdkit-pypi
 mordred
 PyTDC
