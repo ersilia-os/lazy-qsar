@@ -87,15 +87,15 @@ Now we can train a model based on Morgan fingerprints.
 ```python
 import lazyqsar as lq
 
-model = lq.MorganBinaryClassifier() 
-# time_budget (in seconds) and estimator_list can be passed as parameters of the classifier. Defaults to 20s and all the available estimators in FLAML.
+model = lq.MorganRegressor() 
+# time_budget (in seconds) and estimator_list can be passed as parameters of the regressor. Defaults to 20s and all the available estimators in FLAML.
 model.fit(smiles_train, y_train)
 ```
 
 #### Validate its performance
 
 ```python
-from sklearn.metrics import roc_curve, auc
+from sklearn.metrics import mean_absolute_error, r2_score
 y_hat = model.predict(smiles_valid)
 mae = mean_absolute_error(y_valid, y_hat)
 r2 = r2_score(y_valid, y_hat)
