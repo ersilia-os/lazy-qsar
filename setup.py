@@ -9,7 +9,7 @@ with open("requirements.txt") as f:
 
 setup(
     name="lazyqsar",
-    version="0.2",
+    version="0.4",
     author="Miquel Duran-Frigola",
     author_email="miquel@ersilia.io",
     url="https://github.com/ersilia-os/lazy-qsar",

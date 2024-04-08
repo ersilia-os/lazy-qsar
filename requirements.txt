@@ -1,7 +1,7 @@
 requests
 flaml[automl]
-rdkit-pypi
+rdkit==2023.9.5
 mordred
 PyTDC
 shap
-eosce
+eosce==0.2.0
