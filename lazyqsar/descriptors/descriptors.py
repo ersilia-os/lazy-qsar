@@ -345,7 +345,7 @@ class MorganDescriptor(object):
 
     def calc(self, mol):
         mfpgen = rdFingerprintGenerator.GetMorganGenerator(radius=self.radius,fpSize=self.nbits)
-        v = mfpgen.GetFingerprint(mol)
+        v = mfpgen.GetCountFingerprint(mol)
         return self.clip_sparse(v, self.nbits)
 
     def morgan_featurizer(self,smiles):
