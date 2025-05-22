@@ -8,8 +8,12 @@ from sklearn.preprocessing import RobustScaler
 from sklearn.feature_selection import VarianceThreshold
 
 from rdkit import Chem
+from rdkit.Chem import rdFingerprintGenerator
 from rdkit.Chem import MACCSkeys
 from rdkit.Chem import MolFromSmarts
+from rdkit.Chem import Descriptors as RdkitDescriptors
+from rdkit.ML.Descriptors import MoleculeDescriptors
+
 
 from mordred import Calculator, descriptors
 
@@ -131,22 +135,20 @@ class VarianceFilter(object):
 
 # MORDRED DESCRIPTORS
 
-def mordred_featurizer(smiles):
-    calc = Calculator(descriptors, ignore_3D=True)
-    df = calc.pandas([Chem.MolFromSmiles(smi) for smi in smiles])
-    return df
-
-
 class MordredDescriptor(object):
-
     def __init__(self):
         self.nan_filter = NanFilter()
         self.imputer = Imputer()
         self.variance_filter = VarianceFilter()
         self.scaler = Scaler()
 
+    def mordred_featurizer(self, smiles):
+        calc = Calculator(descriptors, ignore_3D=True)
+        df = calc.pandas([Chem.MolFromSmiles(smi) for smi in smiles])
+        return df
+
     def fit(self, smiles):
-        df = mordred_featurizer(smiles)
+        df = self.mordred_featurizer(smiles)
         X = np.array(df, dtype=np.float32)
         self.nan_filter.fit(X)
         X = self.nan_filter.transform(X)
@@ -162,7 +164,7 @@ class MordredDescriptor(object):
         return pd.DataFrame(X, columns=self.features)
 
     def transform(self, smiles):
-        df = mordred_featurizer(smiles)
+        df = self.mordred_featurizer(smiles)
         X = np.array(df, dtype=np.float32)
         X = self.nan_filter.transform(X)
         X = self.imputer.transform(X)
@@ -189,8 +191,6 @@ class Descriptors:
 
 
 def _calculate_rdkit_descriptors(mol):
-    from rdkit.ML.Descriptors import MoleculeDescriptors  # type: ignore
-
     dlist = [
         "NumHDonors",
         "NumHAcceptors",
@@ -294,7 +294,6 @@ def classic_featurizer(smiles):
 
 
 class ClassicDescriptor(object):
-
     def __init__(self):
         self.nan_filter = NanFilter()
         self.imputer = Imputer()
@@ -329,60 +328,44 @@ class ClassicDescriptor(object):
 
 # MORGAN FINGERPRINTS
 
-from rdkit.Chem import rdMolDescriptors as rd
-from rdkit import Chem
-
 RADIUS = 3
 NBITS = 2048
 DTYPE = np.uint8
 
-def clip_sparse(vect, nbits):
-    l = [0]*nbits
-    for i,v in vect.GetNonzeroElements().items():
-        l[i] = v if v < 255 else 255
-    return l
-
-
-class _MorganDescriptor(object):
-
+class MorganDescriptor(object):
     def __init__(self):
         self.nbits = NBITS
         self.radius = RADIUS
 
+    def clip_sparse(self, vect, nbits):
+        l = [0]*nbits
+        for i,v in vect.GetNonzeroElements().items():
+            l[i] = v if v < 255 else 255
+        return l
+
     def calc(self, mol):
-        v = rd.GetHashedMorganFingerprint(mol, radius=self.radius, nBits=self.nbits)
-        return clip_sparse(v, self.nbits)
+        mfpgen = rdFingerprintGenerator.GetMorganGenerator(radius=self.radius,fpSize=self.nbits)
+        v = mfpgen.GetFingerprint(mol)
+        return self.clip_sparse(v, self.nbits)
 
-
-def morgan_featurizer(smiles):
-    d = _MorganDescriptor()
-    X = np.zeros((len(smiles), NBITS))
-    for i, smi in enumerate(smiles):
-        mol = Chem.MolFromSmiles(smi)
-        X[i,:] = d.calc(mol)
-    return X
-
-
-class MorganDescriptor(object):
-
-    def __init__(self):
-        pass
-
+    def morgan_featurizer(self,smiles):
+        X = np.zeros((len(smiles), NBITS))
+        for i, smi in enumerate(smiles):
+            mol = Chem.MolFromSmiles(smi)
+            X[i,:] = self.calc(mol)
+        return X
+    
     def fit(self, smiles):
-        X = morgan_featurizer(smiles)
+        X = self.morgan_featurizer(smiles)
         self.features = ["fp-{0}".format(i) for i in range(X.shape[1])]
         return pd.DataFrame(X, columns=self.features)
 
     def transform(self, smiles):
-        X = morgan_featurizer(smiles)
+        X = self.morgan_featurizer(smiles)
         return pd.DataFrame(X, columns=self.features)
 
 
 # RDKIT 200 Descriptors
-
-from rdkit.Chem import Descriptors as RdkitDescriptors
-from rdkit import Chem
-
 
 RDKIT_PROPS = {"1.0.0": ['BalabanJ', 'BertzCT', 'Chi0', 'Chi0n', 'Chi0v', 'Chi1', 'Chi1n',
                          'Chi1v', 'Chi2n', 'Chi2v', 'Chi3n', 'Chi3v', 'Chi4n', 'Chi4v',
@@ -430,9 +413,12 @@ RDKIT_PROPS = {"1.0.0": ['BalabanJ', 'BertzCT', 'Chi0', 'Chi0n', 'Chi0v', 'Chi1'
 
 CURRENT_VERSION = "1.0.0"
 
-
-class _RdkitDescriptor(object):
+class RdkitDescriptor(object):
     def __init__(self):
+        self.nan_filter = NanFilter()
+        self.imputer = Imputer()
+        self.variance_filter = VarianceFilter()
+        self.scaler = Scaler()
         self.properties = RDKIT_PROPS[CURRENT_VERSION]
         self._funcs = {name: func for name, func in RdkitDescriptors.descList}
 
@@ -448,25 +434,14 @@ class _RdkitDescriptor(object):
             R += [r]
         return np.array(R)
 
-
-def rdkit_featurizer(smiles):
-    d = _RdkitDescriptor()
-    mols = [Chem.MolFromSmiles(smi) for smi in smiles]
-    X = d.calc(mols)
-    data = pd.DataFrame(X, columns=d.properties)
-    return data
-
-
-class RdkitDescriptor(object):
-
-    def __init__(self):
-        self.nan_filter = NanFilter()
-        self.imputer = Imputer()
-        self.variance_filter = VarianceFilter()
-        self.scaler = Scaler()
+    def rdkit_featurizer(self,smiles):
+        mols = [Chem.MolFromSmiles(smi) for smi in smiles]
+        X = self.calc(mols)
+        data = pd.DataFrame(X, columns=d.properties)
+        return data
 
     def fit(self, smiles):
-        df = rdkit_featurizer(smiles)
+        df = self.rdkit_featurizer(smiles)
         X = np.array(df, dtype=np.float32)
         self.nan_filter.fit(X)
         X = self.nan_filter.transform(X)
@@ -482,7 +457,7 @@ class RdkitDescriptor(object):
         return pd.DataFrame(X, columns=self.features)
 
     def transform(self, smiles):
-        df = rdkit_featurizer(smiles)
+        df = self.rdkit_featurizer(smiles)
         X = np.array(df, dtype=np.float32)
         X = self.nan_filter.transform(X)
         X = self.imputer.transform(X)
@@ -493,40 +468,39 @@ class RdkitDescriptor(object):
 
 # MACCS DESCRIPTORS
 
-def maccs_featurizer(smiles):
-    mols = [Chem.MolFromSmiles(smi) for smi in smiles]
-    mk = os.path.join(DATA_PATH, "MACCSkeys.txt")
-    with open(str(mk), "r") as f:
-        names = tuple([x.strip().split("\t")[-1] for x in f.readlines()[1:]])
-    R = []
-    cols = None
-    for m in mols:
-        # rdkit sets fps[0] to 0 and starts keys at 1!
-        fps = list(MACCSkeys.GenMACCSKeys(m).ToBitString())[1:] # ersilia edit
-        descriptors = tuple(int(i) for i in fps)
-        descriptor_names = names
-        descriptors = Descriptors(
-            descriptor_type="MACCS",
-            descriptors=descriptors,
-            descriptor_names=descriptor_names,
-        )
-        R += [list(descriptors.descriptors)]
-        if cols is None:
-            cols = list(descriptors.descriptor_names)
-    data = pd.DataFrame(R, columns=cols)
-    return data
-
-
 class MaccsDescriptor(object):
-
     def __init__(self):
         pass
 
+    def maccs_featurizer(self, smiles):
+        mols = [Chem.MolFromSmiles(smi) for smi in smiles]
+        mk = os.path.join(DATA_PATH, "MACCSkeys.txt")
+        with open(str(mk), "r") as f:
+            names = tuple([x.strip().split("\t")[-1] for x in f.readlines()[1:]])
+        R = []
+        cols = None
+        for m in mols:
+            # rdkit sets fps[0] to 0 and starts keys at 1!
+            fps = list(MACCSkeys.GenMACCSKeys(m).ToBitString())[1:] # ersilia edit
+            descriptors = tuple(int(i) for i in fps)
+            descriptor_names = names
+            descriptors = Descriptors(
+                descriptor_type="MACCS",
+                descriptors=descriptors,
+                descriptor_names=descriptor_names,
+            )
+            R += [list(descriptors.descriptors)]
+            if cols is None:
+                cols = list(descriptors.descriptor_names)
+        data = pd.DataFrame(R, columns=cols)
+        return data
+
+
     def fit(self, smiles):
-        return maccs_featurizer(smiles)
+        return self.maccs_featurizer(smiles)
 
     def transform(self, smiles):
-        return maccs_featurizer(smiles)
+        return self.maccs_featurizer(smiles)
     
 ## ERSILIA COMPOUND EMBEDDINGS
 

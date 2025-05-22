@@ -1,7 +1,0 @@
-requests
-flaml[automl]
-rdkit==2023.9.5
-mordred
-PyTDC
-shap
-eosce==0.2.0
