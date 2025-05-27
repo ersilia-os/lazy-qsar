@@ -1,1 +1,1 @@
-{"num_partitions": 5, "reducer_method": "best", "max_reducer_dim": 500, "base_n_trials": 100, "base_timeout": 600, "random_state": 42}
+{"num_partitions": 1, "reducer_method": "best", "max_reducer_dim": 500, "base_n_trials": 100, "base_timeout": 600, "random_state": 42}

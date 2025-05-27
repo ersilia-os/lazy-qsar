@@ -1,16 +1,16 @@
 import os
 import json
 import joblib
+import numpy as np
 
-from .descriptors import MorganDescriptor, RDKitDescriptor, ClassicDescriptor, ErsiliaEmbeddingEmbedding, MaccsDescriptor
+from .descriptors import MorganDescriptor, RdkitDescriptor, ClassicDescriptor, MaccsDescriptor
 from .models import LazyXGBoostBinaryClassifier
 
 
 descriptors_dict = {
     "morgan": MorganDescriptor,
-    "rdkit": RDKitDescriptor,
+    "rdkit": RdkitDescriptor,
     "classic": ClassicDescriptor,
-    "ersilia_embedding": ErsiliaEmbeddingEmbedding,
     "maccs": MaccsDescriptor,
 }
 
@@ -36,22 +36,30 @@ class LazyBinaryQSAR(object):
             self.model = models_dict[model_type](**kwargs)
 
     def fit(self, X, y):
+        y = np.array(y, dtype=int)
         self.descriptor.fit(X)
-        descriptors = self.descriptor.transform(X)
+        descriptors = np.array(self.descriptor.transform(X))
         self.model.fit(descriptors, y)
 
     def predict(self, X):
-        descriptors = self.descriptor.transform(X)
+        descriptors = np.array(self.descriptor.transform(X))
         return self.model.predict(descriptors)
     
     def save_model(self, model_dir: str):
+        print(f"LazyQSAR Saving model to {model_dir}")
         config = {
             "descriptor_type": self.descriptor_type,
             "model_type": self.model_type,
         }
+        self.model.save_model(model_dir)
+        with open(os.path.join(model_dir, "metadata.json"), "r") as f:
+            metadata = json.load(f)
+        metadata["descriptor_type"] = self.descriptor_type
+        metadata["model_type"] = self.model_type
         with open(os.path.join(model_dir, "config.json"), "w") as f:
             json.dump(config, f)
-        self.model.save_model(model_dir)
+        joblib.dump(self.descriptor, os.path.join(model_dir, "descriptor.joblib"))
+        print("Saving done!")
 
     @classmethod
     def load_model(cls, model_dir: str):

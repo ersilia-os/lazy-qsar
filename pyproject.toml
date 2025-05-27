@@ -25,10 +25,8 @@ classifiers = [
 ]
 dependencies = [
     "requests==2.32.3",
-    "flaml[automl]",
     "rdkit==2025.3.2",
     "mordredcommunity==2.0.6",
-    "eosce==0.2.0",
     "joblib"
 ]
 

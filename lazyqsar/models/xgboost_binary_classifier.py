@@ -232,14 +232,14 @@ class LazyXGBoostBinaryClassifier(object):
     def __init__(self,
                  reducer_method="best",
                  max_reducer_dim=500,
-                 base_n_trials=1000,
+                 base_num_trials=1000,
                  base_timeout=600,
                  base_test_size=0.25,
                  base_num_splits=3,
                  random_state=42):
         self.reducer_method = reducer_method
         self.max_reducer_dim = max_reducer_dim
-        self.base_n_trials = base_n_trials
+        self.base_n_trials = base_num_trials
         self.base_timeout = base_timeout
         self.random_state = random_state
         self.base_test_size = base_test_size
