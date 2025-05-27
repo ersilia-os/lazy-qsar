@@ -1,0 +1,1 @@
+{"best_params_": {"booster": "gblinear", "lambda": 0.9988467388197222, "alpha": 3.2976280650862004e-05, "subsample": 0.21041227777046134, "colsample_bytree": 0.5593052458166992}, "best_score_": 0.8279939854231166, "init_data_": {"n_trials": 100, "timeout": 600, "random_state": 42, "num_splits": 3, "test_size": 0.25}}
