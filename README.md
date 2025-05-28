@@ -1,8 +1,10 @@
-# Lazy QSAR
+# Ersilia's LazyQSAR
 
 A library to build QSAR models fastly
 
 ## Installation
+
+Install LazyQSAR from source:
 
 ```bash
 git clone https://github.com/ersilia-os/lazy-qsar.git

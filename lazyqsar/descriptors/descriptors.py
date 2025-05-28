@@ -1,5 +1,6 @@
 import os
 import joblib
+import json
 import pandas as pd
 import numpy as np
 from dataclasses import dataclass
@@ -18,13 +19,13 @@ from rdkit.ML.Descriptors import MoleculeDescriptors
 from mordred import Calculator, descriptors
 
 
-# VARIABLES
+# Varibales
 
 PATH = os.path.abspath(os.path.dirname(__file__))
 DATA_PATH = os.path.abspath(os.path.join(PATH, "..", "data"))
 
 
-# PROCESSING FUNCTIONS
+# Processing functions
 
 MAX_NA = 0.2
 
@@ -132,14 +133,14 @@ class VarianceFilter(object):
         return joblib.load(file_name)
 
 
-# MORDRED DESCRIPTORS
+# Mordred Descriptors
 
 class MordredDescriptor(object):
     def __init__(self):
-        self.nan_filter = NanFilter()
-        self.imputer = Imputer()
-        self.variance_filter = VarianceFilter()
-        self.scaler = Scaler()
+        self.nan_filter = None
+        self.imputer = None
+        self.variance_filter = None
+        self.scaler = None
 
     def mordred_featurizer(self, smiles):
         calc = Calculator(descriptors, ignore_3D=True)
@@ -147,6 +148,10 @@ class MordredDescriptor(object):
         return df
 
     def fit(self, smiles):
+        self.nan_filter = NanFilter()
+        self.imputer = Imputer()
+        self.variance_filter = VarianceFilter()
+        self.scaler = Scaler()
         df = self.mordred_featurizer(smiles)
         X = np.array(df, dtype=np.float32)
         self.nan_filter.fit(X)
@@ -170,6 +175,43 @@ class MordredDescriptor(object):
         X = self.variance_filter.transform(X)
         X = self.scaler.transform(X)
         return pd.DataFrame(X, columns=self.features)
+    
+    def save(self, dir_name: str):
+        if not os.path.exists(dir_name):
+            os.makedirs(dir_name)
+        metadata = {
+            "rdkit_version": Chem.rdBase.rdkitVersion,
+        }
+        with open(os.path.join(dir_name, "descriptor_metadata.json"), "w") as f:
+            json.dump(metadata, f)
+        transformer = {
+            "nan_filter": self.nan_filter,
+            "imputer": self.imputer,
+            "variance_filter": self.variance_filter,
+            "scaler": self.scaler,
+        }
+        joblib.dump(os.path.join(dir_name, "transformer.joblib"), transformer)
+
+    @classmethod
+    def load(cls, dir_name: str):
+        if not os.path.exists(dir_name):
+            raise FileNotFoundError(f"Directory {dir_name} does not exist.")
+        obj = cls()
+        with open(os.path.join(dir_name, "descriptor_metadata.json"), "r") as f:
+            metadata = json.load(f)
+            rdkit_version = metadata.get("rdkit_version")
+            if rdkit_version:
+                print(f"Loaded RDKit version: {rdkit_version}")
+            current_rdkit_version = Chem.rdBase.rdkitVersion
+            if current_rdkit_version != rdkit_version:
+                raise ValueError(f"RDKit version mismatch: expected {current_rdkit_version}, got {rdkit_version}")
+            
+        transformer = joblib.load(os.path.join(dir_name, "transformer.joblib"))
+        obj.nan_filter = transformer["nan_filter"]
+        obj.imputer = transformer["imputer"]
+        obj.variance_filter = transformer["variance_filter"]
+        obj.scaler = transformer["scaler"]
+        return obj
 
 
 # CLASSIC DESCRIPTORS
@@ -323,9 +365,45 @@ class ClassicDescriptor(object):
         X = self.variance_filter.transform(X)
         X = self.scaler.transform(X)
         return pd.DataFrame(X, columns=self.features)
+    
+    def save(self, dir_name: str):
+        if not os.path.exists(dir_name):
+            os.makedirs(dir_name)
+        metadata = {
+            "rdkit_version": Chem.rdBase.rdkitVersion,
+        }
+        with open(os.path.join(dir_name, "descriptor_metadata.json"), "w") as f:
+            json.dump(metadata, f)
+        transformer = {
+            "nan_filter": self.nan_filter,
+            "imputer": self.imputer,
+            "variance_filter": self.variance_filter,
+            "scaler": self.scaler,
+        }
+        joblib.dump(os.path.join(dir_name, "transformer.joblib"), transformer)
+
+    @classmethod
+    def load(cls, dir_name: str):
+        if not os.path.exists(dir_name):
+            raise FileNotFoundError(f"Directory {dir_name} does not exist.")
+        obj = cls()
+        with open(os.path.join(dir_name, "descriptor_metadata.json"), "r") as f:
+            metadata = json.load(f)
+            rdkit_version = metadata.get("rdkit_version")
+            if rdkit_version:
+                print(f"Loaded RDKit version: {rdkit_version}")
+            current_rdkit_version = Chem.rdBase.rdkitVersion
+            if current_rdkit_version != rdkit_version:
+                raise ValueError(f"RDKit version mismatch: expected {current_rdkit_version}, got {rdkit_version}")
+        transformer = joblib.load(os.path.join(dir_name, "transformer.joblib"))
+        obj.nan_filter = transformer["nan_filter"]
+        obj.imputer = transformer["imputer"]
+        obj.variance_filter = transformer["variance_filter"]
+        obj.scaler = transformer["scaler"]
+        return obj
 
 
-# MORGAN FINGERPRINTS
+# Morgan fingerprints
 
 RADIUS = 3
 NBITS = 2048
@@ -362,6 +440,30 @@ class MorganDescriptor(object):
     def transform(self, smiles):
         X = self.morgan_featurizer(smiles)
         return pd.DataFrame(X, columns=self.features)
+
+    def save(self, dir_name: str):
+        if not os.path.exists(dir_name):
+            os.makedirs(dir_name)
+        metadata = {
+            "rdkit_version": Chem.rdBase.rdkitVersion,
+        }
+        with open(os.path.join(dir_name, "descriptor_metadata.json"), "w") as f:
+            json.dump(metadata, f)
+
+    @classmethod
+    def load(cls, dir_name: str):
+        if not os.path.exists(dir_name):
+            raise FileNotFoundError(f"Directory {dir_name} does not exist.")
+        obj = cls()
+        with open(os.path.join(dir_name, "descriptor_metadata.json"), "r") as f:
+            metadata = json.load(f)
+            rdkit_version = metadata.get("rdkit_version")
+            if rdkit_version:
+                print(f"Loaded RDKit version: {rdkit_version}")
+            current_rdkit_version = Chem.rdBase.rdkitVersion
+            if current_rdkit_version != rdkit_version:
+                raise ValueError(f"RDKit version mismatch: expected {current_rdkit_version}, got {rdkit_version}")
+        return obj
 
 
 # RDKIT 200 Descriptors
@@ -463,6 +565,42 @@ class RdkitDescriptor(object):
         X = self.variance_filter.transform(X)
         X = self.scaler.transform(X)
         return pd.DataFrame(X, columns=self.features)
+    
+    def save(self, dir_name: str):
+        if not os.path.exists(dir_name):
+            os.makedirs(dir_name)
+        metadata = {
+            "rdkit_version": Chem.rdBase.rdkitVersion,
+        }
+        with open(os.path.join(dir_name, "descriptor_metadata.json"), "w") as f:
+            json.dump(metadata, f)
+        transformer = {
+            "nan_filter": self.nan_filter,
+            "imputer": self.imputer,
+            "variance_filter": self.variance_filter,
+            "scaler": self.scaler,
+        }
+        joblib.dump(os.path.join(dir_name, "transformer.joblib"), transformer)
+
+    @classmethod
+    def load(cls, dir_name: str):
+        if not os.path.exists(dir_name):
+            raise FileNotFoundError(f"Directory {dir_name} does not exist.")
+        obj = cls()
+        with open(os.path.join(dir_name, "descriptor_metadata.json"), "r") as f:
+            metadata = json.load(f)
+            rdkit_version = metadata.get("rdkit_version")
+            if rdkit_version:
+                print(f"Loaded RDKit version: {rdkit_version}")
+            current_rdkit_version = Chem.rdBase.rdkitVersion
+            if current_rdkit_version != rdkit_version:
+                raise ValueError(f"RDKit version mismatch: expected {current_rdkit_version}, got {rdkit_version}")
+        transformer = joblib.load(os.path.join(dir_name, "transformer.joblib"))
+        obj.nan_filter = transformer["nan_filter"]
+        obj.imputer = transformer["imputer"]
+        obj.variance_filter = transformer["variance_filter"]
+        obj.scaler = transformer["scaler"]
+        return obj
 
 
 # MACCS DESCRIPTORS
@@ -500,3 +638,27 @@ class MaccsDescriptor(object):
 
     def transform(self, smiles):
         return self.maccs_featurizer(smiles)
+
+    def save(self, dir_name: str):
+        if not os.path.exists(dir_name):
+            os.makedirs(dir_name)
+        metadata = {
+            "rdkit_version": Chem.rdBase.rdkitVersion,
+        }
+        with open(os.path.join(dir_name, "descriptor_metadata.json"), "w") as f:
+            json.dump(metadata, f)
+
+    @classmethod
+    def load(cls, dir_name: str):
+        if not os.path.exists(dir_name):
+            raise FileNotFoundError(f"Directory {dir_name} does not exist.")
+        obj = cls()
+        with open(os.path.join(dir_name, "descriptor_metadata.json"), "r") as f:
+            metadata = json.load(f)
+            rdkit_version = metadata.get("rdkit_version")
+            if rdkit_version:
+                print(f"Loaded RDKit version: {rdkit_version}")
+            current_rdkit_version = Chem.rdBase.rdkitVersion
+            if current_rdkit_version != rdkit_version:
+                raise ValueError(f"RDKit version mismatch: expected {current_rdkit_version}, got {rdkit_version}")
+        return obj

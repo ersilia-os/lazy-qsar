@@ -3,12 +3,13 @@ import json
 import joblib
 import numpy as np
 
-from .descriptors import MorganDescriptor, RdkitDescriptor, ClassicDescriptor, MaccsDescriptor
+from .descriptors import MorganDescriptor, MordredDescriptor, RdkitDescriptor, ClassicDescriptor, MaccsDescriptor
 from .models import LazyXGBoostBinaryClassifier
 
 
 descriptors_dict = {
     "morgan": MorganDescriptor,
+    "mordred": MordredDescriptor,
     "rdkit": RdkitDescriptor,
     "classic": ClassicDescriptor,
     "maccs": MaccsDescriptor,
@@ -58,21 +59,20 @@ class LazyBinaryQSAR(object):
         metadata["model_type"] = self.model_type
         with open(os.path.join(model_dir, "config.json"), "w") as f:
             json.dump(config, f)
-        joblib.dump(self.descriptor, os.path.join(model_dir, "descriptor.joblib"))
+        self.descriptor.save(model_dir)
         print("Saving done!")
 
     @classmethod
     def load_model(cls, model_dir: str):
-
+        print(f"LazyQSAR Loading model from {model_dir}")
         obj = cls()
-
         with open(os.path.join(model_dir, "config.json"), "r") as f:
             config = json.load(f)
         descriptor_type = config["descriptor_type"]
         model_type = config["model_type"]
         obj.descriptor_type = descriptor_type
         obj.model_type = model_type
-        obj.descriptor = joblib.load(os.path.join(model_dir, "descriptor.joblib"))
+        obj.descriptor = descriptors_dict[descriptor_type].load(model_dir)
         obj.model = models_dict[model_type].load_model(model_dir)
-       
+        print("Loading done!")
         return obj
