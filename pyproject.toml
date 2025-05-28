@@ -27,7 +27,9 @@ dependencies = [
     "requests==2.32.3",
     "rdkit==2025.3.2",
     "mordredcommunity==2.0.6",
-    "joblib"
+    "scikit-learn==1.6.1",
+    "optuna==4.3.0",
+    "xgboost==3.0.2"
 ]
 
 [project.optional-dependencies]

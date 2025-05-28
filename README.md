@@ -1,6 +1,6 @@
 # Ersilia's LazyQSAR
 
-A library to build QSAR models fastly
+A library to build QSAR models fastly.
 
 ## Installation
 
@@ -14,12 +14,11 @@ python -m pip install -e .
 
 ## Usage
 
-### TLDR
 1. Choose one of the available descriptors of small molecules.
-2. Fit a model using FLAML AutoML. FLAML will search several estimators, which can lead to memory issues. Restrict the list on a case-by-case basis.
+2. Fit a model using AutoML. LazyQSAR will search several hyperparametrs.
 3. Get the validation of the model on the test set.
 
-### Example for Binary Classifications
+### Example for binary classifications
 
 #### Get the data
 
@@ -47,11 +46,11 @@ Now we can train a model based on Morgan fingerprints.
 ```python
 import lazyqsar as lq
 
-
-model = lq.MorganBinaryClassifier() 
-# time_budget (in seconds) and estimator_list can be passed as parameters of the classifier. Defaults to 20s and all the available estimators in FLAML.
-model.fit(smiles_train, y_train)
+model = lq.LazyBinaryQSAR(descriptor="morgan", model="xgboost") 
+model.fit(smiles_list=smiles_train, y=y_train)
+model.save_model(model_dir="my_model")
 ```
+
 #### Validate its performance
 
 ```python
@@ -62,7 +61,7 @@ print("AUROC", auc(fpr, tpr))
 ```
 
 ### Example for Regressions
-_Currently, only Morgan Descriptors and Ersilia Embeddings are available for regression models_
+_In the current version of LazyQSAR regression is not yet implemented..._
 
 #### Get the data
 You can find example data in the fantastic [Therapeutic Data Commons](https://tdcommons.ai) portal.
@@ -109,8 +108,7 @@ The pipeline has been validated using the Therapeutic Data Commons ADMET dataset
 
 ## Disclaimer
 
-This library is only intended for quick-and-dirty QSAR modeling.
-For a more complete automated QSAR modeling, please refer to [Zaira Chem](https://github.com/ersilia-os/zaira-chem)
+This library is only intended for quick-and-dirty QSAR modeling. For a more complete automated QSAR modeling, please refer to [Zaira Chem](https://github.com/ersilia-os/zaira-chem)
 
 ## About us
 

@@ -1,0 +1,1 @@
+from .qsar import LazyBinaryQSAR
