@@ -181,6 +181,7 @@ class MordredDescriptor(object):
             os.makedirs(dir_name)
         metadata = {
             "rdkit_version": Chem.rdBase.rdkitVersion,
+            "features": self.features
         }
         with open(os.path.join(dir_name, "descriptor_metadata.json"), "w") as f:
             json.dump(metadata, f)
@@ -211,6 +212,7 @@ class MordredDescriptor(object):
         obj.imputer = transformer["imputer"]
         obj.variance_filter = transformer["variance_filter"]
         obj.scaler = transformer["scaler"]
+        obj.features = metadata.get("features", [])
         return obj
 
 
@@ -371,6 +373,7 @@ class ClassicDescriptor(object):
             os.makedirs(dir_name)
         metadata = {
             "rdkit_version": Chem.rdBase.rdkitVersion,
+            "features": self.features
         }
         with open(os.path.join(dir_name, "descriptor_metadata.json"), "w") as f:
             json.dump(metadata, f)
@@ -400,6 +403,7 @@ class ClassicDescriptor(object):
         obj.imputer = transformer["imputer"]
         obj.variance_filter = transformer["variance_filter"]
         obj.scaler = transformer["scaler"]
+        obj.features = metadata.get("features", [])
         return obj
 
 
@@ -446,6 +450,7 @@ class MorganDescriptor(object):
             os.makedirs(dir_name)
         metadata = {
             "rdkit_version": Chem.rdBase.rdkitVersion,
+            "features": self.features,
         }
         with open(os.path.join(dir_name, "descriptor_metadata.json"), "w") as f:
             json.dump(metadata, f)
@@ -463,6 +468,7 @@ class MorganDescriptor(object):
             current_rdkit_version = Chem.rdBase.rdkitVersion
             if current_rdkit_version != rdkit_version:
                 raise ValueError(f"RDKit version mismatch: expected {current_rdkit_version}, got {rdkit_version}")
+        obj.features = metadata.get("features", [])
         return obj
 
 
@@ -571,6 +577,7 @@ class RdkitDescriptor(object):
             os.makedirs(dir_name)
         metadata = {
             "rdkit_version": Chem.rdBase.rdkitVersion,
+            "features": self.features
         }
         with open(os.path.join(dir_name, "descriptor_metadata.json"), "w") as f:
             json.dump(metadata, f)
@@ -600,6 +607,7 @@ class RdkitDescriptor(object):
         obj.imputer = transformer["imputer"]
         obj.variance_filter = transformer["variance_filter"]
         obj.scaler = transformer["scaler"]
+        obj.features = metadata.get("features", [])
         return obj
 
 
@@ -629,6 +637,7 @@ class MaccsDescriptor(object):
             R += [list(descriptors.descriptors)]
             if cols is None:
                 cols = list(descriptors.descriptor_names)
+        self.features = cols
         data = pd.DataFrame(R, columns=cols)
         return data
 
@@ -644,6 +653,7 @@ class MaccsDescriptor(object):
             os.makedirs(dir_name)
         metadata = {
             "rdkit_version": Chem.rdBase.rdkitVersion,
+            "features": self.features
         }
         with open(os.path.join(dir_name, "descriptor_metadata.json"), "w") as f:
             json.dump(metadata, f)
@@ -661,4 +671,5 @@ class MaccsDescriptor(object):
             current_rdkit_version = Chem.rdBase.rdkitVersion
             if current_rdkit_version != rdkit_version:
                 raise ValueError(f"RDKit version mismatch: expected {current_rdkit_version}, got {rdkit_version}")
+        obj.features = metadata.get("features", [])
         return obj
