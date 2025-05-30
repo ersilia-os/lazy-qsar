@@ -1,1 +1,2 @@
 from .xgboost_binary_classifier import LazyXGBoostBinaryClassifier
+from .tunetables_classifier_light import TuneTablesClassifierLight

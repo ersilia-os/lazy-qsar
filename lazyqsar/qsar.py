@@ -4,7 +4,7 @@ import joblib
 import numpy as np
 
 from .descriptors import MorganDescriptor, MordredDescriptor, RdkitDescriptor, ClassicDescriptor, MaccsDescriptor
-from .models import LazyXGBoostBinaryClassifier
+from .models import LazyXGBoostBinaryClassifier, TuneTablesClassifierLight
 
 
 descriptors_dict = {
@@ -18,6 +18,7 @@ descriptors_dict = {
 
 models_dict = {
     "xgboost": LazyXGBoostBinaryClassifier,
+    "tunetables": TuneTablesClassifierLight,
 }
 
 
@@ -45,6 +46,10 @@ class LazyBinaryQSAR(object):
     def predict(self, X):
         descriptors = np.array(self.descriptor.transform(X))
         return self.model.predict(descriptors)
+    
+    def predict_proba(self, X):
+        descriptors = np.array(self.descriptor.transform(X))
+        return self.model.predict_proba(descriptors)
     
     def save_model(self, model_dir: str):
         print(f"LazyQSAR Saving model to {model_dir}")
@@ -76,3 +81,4 @@ class LazyBinaryQSAR(object):
         obj.model = models_dict[model_type].load_model(model_dir)
         print("Loading done!")
         return obj
+

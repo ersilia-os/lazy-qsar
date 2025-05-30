@@ -29,7 +29,8 @@ dependencies = [
     "mordredcommunity==2.0.6",
     "scikit-learn==1.6.1",
     "optuna==4.3.0",
-    "xgboost==3.0.2"
+    "xgboost==3.0.2",
+    "tunetables_light @ git+https://github.com/Abellegese/TuneTables.git@main"
 ]
 
 [project.optional-dependencies]

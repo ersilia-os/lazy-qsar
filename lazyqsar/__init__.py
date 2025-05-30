@@ -1,1 +1,1 @@
-from .qsar import LazyBinaryQSAR
+from .qsar import LazyBinaryQSAR, TuneTablesClassifierLight
