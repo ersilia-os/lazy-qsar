@@ -42,7 +42,8 @@ class LazyBinaryQSAR(object):
         descriptors = np.array(self.descriptor.transform(X))
         self.model.fit(descriptors, y)
 
-    def predict(self, X):
+    def predict_proba(self, X):
+        # Returns the probability of the positive class
         descriptors = np.array(self.descriptor.transform(X))
         return self.model.predict(descriptors)
     

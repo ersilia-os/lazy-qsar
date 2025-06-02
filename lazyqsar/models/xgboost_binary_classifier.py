@@ -13,6 +13,7 @@ from sklearn.decomposition import PCA
 from sklearn.feature_selection import SelectKBest, f_classif
 from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.model_selection import train_test_split
+from scipy.special import expit
 
 
 class SamplingUtils(object):
@@ -173,7 +174,8 @@ class BaseXGBoostBinaryClassifier(BaseEstimator, ClassifierMixin):
         if self._booster is None:
             raise ValueError("Model not fitted, call fit() first.")
         dmat = xgb.DMatrix(X)
-        proba = self._booster.predict(dmat)
+        raw_score = self._booster.predict(dmat)
+        proba = expit(raw_score)
         return np.array(np.vstack([1 - proba, proba]).T)
 
     def predict(self, X):
