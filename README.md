@@ -46,7 +46,7 @@ Now we can train a model based on Morgan fingerprints.
 ```python
 import lazyqsar as lq
 
-model = lq.LazyBinaryQSAR(descriptor="morgan", model="xgboost") 
+model = lq.LazyBinaryQSAR(descriptor_type="morgan", model_type="xgboost") 
 model.fit(smiles_list=smiles_train, y=y_train)
 model.save_model(model_dir="my_model")
 ```
