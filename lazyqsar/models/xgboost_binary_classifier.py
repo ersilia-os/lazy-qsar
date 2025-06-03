@@ -157,15 +157,44 @@ class BaseXGBoostBinaryClassifier(BaseEstimator, ClassifierMixin):
             study_name=None,
             sampler=sampler,
         )
+
+        print("Fitting...")
+        best_score = -np.inf
+        trials_without_improvement = 0
+        improvement_threshold = 0.01
+        patience = 100
+        early_stopping = False
+        baseline_score_for_patience = best_score
+
+        def objective_with_custom_early_stop(trial):
+            nonlocal best_score, trials_without_improvement, early_stopping, baseline_score_for_patience
+            if early_stopping:
+                # print("Skipping trial due to early stopping criteria.")
+                raise optuna.exceptions.TrialPruned()
+            score = self._objective(trial, X, y)
+            if score > best_score:
+                best_score = score
+            if score > baseline_score_for_patience + improvement_threshold:
+                trials_without_improvement = 0
+                baseline_score_for_patience = score
+            else:
+                trials_without_improvement += 1
+            if trials_without_improvement >= patience:
+                early_stopping = True
+                # print(f"Early stopping: No significant improvement in the last {patience} trials.")
+                raise optuna.exceptions.TrialPruned()
+            return score
+        
         study.optimize(
-            lambda trial: self._objective(trial, X, y),
+            objective_with_custom_early_stop,
             n_trials=self.n_trials,
-            timeout=self.timeout,
+            timeout=self.timeout
         )
 
         self.best_params_ = study.best_params
         self.best_score_ = study.best_value
 
+        print(f"Best AUROC: {self.best_score_:.4f}")
         dtrain = xgb.DMatrix(X, label=y)
         self._booster = xgb.train(self.best_params_, dtrain)
         return self
