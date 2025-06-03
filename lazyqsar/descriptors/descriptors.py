@@ -191,7 +191,7 @@ class MordredDescriptor(object):
             "variance_filter": self.variance_filter,
             "scaler": self.scaler,
         }
-        joblib.dump(os.path.join(dir_name, "transformer.joblib"), transformer)
+        joblib.dump(transformer, os.path.join(dir_name, "transformer.joblib"))
 
     @classmethod
     def load(cls, dir_name: str):

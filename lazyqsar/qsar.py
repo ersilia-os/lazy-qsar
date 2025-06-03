@@ -1,10 +1,9 @@
 import os
 import json
-import joblib
 import numpy as np
 
 from .descriptors import MorganDescriptor, MordredDescriptor, RdkitDescriptor, ClassicDescriptor, MaccsDescriptor
-from .models import LazyXGBoostBinaryClassifier, TuneTablesClassifierLight
+from .models import LazyXGBoostBinaryClassifier, TuneTablesClassifierLight, TuneTablesZeroShotClassifier
 
 
 descriptors_dict = {
@@ -19,6 +18,7 @@ descriptors_dict = {
 models_dict = {
     "xgboost": LazyXGBoostBinaryClassifier,
     "tunetables": TuneTablesClassifierLight,
+    "zeroshot": TuneTablesZeroShotClassifier,
 }
 
 
