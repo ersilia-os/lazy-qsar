@@ -1,10 +1,9 @@
 import os
 import json
-import joblib
 import numpy as np
 
 from .descriptors import MorganDescriptor, MordredDescriptor, RdkitDescriptor, ClassicDescriptor, MaccsDescriptor
-from .models import LazyXGBoostBinaryClassifier
+from .models import LazyXGBoostBinaryClassifier, TuneTablesClassifierLight, TuneTablesZeroShotClassifier
 
 
 descriptors_dict = {
@@ -18,6 +17,8 @@ descriptors_dict = {
 
 models_dict = {
     "xgboost": LazyXGBoostBinaryClassifier,
+    "tunetables": TuneTablesClassifierLight,
+    "zeroshot": TuneTablesZeroShotClassifier,
 }
 
 
@@ -38,14 +39,23 @@ class LazyBinaryQSAR(object):
 
     def fit(self, X, y):
         y = np.array(y, dtype=int)
+        print(f"Fitting inputs to feature descriptors using {self.descriptor_type}")
         self.descriptor.fit(X)
+        print(f"Transforming inputs to feature descriptors using {self.descriptor_type}")
         descriptors = np.array(self.descriptor.transform(X))
+        print(f"Performing predictions on input feature of shape: {descriptors.shape}")
         self.model.fit(descriptors, y)
 
     def predict_proba(self, X):
         # Returns the probability of the positive class
         descriptors = np.array(self.descriptor.transform(X))
         return self.model.predict(descriptors)
+    
+    def predict_proba(self, X):
+        print(f"Transforming inputs to feature descriptors using {self.descriptor_type}")
+        descriptors = np.array(self.descriptor.transform(X))
+        print(f"Performing predictions on input feature of shape: {descriptors.shape}")
+        return self.model.predict_proba(descriptors)
     
     def save_model(self, model_dir: str):
         print(f"LazyQSAR Saving model to {model_dir}")
@@ -77,3 +87,4 @@ class LazyBinaryQSAR(object):
         obj.model = models_dict[model_type].load_model(model_dir)
         print("Loading done!")
         return obj
+
