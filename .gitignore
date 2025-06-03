@@ -1,6 +1,5 @@
-development.py
-test_model
-development2.py
+benchmark/data/admet_group.zip
+benchmark/data/admet_group/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

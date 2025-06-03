@@ -29,6 +29,8 @@ class TuneTablesClassifierLight(TuneTablesClassifierLightBase):
             ensemble_size=ensemble_size,
             average_ensemble=average_ensemble
         )
+    def predict(self, X):
+        return super().predict_proba(X)[:,1]
 
 class TuneTablesZeroShotClassifier(TuneTablesZeroShotClassifierBase):
     def __init__(self, subsample_features=True):
