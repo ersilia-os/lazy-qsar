@@ -5,7 +5,7 @@ class TuneTablesClassifierLight(TuneTablesClassifierLightBase):
     def __init__(
             self, 
             device="cpu",
-            epoch=3,
+            epoch=4,
             batch_size=4,
             lr=0.1,
             dropout=0.2,

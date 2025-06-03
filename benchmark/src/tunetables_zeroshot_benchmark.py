@@ -10,8 +10,10 @@ DATAPATH = "../data"
 
 clf_datasets = ["bioavailability_ma", "hia_hou"] 
 # NOTE: Zero-shot only supports dataset size less or equals to 1000
-# You can batch them and aggregate the result as well
+# NOTE: You can batch them and aggregate the result as well
 # NOTE: I used internally in tunetables, a PCA method to reduce the dimensions of fetures of mordred to 100
+# NOTE: Each prediction run results a slight different results in accuracy 
+# [this is inrentional, a random permutation in the label class yileds different results and with ensemble config, the results are aggregated]
 
 def get_data():
     group = admet_group(path = '../data/')
@@ -41,7 +43,7 @@ if __name__ == '__main__':
             fpr, tpr, _ = roc_curve(test["Y"], y_pred_test[:,1])
             print("AUROC", auc(fpr, tpr))
             csv_path = os.path.join(DATAPATH, "tdc_preds_tunetable_mordred_100_zeroshot")
-            if os.path.exists(csv_path):
+            if not os.path.exists(csv_path):
                 os.makedirs(csv_path, exist_ok=True)
-            test.to_csv(csv_path, "{}_test_{}.csv".format(a,seed), index=False)    
+            test.to_csv(os.path.join(csv_path, "{}_test_{}.csv".format(a,seed)), index=False)    
     
