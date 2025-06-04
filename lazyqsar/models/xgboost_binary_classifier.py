@@ -290,6 +290,7 @@ class LazyXGBoostBinaryClassifier(object):
         if X.shape[1] <= max_dim:
             return [reducer_0]
         if method == "pca":
+            max_dim = min(max_dim, X.shape[0])
             reducer_1 = PCA(n_components=max_dim)
             reducer_1.fit(X)
             return [reducer_0, reducer_1]
