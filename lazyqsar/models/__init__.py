@@ -1,3 +1,4 @@
 from .xgboost_binary_classifier import LazyXGBoostBinaryClassifier
+from .zsRF_binary_classifier import LazyZSRFBinaryClassifier
 from .tunetables_classifier_light import TuneTablesClassifierLight
 from .tunetables_classifier_light import TuneTablesZeroShotClassifier
