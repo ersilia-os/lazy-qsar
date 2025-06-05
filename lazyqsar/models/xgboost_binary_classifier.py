@@ -162,7 +162,7 @@ class BaseXGBoostBinaryClassifier(BaseEstimator, ClassifierMixin):
         best_score = -np.inf
         trials_without_improvement = 0
         improvement_threshold = 0.01
-        patience = 100
+        patience = 500
         early_stopping = False
         baseline_score_for_patience = best_score
 
@@ -261,7 +261,7 @@ class BaseXGBoostBinaryClassifier(BaseEstimator, ClassifierMixin):
 class LazyXGBoostBinaryClassifier(object):
 
     def __init__(self,
-                 reducer_method="best",
+                 reducer_method=None,
                  max_reducer_dim=500,
                  base_num_trials=1000,
                  base_timeout=600,
@@ -298,6 +298,8 @@ class LazyXGBoostBinaryClassifier(object):
             reducer_1 = SelectKBest(f_classif, k=max_dim)
             reducer_1.fit(X, y)
             return [reducer_0, reducer_1]
+        elif method is None:
+            return [reducer_0]
         else:
             raise Exception("Wrong feature reduction method. Use 'pca' or 'best'.")
 
