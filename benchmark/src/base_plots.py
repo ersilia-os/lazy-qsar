@@ -11,7 +11,7 @@ DATAPATH = "../data"
 # Compare METHODS
 
 descs = ["morgan", "mordred"]
-models = ["xgboost", "tunetables", "zeroshot"]
+models = ["zstunetables","tunetables","xgboost", "xgboost_pca", "zsrandomforest"]
 
 
 benchmark = {"bioavailability_ma":[0.748,0.033], "hia_hou":[0.989,0.001], "pgp_broccatelli":[0.938,0.002], 
@@ -19,6 +19,9 @@ benchmark = {"bioavailability_ma":[0.748,0.033], "hia_hou":[0.989,0.001], "pgp_b
              "cyp3a4_veith":[0.916,0.000], "cyp2c9_substrate_carbonmangels":[0.441,0.033], 
              "cyp2d6_substrate_carbonmangels":[0.736,0.024],"cyp3a4_substrate_carbonmangels":[0.662,0.031],
              "herg":[0.880,0.002],"ames":[0.871,0.002], "dili":[0.925,0.005]}
+
+colors = ["#50285a", "#fad782", "#faa08c", "#dca0dc", "#aa96fa"]
+
 
 for desc in descs:
     combined_data = {}
@@ -39,21 +42,31 @@ for desc in descs:
     df["benchmark_mean"] = [benchmark[assay][0] for assay in assays]
     df["benchmark_std"] = [benchmark[assay][1] for assay in assays]
     x = np.arange(len(assays))  # X locations for each assay
+    width = 0.1
+    num_models = len(models) + 1
 
-    width = 0.2
     fig, ax = plt.subplots(figsize=(10, 6))
-
-    colors = ["#50285a", "#fad782", "#faa08c"]
     for i, model in enumerate(models):
         mean = df[f"{model}_mean"].values
         std = df[f"{model}_std"].values
-        ax.bar(x + i * width, mean, width, yerr=std, label=model, color= colors[i], capsize=4)
+        offset_x = x + (i - num_models / 2) * width + width / 2
+        ax.errorbar(
+        offset_x, mean, yerr=std, fmt='o',
+        label=model, color=colors[i],
+        capsize=2, elinewidth=1, capthick=1
+    )
     mean = df["benchmark_mean"].values
     std = df["benchmark_std"].values
-    ax.bar(x + (i+1) * width, mean, width, yerr=std, label="benchmark", color= "#bee6b4", capsize=4)
+    benchmark_idx = len(models)
+    offset_x = x + (benchmark_idx - num_models / 2) * width + width / 2
+    ax.errorbar(
+        offset_x, mean, yerr=std, fmt='o',
+        label="benchmark", color="#bee6b4",
+        capsize=2, elinewidth=1, capthick=1
+    )
     ax.set_ylabel("Performance metric (AUROC/AUPRC)")
-    ax.set_title("Model Performance Across TDC Assays")
-    ax.set_xticks(x + width)
+    ax.set_title(f"Model Performance Across TDC Assays {desc}")
+    ax.set_xticks(x+(width*(num_models/2)))
     ax.set_xticklabels(assays, rotation=45, ha="right")
     ax.legend(loc="lower right", fontsize=10)
     plt.tight_layout()
@@ -79,19 +92,28 @@ for model in models:
     df["benchmark_mean"] = [benchmark[assay][0] for assay in assays]
     df["benchmark_std"] = [benchmark[assay][1] for assay in assays]
 
-    x = np.arange(len(assays))  # X locations for each assay
-
-    width = 0.2
+    x = np.arange(len(assays))
+    width = 0.1
     fig, ax = plt.subplots(figsize=(10, 6))
+    num_descs = len(descs) + 1
 
-    colors = ["#50285a", "#fad782", "#faa08c"]
     for i, desc in enumerate(descs):
         mean = df[f"{desc}_mean"].values
         std = df[f"{desc}_std"].values
-        ax.bar(x + i * width, mean, width, yerr=std, label=desc, color= colors[i], capsize=4)
+        offset_x = x + (i - num_descs / 2) * width + width / 2
+        ax.errorbar(
+            offset_x, mean, yerr=std, fmt='o',
+            label=desc, color=colors[i],
+            capsize=2, elinewidth=1, capthick=1
+        )
     mean = df["benchmark_mean"].values
     std = df["benchmark_std"].values
-    ax.bar(x + (i+1) * width, mean, width, yerr=std, label="benchmark", color= "#bee6b4", capsize=4)
+    offset_x = x + (benchmark_idx - num_descs / 2) * width + width / 2
+    ax.errorbar(
+        offset_x, mean, yerr=std, fmt='o',
+        label="benchmark", color="#bee6b4",
+        capsize=2, elinewidth=1, capthick=1
+    )
 
     ax.set_ylabel("Performance metric (AUROC/AUPRC)")
     ax.set_title("Model Performance Across TDC Assays")
@@ -103,7 +125,7 @@ for model in models:
 
 
 # PCA vs BEST
-
+"""
 files = {
     "xgboost_morgan": os.path.join(DATAPATH, f"tdc_preds_xgboost_morgan", f"xgboost_morgan.json"),
     "xgboost_morgan_pca": os.path.join(DATAPATH, f"tdc_preds_xgboost_morgan_pca", f"xgboost_morgan.json"),
@@ -149,3 +171,4 @@ ax.set_xticklabels(assays, rotation=45, ha="right")
 ax.legend(loc="lower right", fontsize=10)
 plt.tight_layout()
 plt.savefig(os.path.join(FIGUREPATH, "xgboost_pca.png"), dpi = 300)
+"""
