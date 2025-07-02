@@ -1,6 +1,7 @@
 import joblib
 import json
 import math
+import time
 import numpy as np
 import optuna
 import os
@@ -9,6 +10,7 @@ import shutil
 import sklearn
 import h5py
 import psutil
+import gc
 import multiprocessing
 from tqdm import tqdm
 from sklearn.ensemble import RandomForestClassifier
@@ -77,20 +79,21 @@ class InputUtils(object):
         else:
             return False
         
-    def preprocessing(self, X=None, h5_file=None, h5_idxs=None):
+    def preprocessing(self, X=None, h5_file=None, h5_idxs=None, force_on_disk=False):
         if h5_file is not None:
             if h5_idxs is None:
                 with h5py.File(h5_file, "r") as f:
                     if "values" not in f:
                         raise ValueError("h5_file must contain 'values' dataset.")
                     h5_idxs = [i for i in range(f["values"].shape[0])]
-            if self.is_load_full_h5_file(h5_file):
+            if not force_on_disk and self.is_load_full_h5_file(h5_file):
                 print("Loading full h5 file into memory...")
                 with h5py.File(h5_file, "r") as f:
                     X = f["values"][:]
                     X = X[h5_idxs, :]
                     h5_file = None
                     h5_idxs = None
+        gc.collect()
         return X, h5_file, h5_idxs
 
 
@@ -181,7 +184,8 @@ class SamplingUtils(object):
                               min_samples=30,
                               max_samples=10000,
                               min_positive_samples=10,
-                              max_num_partitions=100):
+                              max_num_partitions=100,
+                              min_seen_across_partitions=1):
         
         iu = InputUtils()
         iu.evaluate_input(X=X, h5_file=h5_file, h5_idxs=h5_idxs, y=y, is_y_mandatory=True)
@@ -223,13 +227,31 @@ class SamplingUtils(object):
         print(f"Desired positive proportion: {desired_pos_prop}", "Actual positive proportion: ", n_pos_samples / n_samples)
         effective_sampling_rounds = sampling_rounds*3
         print(f"Effective sampling rounds: {effective_sampling_rounds}")
-        idxs_matrix = np.zeros((effective_sampling_rounds, n_samples), dtype=int)
+        idxs_list_of_lists = []
         for i in range(effective_sampling_rounds):
             pos_idxs_sampled = random.sample(pos_idxs, n_pos_samples)
             neg_idxs_sampled = random.sample(neg_idxs, n_neg_samples)
             sampled_idxs = pos_idxs_sampled + neg_idxs_sampled
-            idxs_matrix[i, :] = sorted(sampled_idxs)
-        idxs_matrix = np.unique(idxs_matrix, axis=0)
+            idxs_list_of_lists += [sorted(sampled_idxs)]
+            all_idxs = dict((i, 0) for i in range(len(y)))
+            for r in idxs_list_of_lists:
+                for idx in r:
+                    all_idxs[idx] += 1
+            is_done = True
+            for _, v in all_idxs.items():
+                if v < min_seen_across_partitions:
+                    is_done = False
+            idxs_matrix = np.array(idxs_list_of_lists, dtype=int)
+            idxs_matrix = np.unique(idxs_matrix, axis=0)
+            idxs_list_of_lists = []
+            for i in range(idxs_matrix.shape[0]):
+                r = [int(x) for x in idxs_matrix[i, :]]
+                idxs_list_of_lists += [r]
+            if is_done:
+                print(f"All indices seen at least {min_seen_across_partitions} times. Stopping sampling.")
+                break
+        idxs_matrix = np.array(idxs_list_of_lists, dtype=int)
+        idxs_matrix = np.unique(idxs_list_of_lists, axis=0)
         print(f"Unique sampled indices matrix shape: {idxs_matrix.shape}")
         if idxs_matrix.shape[0] > sampling_rounds:
             if h5_file:
@@ -488,20 +510,17 @@ class BaseRandomForestBinaryClassifier(BaseEstimator, ClassifierMixin):
         if not os.path.exists(model_dir):
             raise FileNotFoundError(f"Model directory {model_dir} does not exist.")
 
-        # Load the saved RandomForest model
         model_path = os.path.join(model_dir, "model.joblib")
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"Model file {model_path} not found.")
         model = joblib.load(model_path)
 
-        # Load metadata
         meta_path = os.path.join(model_dir, "metadata.json")
         if not os.path.exists(meta_path):
             raise FileNotFoundError(f"Metadata file {meta_path} not found.")
         with open(meta_path, "r") as f:
             metadata = json.load(f)
 
-        # Create a new instance and populate it
         obj = cls(
             random_state=metadata["random_state"],
             num_splits=metadata["num_splits"],
@@ -528,6 +547,8 @@ class LazyRandomForestBinaryClassifier(object):
                  max_samples: int=10000,
                  min_positive_samples: int=10,
                  max_num_partitions: int=100,
+                 min_seen_across_partitions: int = 1,
+                 force_on_disk: bool = False,
                  random_state: int = 42):
         self.reducer_method = reducer_method
         self.max_reducer_dim = max_reducer_dim
@@ -542,6 +563,9 @@ class LazyRandomForestBinaryClassifier(object):
         self.max_samples = max_samples
         self.min_positive_samples = min_positive_samples
         self.max_num_partitions = max_num_partitions
+        self.min_seen_across_partitions = min_seen_across_partitions
+        self.force_on_disk = force_on_disk
+        self.fit_time = None
         self.reducers = None
         self.indices = None
 
@@ -570,12 +594,16 @@ class LazyRandomForestBinaryClassifier(object):
             raise Exception("Wrong feature reduction method. Use 'pca' or 'best'.")
 
     def fit(self, X=None, h5_file=None, h5_idxs=None, y=None):
+        t0 = time.time()
         iu = InputUtils()
         su = SamplingUtils()
         iu.evaluate_input(X=X, h5_file=h5_file, h5_idxs=h5_idxs, y=y, is_y_mandatory=True)
-        X, h5_file, h5_idxs = iu.preprocessing(X=X, h5_file=h5_file, h5_idxs=h5_idxs)
+        X, h5_file, h5_idxs = iu.preprocessing(X=X, h5_file=h5_file, h5_idxs=h5_idxs, force_on_disk=self.force_on_disk)
         reducers = []
         models = []
+        if X is not None:
+            print(X, type(X), X.dtype)
+            print(y, type(y))
         for idxs in su.get_partition_indices(X=X,
                                              h5_file=h5_file,
                                              h5_idxs=h5_idxs,
@@ -603,12 +631,15 @@ class LazyRandomForestBinaryClassifier(object):
             models += [model]
         self.reducers = reducers
         self.models = models
+        t1 = time.time()
+        self.fit_time = t1 - t0
+        print(f"Fitting completed in {self.fit_time:.2f} seconds.")
         return self
 
     def predict(self, X=None, h5_file=None, h5_idxs=None, chunk_size=1000):
         iu = InputUtils()
         iu.evaluate_input(X=X, h5_file=h5_file, h5_idxs=h5_idxs, y=None, is_y_mandatory=False)
-        X, h5_file, h5_idxs = iu.preprocessing(X=X, h5_file=h5_file, h5_idxs=h5_idxs)
+        X, h5_file, h5_idxs = iu.preprocessing(X=X, h5_file=h5_file, h5_idxs=h5_idxs, force_on_disk=self.force_on_disk)
         su = SamplingUtils()
         if self.models is None or self.reducers is None:
             raise Exception("No models fitted yet.")
@@ -661,7 +692,8 @@ class LazyRandomForestBinaryClassifier(object):
             "base_test_size": self.base_test_size,
             "base_num_splits": self.base_num_splits,
             "base_num_trials": self.base_num_trials,
-            "base_timeout": self.base_timeout
+            "base_timeout": self.base_timeout,
+            "fit_time": self.fit_time
         }
         metadata_path = os.path.join(model_dir, "metadata.json")
         with open(metadata_path, 'w') as f:
@@ -682,6 +714,7 @@ class LazyRandomForestBinaryClassifier(object):
         obj.base_num_splits = metadata.get("base_num_splits", None)
         obj.base_num_trials = metadata.get("base_num_trials", None)
         obj.base_timeout = metadata.get("base_timeout", None)
+        obj.fit_time = metadata.get("fit_time", None)
         num_partitions = metadata.get("num_partitions", None)
         if num_partitions <= 0:
             raise Exception("No partitions found in metadata.")
@@ -701,8 +734,10 @@ class LazyRandomForestBinaryClassifier(object):
     
 
 if __name__ == "__main__":
-    # Example usage
+    import sys
     from sklearn.datasets import make_classification
+    
+    mode = sys.argv[1]
 
     num_trials=2
     timeout=10
@@ -715,44 +750,46 @@ if __name__ == "__main__":
         weights=[0.99, 0.01],
         random_state=42
     )
-    """
-    print("Testing with in-memory data...")
-    clf = LazyRandomForestBinaryClassifier(reducer_method='pca', max_reducer_dim=10, num_trials=num_trials, timeout=timeout, max_samples=1000, max_num_partitions=3)
-    clf.fit(X=X, y=y)
-    print("Saving model and loading it")
-    clf.save_model("test_model")
-    clf_loaded = LazyRandomForestBinaryClassifier.load_model("test_model")
-    predictions_loaded = clf_loaded.predict(X)
-    print("Loaded Predictions:", predictions_loaded[:10])
-    print("Statistics of loaded predictions:")
-    print(f"Min: {np.min(predictions_loaded):.4f}")
-    print(f"Max: {np.max(predictions_loaded):.4f}")
-    print(f"Average: {np.mean(predictions_loaded):.4f}")
-    roc_auc_loaded = roc_auc_score(y, predictions_loaded)
-    print("Loaded ROC AUC:", roc_auc_loaded)
-    print("Test completed successfully.")
-    shutil.rmtree("test_model")
-    """
 
-    print("Doing a dummy test with h5 file")
-    X_ = np.zeros((X.shape[0]*2, X.shape[1]), dtype=X.dtype)
-    h5_idxs = random.sample(list(range(X.shape[0])), len(y))
-    for i, idx in enumerate(h5_idxs):
-        X_[idx, :] = X[i, :]
-    with h5py.File("test_data.h5", "w") as f:
-        f.create_dataset("values", data=X_)
-    model = LazyRandomForestBinaryClassifier(reducer_method='pca', max_reducer_dim=10, num_trials=num_trials, timeout=timeout, max_samples=10000, max_num_partitions=3)
-    model.fit(h5_file="test_data.h5", h5_idxs=h5_idxs, y=y)
-    model.save_model("test_model")
-    model_loaded = LazyRandomForestBinaryClassifier.load_model("test_model")
-    predictions_loaded = model_loaded.predict(h5_file="test_data.h5", h5_idxs=h5_idxs)
-    print("Loaded Predictions from H5:", predictions_loaded[:10])
-    print("Statistics of loaded predictions:")
-    print(f"Min: {np.min(predictions_loaded):.4f}")
-    print(f"Max: {np.max(predictions_loaded):.4f}")
-    print(f"Average: {np.mean(predictions_loaded):.4f}")
-    roc_auc_loaded = roc_auc_score(y, predictions_loaded)
-    print("Loaded ROC AUC from H5:", roc_auc_loaded)
-    print("H5 test completed successfully.")
-    shutil.rmtree("test_model")
-    os.remove("test_data.h5")
+    if mode != "h5":
+        print("Testing with in-memory data...")
+        clf = LazyRandomForestBinaryClassifier(reducer_method='pca', max_reducer_dim=10, num_trials=num_trials, timeout=timeout, max_samples=1000, max_num_partitions=3)
+        clf.fit(X=X, y=y)
+        print("Saving model and loading it")
+        clf.save_model("test_model")
+        clf_loaded = LazyRandomForestBinaryClassifier.load_model("test_model")
+        predictions_loaded = clf_loaded.predict(X)
+        print("Loaded Predictions:", predictions_loaded[:10])
+        print("Statistics of loaded predictions:")
+        print(f"Min: {np.min(predictions_loaded):.4f}")
+        print(f"Max: {np.max(predictions_loaded):.4f}")
+        print(f"Average: {np.mean(predictions_loaded):.4f}")
+        roc_auc_loaded = roc_auc_score(y, predictions_loaded)
+        print("Model fit time:", clf_loaded.fit_time)
+        print("Loaded ROC AUC:", roc_auc_loaded)
+        print("Test completed successfully.")
+        shutil.rmtree("test_model")
+    else:
+        print("Doing a dummy test with h5 file")
+        X_ = np.zeros((X.shape[0]*2, X.shape[1]), dtype=X.dtype)
+        h5_idxs = random.sample(list(range(X.shape[0])), len(y))
+        for i, idx in enumerate(h5_idxs):
+            X_[idx, :] = X[i, :]
+        with h5py.File("test_data.h5", "w") as f:
+            f.create_dataset("values", data=X_)
+        model = LazyRandomForestBinaryClassifier(reducer_method='pca', max_reducer_dim=10, num_trials=num_trials, timeout=timeout, max_samples=1000, max_num_partitions=3, force_on_disk=True)
+        model.fit(h5_file="test_data.h5", h5_idxs=h5_idxs, y=y)
+        model.save_model("test_model")
+        model_loaded = LazyRandomForestBinaryClassifier.load_model("test_model")
+        predictions_loaded = model_loaded.predict(h5_file="test_data.h5", h5_idxs=h5_idxs)
+        print("Loaded Predictions from H5:", predictions_loaded[:10])
+        print("Statistics of loaded predictions:")
+        print(f"Min: {np.min(predictions_loaded):.4f}")
+        print(f"Max: {np.max(predictions_loaded):.4f}")
+        print(f"Average: {np.mean(predictions_loaded):.4f}")
+        roc_auc_loaded = roc_auc_score(y, predictions_loaded)
+        print("Model fit time:", model_loaded.fit_time)
+        print("Loaded ROC AUC from H5:", roc_auc_loaded)
+        print("H5 test completed successfully.")
+        shutil.rmtree("test_model")
+        os.remove("test_data.h5")
