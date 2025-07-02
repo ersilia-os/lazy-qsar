@@ -8,6 +8,7 @@ import random
 import shutil
 import sklearn
 import h5py
+import psutil
 import multiprocessing
 from tqdm import tqdm
 from sklearn.ensemble import RandomForestClassifier
@@ -24,35 +25,73 @@ from flaml.default import RandomForestClassifier as ZeroShotRandomForestClassifi
 NUM_CPU = max(1, multiprocessing.cpu_count() - 1)
 
 
-def evaluate_input(X=None, h5_file=None, h5_idxs=None, y=None, is_y_mandatory=True):
-    if is_y_mandatory:
-        if y is None:
-            raise ValueError("y cannot be None. Provide a label vector.")
-    if X is None and h5_file is None:
-        raise ValueError("Either X or h5_file must be provided.")
-    if X is not None and h5_file is not None:
-        raise ValueError("Provide either X or h5_file, not both.")
-    if h5_file is not None:
-        if not os.path.exists(h5_file):
-            raise FileNotFoundError(f"File {h5_file} does not exist.")
-        if not h5_file.endswith(".h5"):
-            raise ValueError("h5_file should be a .h5 file.")
-        if h5_idxs is None:
-            with h5py.File(h5_file, "r") as f:
-                if "values" not in f:
-                    raise ValueError("h5_file must contain 'values' dataset.")
-                h5_idxs = [i for i in range(f["values"].shape[0])]
-    if X is not None and h5_idxs is not None:
-        raise Exception("You cannot provide h5_idxs if X is provided. Use X only or h5_file with h5_idxs.")
+class InputUtils(object):
 
+    def __init__(self):
+        pass
 
-def h5_data_reader(x_data, idxs):
-    sorted_indices = np.argsort(idxs)
-    sorted_idxs = np.array(idxs)[sorted_indices]
-    sorted_data = x_data[sorted_idxs, :]
-    inverse_sort = np.argsort(sorted_indices)
-    x = sorted_data[inverse_sort]
-    return x
+    def evaluate_input(self, X=None, h5_file=None, h5_idxs=None, y=None, is_y_mandatory=True):
+        if is_y_mandatory:
+            if y is None:
+                raise ValueError("y cannot be None. Provide a label vector.")
+        if X is None and h5_file is None:
+            raise ValueError("Either X or h5_file must be provided.")
+        if X is not None and h5_file is not None:
+            raise ValueError("Provide either X or h5_file, not both.")
+        if h5_file is not None:
+            if not os.path.exists(h5_file):
+                raise FileNotFoundError(f"File {h5_file} does not exist.")
+            if not h5_file.endswith(".h5"):
+                raise ValueError("h5_file should be a .h5 file.")
+            if h5_idxs is None:
+                with h5py.File(h5_file, "r") as f:
+                    if "values" not in f:
+                        raise ValueError("h5_file must contain 'values' dataset.")
+                    h5_idxs = [i for i in range(f["values"].shape[0])]
+            else:
+                if y is not None:
+                    if len(h5_idxs) != len(y):
+                        raise Exception("h5_idxs length must match y length.")
+        if X is not None and h5_idxs is not None:
+            raise Exception("You cannot provide h5_idxs if X is provided. Use X only or h5_file with h5_idxs.")
+
+    def h5_data_reader(self, x_data, idxs):
+        sorted_indices = np.argsort(idxs)
+        sorted_idxs = np.array(idxs)[sorted_indices]
+        sorted_data = x_data[sorted_idxs, :]
+        inverse_sort = np.argsort(sorted_indices)
+        x = sorted_data[inverse_sort]
+        return x
+    
+    def is_load_full_h5_file(self, h5_file):
+        with h5py.File(h5_file, 'r') as f:
+            dataset = f["values"]
+            if isinstance(dataset, h5py.Dataset):
+                size_bytes = dataset.size * dataset.dtype.itemsize
+                size_gb = size_bytes / (1024 ** 3)
+        mem = psutil.virtual_memory()
+        available_gb = mem.available / (1024 ** 3)
+        print(f"Available memory: {available_gb:.2f} GB, H5 file size: {size_gb:.2f} GB")
+        if available_gb > size_gb * 1.5:
+            return True
+        else:
+            return False
+        
+    def preprocessing(self, X=None, h5_file=None, h5_idxs=None):
+        if h5_file is not None:
+            if h5_idxs is None:
+                with h5py.File(h5_file, "r") as f:
+                    if "values" not in f:
+                        raise ValueError("h5_file must contain 'values' dataset.")
+                    h5_idxs = [i for i in range(f["values"].shape[0])]
+            if self.is_load_full_h5_file(h5_file):
+                print("Loading full h5 file into memory...")
+                with h5py.File(h5_file, "r") as f:
+                    X = f["values"][:]
+                    X = X[h5_idxs, :]
+                    h5_file = None
+                    h5_idxs = None
+        return X, h5_file, h5_idxs
 
 
 class SamplingUtils(object):
@@ -61,13 +100,14 @@ class SamplingUtils(object):
         pass
 
     def chunk_h5_file(self, h5_file, h5_idxs, chunk_size):
+        iu = InputUtils()
         with h5py.File(h5_file, "r") as f:
             if "values" not in f:
                 raise ValueError("h5_file must contain 'values' dataset.")
             values = f["values"]
             for i in range(0, len(h5_idxs), chunk_size):
                 idxs_chunk = h5_idxs[i:i + chunk_size]
-                yield h5_data_reader(values, idxs_chunk)
+                yield iu.h5_data_reader(values, idxs_chunk)
 
     def chunk_matrix(self, X, chunk_size):
         for i in range(0, X.shape[0], chunk_size):
@@ -143,7 +183,8 @@ class SamplingUtils(object):
                               min_positive_samples=10,
                               max_num_partitions=100):
         
-        evaluate_input(X=X, h5_file=h5_file, h5_idxs=h5_idxs, y=y, is_y_mandatory=True)
+        iu = InputUtils()
+        iu.evaluate_input(X=X, h5_file=h5_file, h5_idxs=h5_idxs, y=y, is_y_mandatory=True)
         
         pos_idxs = [i for i, y_ in enumerate(y) if y_ == 1]
         neg_idxs = [i for i, y_ in enumerate(y) if y_ == 0]
@@ -197,7 +238,7 @@ class SamplingUtils(object):
                     for i in tqdm(range(idxs_matrix.shape[0])):
                         idxs_y = idxs_matrix[i, :]
                         idxs_x = [h5_idxs[idx] for idx in idxs_y]
-                        X_in = h5_data_reader(f["values"], idxs_x)
+                        X_in = iu.h5_data_reader(f["values"], idxs_x)
                         y_in = [y[idx] for idx in idxs_y]
                         auc_est = self.quick_auc_estimate(X_in, y_in)
                         auc_estimates += [auc_est]
@@ -529,17 +570,12 @@ class LazyRandomForestBinaryClassifier(object):
             raise Exception("Wrong feature reduction method. Use 'pca' or 'best'.")
 
     def fit(self, X=None, h5_file=None, h5_idxs=None, y=None):
-        evaluate_input(X=X, h5_file=h5_file, h5_idxs=h5_idxs, y=y, is_y_mandatory=True)
+        iu = InputUtils()
         su = SamplingUtils()
+        iu.evaluate_input(X=X, h5_file=h5_file, h5_idxs=h5_idxs, y=y, is_y_mandatory=True)
+        X, h5_file, h5_idxs = iu.preprocessing(X=X, h5_file=h5_file, h5_idxs=h5_idxs)
         reducers = []
         models = []
-        if h5_file is not None:
-            if h5_idxs is None:
-                with h5py.File(h5_file, "r") as f:
-                    if "values" not in f:
-                        raise ValueError("h5_file must contain 'values' dataset.")
-                    h5_idxs = [i for i in range(f["values"].shape[0])]
-
         for idxs in su.get_partition_indices(X=X,
                                              h5_file=h5_file,
                                              h5_idxs=h5_idxs,
@@ -552,7 +588,7 @@ class LazyRandomForestBinaryClassifier(object):
                                              max_num_partitions=self.max_num_partitions):
             if h5_file is not None:
                 with h5py.File(h5_file, "r") as f:
-                    X_sampled = h5_data_reader(f["values"], [h5_idxs[i] for i in idxs])
+                    X_sampled = iu.h5_data_reader(f["values"], [h5_idxs[i] for i in idxs])
             else:
                 X_sampled = X[idxs]
             y_sampled = y[idxs]
@@ -570,19 +606,23 @@ class LazyRandomForestBinaryClassifier(object):
         return self
 
     def predict(self, X=None, h5_file=None, h5_idxs=None, chunk_size=1000):
-        evaluate_input(X=X, h5_file=h5_file, h5_idxs=h5_idxs, y=None, is_y_mandatory=False)
+        iu = InputUtils()
+        iu.evaluate_input(X=X, h5_file=h5_file, h5_idxs=h5_idxs, y=None, is_y_mandatory=False)
+        X, h5_file, h5_idxs = iu.preprocessing(X=X, h5_file=h5_file, h5_idxs=h5_idxs)
         su = SamplingUtils()
         if self.models is None or self.reducers is None:
             raise Exception("No models fitted yet.")
         y_hat = []
         for reducer, model in zip(self.reducers, self.models):
             if h5_file is None:
+                n = X.shape[0]
                 y_hat_ = []
                 for X_chunk in tqdm(su.chunk_matrix(X, chunk_size), desc="Predicting chunks..."):
                     for red in reducer:
                         X_chunk = red.transform(X_chunk)
                     y_hat_ += list(model.predict_proba(X_chunk)[:,1])
             else:
+                n = len(h5_idxs)
                 y_hat_ = []
                 for X_chunk in tqdm(su.chunk_h5_file(h5_file, h5_idxs, chunk_size), desc="Predicting chunks..."):
                     for red in reducer:
@@ -591,7 +631,7 @@ class LazyRandomForestBinaryClassifier(object):
             y_hat += [y_hat_]
         y_hat = np.array(y_hat).T
         y_hat = np.mean(y_hat, axis=1)
-        assert len(y_hat) == X.shape[0], "Predicted labels length does not match input samples length."
+        assert len(y_hat) == n, "Predicted labels length does not match input samples length."
         return y_hat
 
     def save_model(self, model_dir: str):
@@ -672,24 +712,27 @@ if __name__ == "__main__":
         n_features=20, 
         n_informative=10, 
         n_redundant=5, 
-        weights=[0.01, 0.99],
+        weights=[0.99, 0.01],
         random_state=42
     )
-
+    """
     print("Testing with in-memory data...")
     clf = LazyRandomForestBinaryClassifier(reducer_method='pca', max_reducer_dim=10, num_trials=num_trials, timeout=timeout, max_samples=1000, max_num_partitions=3)
     clf.fit(X=X, y=y)
-    
     print("Saving model and loading it")
     clf.save_model("test_model")
     clf_loaded = LazyRandomForestBinaryClassifier.load_model("test_model")
     predictions_loaded = clf_loaded.predict(X)
-    print("Loaded Predictions:", predictions_loaded)
+    print("Loaded Predictions:", predictions_loaded[:10])
+    print("Statistics of loaded predictions:")
+    print(f"Min: {np.min(predictions_loaded):.4f}")
+    print(f"Max: {np.max(predictions_loaded):.4f}")
+    print(f"Average: {np.mean(predictions_loaded):.4f}")
     roc_auc_loaded = roc_auc_score(y, predictions_loaded)
     print("Loaded ROC AUC:", roc_auc_loaded)
     print("Test completed successfully.")
-
     shutil.rmtree("test_model")
+    """
 
     print("Doing a dummy test with h5 file")
     X_ = np.zeros((X.shape[0]*2, X.shape[1]), dtype=X.dtype)
@@ -700,5 +743,16 @@ if __name__ == "__main__":
         f.create_dataset("values", data=X_)
     model = LazyRandomForestBinaryClassifier(reducer_method='pca', max_reducer_dim=10, num_trials=num_trials, timeout=timeout, max_samples=10000, max_num_partitions=3)
     model.fit(h5_file="test_data.h5", h5_idxs=h5_idxs, y=y)
-
+    model.save_model("test_model")
+    model_loaded = LazyRandomForestBinaryClassifier.load_model("test_model")
+    predictions_loaded = model_loaded.predict(h5_file="test_data.h5", h5_idxs=h5_idxs)
+    print("Loaded Predictions from H5:", predictions_loaded[:10])
+    print("Statistics of loaded predictions:")
+    print(f"Min: {np.min(predictions_loaded):.4f}")
+    print(f"Max: {np.max(predictions_loaded):.4f}")
+    print(f"Average: {np.mean(predictions_loaded):.4f}")
+    roc_auc_loaded = roc_auc_score(y, predictions_loaded)
+    print("Loaded ROC AUC from H5:", roc_auc_loaded)
+    print("H5 test completed successfully.")
+    shutil.rmtree("test_model")
     os.remove("test_data.h5")
