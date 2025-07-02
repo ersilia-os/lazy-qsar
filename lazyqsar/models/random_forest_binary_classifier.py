@@ -5,12 +5,12 @@ import time
 import numpy as np
 import optuna
 import os
+import collections
 import random
 import shutil
 import sklearn
 import h5py
 import psutil
-import gc
 import multiprocessing
 from tqdm import tqdm
 from sklearn.ensemble import RandomForestClassifier
@@ -93,7 +93,6 @@ class InputUtils(object):
                     X = X[h5_idxs, :]
                     h5_file = None
                     h5_idxs = None
-        gc.collect()
         return X, h5_file, h5_idxs
 
 
@@ -129,6 +128,23 @@ class SamplingUtils(object):
         rounds = math.log(prob_not_seen) / math.log(prob_stay_unseen_per_round)
         return math.ceil(rounds)
     
+    def random_sample(self, idxs, size, idx_counts):
+        if len(idxs) < size:
+            raise ValueError("Cannot sample more indices than available.")
+        idxs = set(idxs)
+        count2idx = collections.defaultdict(list)
+        for k,v in idx_counts.items():
+            if k not in idxs:
+                continue
+            count2idx[v] += [k]
+        counts = sorted(count2idx.keys())
+        sampled_idxs = []
+        for c in counts:
+            v = count2idx[c]
+            random.shuffle(v)
+            sampled_idxs += v
+        return sampled_idxs[:size]
+
     @staticmethod
     def is_integer_matrix(X):
         X_ = X[:10]
@@ -143,53 +159,141 @@ class SamplingUtils(object):
             model = BernoulliNB()
         else:
             model = GaussianNB()
+        if np.sum(y) == 0:
+            raise Exception("No positive samples in the data!!!")
         X = np.array(X)
-        y = np.array(y)
+        y = np.array(y, dtype=int)
         skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
         scores = []
         for train_index, test_index in skf.split(X, y):
             X_train, X_test = X[train_index], X[test_index]
             y_train, y_test = y[train_index], y[test_index]
             model.fit(X_train, y_train)
-            preds = model.predict_proba(X_test)[:, 1]
+            preds = model.predict_proba(X_test)[:,1]
             scores.append(roc_auc_score(y_test, preds))
         return float(np.mean(scores))
     
-    @staticmethod
-    def _suggest_row(idxs_matrix, accepted_rows, sampled_idxs_counts):
+    def _suggest_row(self, idxs_matrix, accepted_rows, sampled_idxs_counts, min_seen_across_partitions):
         accepted_rows_set = set(accepted_rows)
-        min_count = np.min([v for _, v in sampled_idxs_counts.items()])
-        if min_count >= 3:
-            return None
-        must_sample_idxs = []
+        insufficient_counts = []
         for k,v in sampled_idxs_counts.items():
-            if v == min_count:
-                must_sample_idxs += [k]
-        must_sample_idxs = set(must_sample_idxs)
+            if v < min_seen_across_partitions:
+                insufficient_counts += [k]
+        if len(insufficient_counts) == 0:
+            return None
+        insufficient_counts = set(insufficient_counts)
+        insufficient_counts_coverage = {}
         for i in range(idxs_matrix.shape[0]):
             if i in accepted_rows_set:
                 continue
-            row = idxs_matrix[i, :]
-            for v in row:
-                if v in must_sample_idxs:
-                    return i
+            r = [int(i) for i in idxs_matrix[i, :]]
+            c = 0
+            for x in r:
+                if x in insufficient_counts:
+                    c += 1
+            insufficient_counts_coverage[i] = c
+        coverages = collections.defaultdict(list)
+        for k,v in insufficient_counts_coverage.items():
+            coverages[v] += [k]
+        max_coverage = max(coverages.keys())
+        idxs = sorted(coverages[max_coverage])
+        suggested_row = idxs[0]
+        return suggested_row
     
+    def remove_redundancy_of_sampled_matrix(self, idxs_matrix):
+        jaccard_max = 0.99
+        remove_rows = []
+        for i in range(idxs_matrix.shape[0]):
+            idx = idxs_matrix.shape[0] - i - 1
+            if idx <= 0:
+                continue
+            current_row = set([int(x) for x in idxs_matrix[idx, :]])
+            for j in range(idxs_matrix.shape[0]):
+                if j >= idx:
+                    continue
+                eval_row = set([int(x) for x in idxs_matrix[j, :]])
+                intersection = len(current_row.intersection(eval_row))
+                union = len(current_row.union(eval_row))
+                if union == 0:
+                    jaccard = 0
+                else:
+                    jaccard = intersection / union
+                if jaccard >= jaccard_max:
+                    remove_rows += [idx]
+        R = []
+        for i in range(idxs_matrix.shape[0]):
+            if i not in remove_rows:
+                R += [idxs_matrix[i, :]]
+        idxs_matrix = np.array(R, dtype=int)
+        return idxs_matrix
+    
+    def _get_number_of_positives_and_total(self, n_pos, n_tot, min_positive_proportion, max_positive_proportion, min_samples, max_samples, min_positive_samples):
+        if n_pos < min_positive_samples:
+            raise Exception(f"Not enough positive samples: {n_pos} < {min_positive_samples}.")
+        if n_tot < min_samples:
+            raise Exception(f"Not enough total samples: {n_tot} < {min_samples}.")
+        n_pos_original = int(n_pos)
+        n_tot_original = int(n_tot)
+        print(f"Original positive samples: {n_pos_original}, total samples: {n_tot_original}")
+        print("Maximum samples:", max_samples)
+        if n_tot <= max_samples:
+            pos_prop = n_pos / n_tot
+            if pos_prop < min_positive_proportion:
+                n_tot = int(np.round(n_pos / min_positive_proportion, 0))
+                return n_pos, n_tot
+            elif pos_prop > max_positive_proportion:
+                n_pos = int(np.round(n_tot * max_positive_proportion, 0))
+                return n_pos, n_tot
+            else:
+                return n_pos, n_tot
+        else:
+            pos_prop_original = n_pos_original / n_tot_original
+            if pos_prop_original < min_positive_proportion:
+                n_pos = int(np.round(max_samples * min_positive_proportion, 0))
+                n_pos = max(n_pos, min_positive_samples)
+                n_pos = min(n_pos, n_pos_original)
+                pos_prop = n_pos / max_samples
+                if pos_prop < min_positive_proportion:
+                    n_tot = int(np.round(n_pos / min_positive_proportion, 0))
+                else:
+                    if n_pos_original / max_samples < max_positive_proportion:
+                        n_pos = n_pos_original
+                    n_tot = max_samples
+                return n_pos, n_tot
+            elif pos_prop_original > max_positive_proportion:
+                n_pos = int(np.round(max_samples * max_positive_proportion, 0))
+                n_tot = max_samples
+                return n_pos, n_tot
+            else:
+                n_pos_check = int(np.round(max_samples * pos_prop_original,0))
+                if n_pos_check < min_positive_samples:
+                    n_pos = int(np.round(max_samples * min_positive_proportion,0))
+                    n_pos = max(n_pos, min_positive_samples)
+                    n_tot = max_samples
+                    if n_pos_original / n_tot < max_positive_proportion:
+                        n_pos = n_pos_original
+                    return n_pos, n_tot
+                else:
+                    n_pos = n_pos_check
+                    n_tot = max_samples
+                    if n_pos_original / n_tot < max_positive_proportion:
+                        n_pos = n_pos_original
+                    return n_pos, n_tot
+
     def get_partition_indices(self,
-                              X=None,
-                              h5_file=None,
-                              h5_idxs=None,
-                              y=None,
-                              min_positive_proportion=0.01,
-                              max_positive_proportion=0.5,
-                              min_samples=30,
-                              max_samples=10000,
-                              min_positive_samples=10,
-                              max_num_partitions=100,
-                              min_seen_across_partitions=1):
-        
+                              X,
+                              h5_file,
+                              h5_idxs,
+                              y,
+                              min_positive_proportion,
+                              max_positive_proportion,
+                              min_samples,
+                              max_samples,
+                              min_positive_samples,
+                              max_num_partitions,
+                              min_seen_across_partitions):
         iu = InputUtils()
         iu.evaluate_input(X=X, h5_file=h5_file, h5_idxs=h5_idxs, y=y, is_y_mandatory=True)
-        
         pos_idxs = [i for i, y_ in enumerate(y) if y_ == 1]
         neg_idxs = [i for i, y_ in enumerate(y) if y_ == 0]
         random.shuffle(pos_idxs)
@@ -198,114 +302,129 @@ class SamplingUtils(object):
         n_pos = len(pos_idxs)
         n_neg = len(neg_idxs)
         print(f"Total samples: {n_tot}, positive samples: {n_pos}, negative samples: {n_neg}")
+        print(f"Maximum samples per partition: {max_samples}, minimum samples per partition: {min_samples}")
         print(f"Positive proportion: {n_pos / n_tot:.2f}")
-        if n_tot < min_samples:
-            raise Exception("Not enough samples.")
-        n_samples = min(n_tot, max_samples)
-        real_pos_prop = n_pos / n_tot
-        upper_pos_prop = min(n_pos / n_samples, max_positive_proportion)
-        if real_pos_prop <= min_positive_proportion:
-            if upper_pos_prop <= min_positive_proportion:
-                desired_pos_prop = min_positive_proportion
-            else:
-                desired_pos_prop = upper_pos_prop
-        elif real_pos_prop >= max_positive_proportion:
-            desired_pos_prop = max_positive_proportion
-        else:
-            desired_pos_prop = upper_pos_prop
-        n_pos_samples = min(int(n_samples * desired_pos_prop) + 1, n_pos)
-        n_neg_samples = min(n_neg, int(n_pos_samples * (1 - desired_pos_prop) / desired_pos_prop) + 1, n_samples - n_pos_samples)
-        n_samples = n_pos_samples + n_neg_samples
-        if n_pos_samples < min_positive_samples:
-            raise Exception("Not enough positive samples.")
-        if n_neg_samples < min_positive_samples:
-            raise Exception("Not enough negative samples.")
-        pos_sampling_rounds = min(self.min_sampling_rounds(n_pos, n_pos_samples), max_num_partitions)
-        neg_sampling_rounds = min(self.min_sampling_rounds(n_neg, n_neg_samples), max_num_partitions)
-        sampling_rounds = max(pos_sampling_rounds, neg_sampling_rounds)
-        print(f"Sampling rounds: {sampling_rounds}, positive samples per round: {n_pos_samples}, negative samples per round: {n_neg_samples}")
-        print(f"Desired positive proportion: {desired_pos_prop}", "Actual positive proportion: ", n_pos_samples / n_samples)
-        effective_sampling_rounds = sampling_rounds*3
-        print(f"Effective sampling rounds: {effective_sampling_rounds}")
+        n_pos_samples, n_tot_samples = self._get_number_of_positives_and_total(
+            n_pos=n_pos,
+            n_tot=n_tot,
+            min_positive_proportion=min_positive_proportion,
+            max_positive_proportion=max_positive_proportion,
+            min_samples=min_samples,
+            max_samples=max_samples,
+            min_positive_samples=min_positive_samples
+        )
+        n_neg_samples = n_tot_samples - n_pos_samples
+        print(f"Sampling {n_pos_samples} positive and {n_neg_samples} negative samples from {n_tot_samples} total samples.")
+        effective_sampling_rounds = 1000
         idxs_list_of_lists = []
-        for i in range(effective_sampling_rounds):
-            pos_idxs_sampled = random.sample(pos_idxs, n_pos_samples)
-            neg_idxs_sampled = random.sample(neg_idxs, n_neg_samples)
+        all_idxs = dict((i, 0) for i in range(len(y)))
+        patience = 0
+        current_size = 0
+        max_patience = 10
+        for i in tqdm(range(effective_sampling_rounds)):
+            pos_idxs_sampled = self.random_sample(pos_idxs, n_pos_samples, all_idxs)
+            neg_idxs_sampled = self.random_sample(neg_idxs, n_neg_samples, all_idxs)
             sampled_idxs = pos_idxs_sampled + neg_idxs_sampled
             idxs_list_of_lists += [sorted(sampled_idxs)]
-            all_idxs = dict((i, 0) for i in range(len(y)))
-            for r in idxs_list_of_lists:
-                for idx in r:
-                    all_idxs[idx] += 1
-            is_done = True
-            for _, v in all_idxs.items():
-                if v < min_seen_across_partitions:
-                    is_done = False
             idxs_matrix = np.array(idxs_list_of_lists, dtype=int)
             idxs_matrix = np.unique(idxs_matrix, axis=0)
             idxs_list_of_lists = []
             for i in range(idxs_matrix.shape[0]):
                 r = [int(x) for x in idxs_matrix[i, :]]
                 idxs_list_of_lists += [r]
+            if current_size == len(idxs_list_of_lists):
+                patience += 1
+                if patience >= max_patience:
+                    break
+            else:
+                patience = 0
+                current_size = len(idxs_list_of_lists)
+            all_idxs = dict((i, 0) for i in range(len(y)))
+            for r in idxs_list_of_lists:
+                for idx in r:
+                    all_idxs[idx] += 1
+            is_done = True
+            for _, v in all_idxs.items():
+                if v < min_seen_across_partitions*3:
+                    is_done = False
             if is_done:
                 print(f"All indices seen at least {min_seen_across_partitions} times. Stopping sampling.")
                 break
         idxs_matrix = np.array(idxs_list_of_lists, dtype=int)
         idxs_matrix = np.unique(idxs_list_of_lists, axis=0)
         print(f"Unique sampled indices matrix shape: {idxs_matrix.shape}")
-        if idxs_matrix.shape[0] > sampling_rounds:
-            if h5_file:
-                with h5py.File(h5_file, "r") as f:
-                    auc_estimates = []
-                    for i in tqdm(range(idxs_matrix.shape[0])):
+        auc_estimate_timeout = 60
+        if h5_file:
+            with h5py.File(h5_file, "r") as f:
+                auc_estimates = []
+                t0 = time.time()
+                for i in tqdm(range(idxs_matrix.shape[0])):
+                    t1 = time.time()
+                    if t1-t0 > auc_estimate_timeout:
+                        if len(auc_estimates) > 0:
+                            auc_est = float(np.mean(auc_estimates))
+                        else:
+                            auc_est = 0.5
+                    else:
                         idxs_y = idxs_matrix[i, :]
                         idxs_x = [h5_idxs[idx] for idx in idxs_y]
                         X_in = iu.h5_data_reader(f["values"], idxs_x)
                         y_in = [y[idx] for idx in idxs_y]
                         auc_est = self.quick_auc_estimate(X_in, y_in)
-                        auc_estimates += [auc_est]
-            else:
-                auc_estimates = []
-                for i in tqdm(range(idxs_matrix.shape[0])):
+                    auc_estimates += [auc_est]
+        else:
+            auc_estimates = []
+            t0 = time.time()
+            for i in tqdm(range(idxs_matrix.shape[0])):
+                t1 = time.time()
+                if t1-t0 > 60:
+                    if len(auc_estimates) > auc_estimate_timeout:
+                        auc_est = float(np.mean(auc_estimates))
+                    else:
+                        auc_est = 0.5
+                else:
                     idxs_y = idxs_matrix[i, :]
                     X_in = X[idxs_y, :]
                     y_in = [y[idx] for idx in idxs_y]
                     auc_est = self.quick_auc_estimate(X_in, y_in)
-                    auc_estimates += [auc_est]
-            print(f"Estimated AUCs for {len(auc_estimates)} partitions: {auc_estimates[:10]}")
-            sorted_indices = np.argsort(auc_estimates)[::-1]
-            auc_estimates = [auc_estimates[i] for i in sorted_indices]
-            idxs_matrix = idxs_matrix[sorted_indices]
-            all_sampled_idxs = list(set([int(x) for x in list(idxs_matrix.ravel())]))
-            sampled_idxs_counts = {idx: 0 for idx in all_sampled_idxs}
-            accepted_rows = []
-            for i in range(sampling_rounds):
-                row_idx = self._suggest_row(idxs_matrix, accepted_rows, sampled_idxs_counts)
-                if row_idx is None:
-                    print("No need to sample more rows")
-                    continue
-                for v in idxs_matrix[row_idx, :]:
-                    sampled_idxs_counts[v] += 1
-                accepted_rows += [row_idx]
-            print(f"Accepted rows: {len(accepted_rows)} out of {idxs_matrix.shape[0]} total rows.")
-            print(f"Accepted rows: {accepted_rows}")
-            print(f"AUC estimates of accepted rows: {[auc_estimates[i] for i in accepted_rows][:10]}")
-            assert len(accepted_rows) <= sampling_rounds, "Too many accepted rows."
-            accepted_rows = [i for i in accepted_rows]
-            random.shuffle(accepted_rows)
-            idxs_matrix_ = np.zeros((len(accepted_rows), idxs_matrix.shape[1]), dtype=int)
-            for i, row_idx in enumerate(accepted_rows):
-                idxs_matrix_[i, :] = idxs_matrix[row_idx, :]
-        else:
-            idxs_matrix_ = np.zeros((idxs_matrix.shape[0], idxs_matrix.shape[1]), dtype=int)
-            for i in range(idxs_matrix.shape[0]):
-                r = idxs_matrix[i, :]
-                random.shuffle(r)
-                idxs_matrix_[i, :] = r
-        print(f"Final indices matrix shape: {idxs_matrix_.shape}")
-        for i in range(idxs_matrix_.shape[0]):
-            idxs = [int(x) for x in idxs_matrix_[i, :]]
+                auc_estimates += [auc_est]
+        sorted_indices = np.argsort(auc_estimates)[::-1]
+        auc_estimates = [auc_estimates[i] for i in sorted_indices]
+        idxs_matrix = idxs_matrix[sorted_indices]
+        all_idxs_counts = dict((i, 0) for i in range(len(y)))
+        accepted_rows = []
+        for i in range(max_num_partitions):
+            row_idx = self._suggest_row(idxs_matrix, accepted_rows, all_idxs_counts, min_seen_across_partitions)
+            if row_idx is None:
+                continue
+            for x in idxs_matrix[row_idx, :]:
+                all_idxs_counts[x] += 1
+            accepted_rows += [row_idx]
+        accepted_rows = [i for i in accepted_rows]
+        random.shuffle(accepted_rows)
+        idxs_matrix_ = np.zeros((len(accepted_rows), idxs_matrix.shape[1]), dtype=int)
+        for i, row_idx in enumerate(accepted_rows):
+            idxs_matrix_[i, :] = idxs_matrix[row_idx, :]
+        idxs_matrix = idxs_matrix_[:]
+        idxs_matrix = self.remove_redundancy_of_sampled_matrix(idxs_matrix)
+        print(f"Indices matrix shape after redundancy removal: {idxs_matrix.shape}")
+        self.idxs_matrix_report(idxs_matrix, y)
+        for i in range(idxs_matrix.shape[0]):
+            idxs = [int(x) for x in idxs_matrix[i, :]]
             yield idxs
+
+    def idxs_matrix_report(self, idxs_matrix, y):
+        print(f"Original positive negative balance: positive {np.sum(y)}, negative {len(y) - np.sum(y)}")
+        n = idxs_matrix.shape[0]
+        n_pos = 0
+        n_neg = 0
+        for i in range(n):
+            idxs = [int(x) for x in idxs_matrix[i, :]]
+            pos = np.sum([y[idx] for idx in idxs if idx < len(y) and idx >= 0])
+            neg = len(idxs) - pos
+            n_pos += pos
+            n_neg += neg
+        print(f"Avg positive samples: {n_pos/n}, avg negative samples: {n_neg/n}")
 
 
 class BaseRandomForestBinaryClassifier(BaseEstimator, ClassifierMixin):
@@ -537,10 +656,10 @@ class LazyRandomForestBinaryClassifier(object):
     def __init__(self,
                  reducer_method: str = None,
                  max_reducer_dim: int = 500,
+                 num_trials: int = 100,
                  base_test_size: float = 0.25,
                  base_num_splits: int = 3,
-                 num_trials: int = 100,
-                 timeout: int = 600,
+                 base_timeout: int = 600,
                  min_positive_proportion: float=0.01,
                  max_positive_proportion: float=0.5,
                  min_samples: int=30,
@@ -556,7 +675,7 @@ class LazyRandomForestBinaryClassifier(object):
         self.base_test_size = base_test_size
         self.base_num_splits = base_num_splits
         self.base_num_trials = num_trials
-        self.base_timeout = timeout
+        self.base_timeout = base_timeout
         self.min_positive_proportion = min_positive_proportion
         self.max_positive_proportion = max_positive_proportion
         self.min_samples = min_samples
@@ -601,9 +720,6 @@ class LazyRandomForestBinaryClassifier(object):
         X, h5_file, h5_idxs = iu.preprocessing(X=X, h5_file=h5_file, h5_idxs=h5_idxs, force_on_disk=self.force_on_disk)
         reducers = []
         models = []
-        if X is not None:
-            print(X, type(X), X.dtype)
-            print(y, type(y))
         for idxs in su.get_partition_indices(X=X,
                                              h5_file=h5_file,
                                              h5_idxs=h5_idxs,
@@ -613,7 +729,8 @@ class LazyRandomForestBinaryClassifier(object):
                                              min_samples=self.min_samples,
                                              max_samples=self.max_samples,
                                              min_positive_samples=self.min_positive_samples,
-                                             max_num_partitions=self.max_num_partitions):
+                                             max_num_partitions=self.max_num_partitions,
+                                             min_seen_across_partitions=self.min_seen_across_partitions):
             if h5_file is not None:
                 with h5py.File(h5_file, "r") as f:
                     X_sampled = iu.h5_data_reader(f["values"], [h5_idxs[i] for i in idxs])
@@ -731,65 +848,3 @@ class LazyRandomForestBinaryClassifier(object):
             obj.reducers += [reducer]
             obj.models += [model]
         return obj
-    
-
-if __name__ == "__main__":
-    import sys
-    from sklearn.datasets import make_classification
-    
-    mode = sys.argv[1]
-
-    num_trials=2
-    timeout=10
-    print("Creating a synthetic dataset for testing...")
-    X, y = make_classification(
-        n_samples=10000, 
-        n_features=20, 
-        n_informative=10, 
-        n_redundant=5, 
-        weights=[0.99, 0.01],
-        random_state=42
-    )
-
-    if mode != "h5":
-        print("Testing with in-memory data...")
-        clf = LazyRandomForestBinaryClassifier(reducer_method='pca', max_reducer_dim=10, num_trials=num_trials, timeout=timeout, max_samples=1000, max_num_partitions=3)
-        clf.fit(X=X, y=y)
-        print("Saving model and loading it")
-        clf.save_model("test_model")
-        clf_loaded = LazyRandomForestBinaryClassifier.load_model("test_model")
-        predictions_loaded = clf_loaded.predict(X)
-        print("Loaded Predictions:", predictions_loaded[:10])
-        print("Statistics of loaded predictions:")
-        print(f"Min: {np.min(predictions_loaded):.4f}")
-        print(f"Max: {np.max(predictions_loaded):.4f}")
-        print(f"Average: {np.mean(predictions_loaded):.4f}")
-        roc_auc_loaded = roc_auc_score(y, predictions_loaded)
-        print("Model fit time:", clf_loaded.fit_time)
-        print("Loaded ROC AUC:", roc_auc_loaded)
-        print("Test completed successfully.")
-        shutil.rmtree("test_model")
-    else:
-        print("Doing a dummy test with h5 file")
-        X_ = np.zeros((X.shape[0]*2, X.shape[1]), dtype=X.dtype)
-        h5_idxs = random.sample(list(range(X.shape[0])), len(y))
-        for i, idx in enumerate(h5_idxs):
-            X_[idx, :] = X[i, :]
-        with h5py.File("test_data.h5", "w") as f:
-            f.create_dataset("values", data=X_)
-        model = LazyRandomForestBinaryClassifier(reducer_method='pca', max_reducer_dim=10, num_trials=num_trials, timeout=timeout, max_samples=1000, max_num_partitions=3, force_on_disk=True)
-        model.fit(h5_file="test_data.h5", h5_idxs=h5_idxs, y=y)
-        model.save_model("test_model")
-        model_loaded = LazyRandomForestBinaryClassifier.load_model("test_model")
-        predictions_loaded = model_loaded.predict(h5_file="test_data.h5", h5_idxs=h5_idxs)
-        print("Loaded Predictions from H5:", predictions_loaded[:10])
-        print("Statistics of loaded predictions:")
-        print(f"Min: {np.min(predictions_loaded):.4f}")
-        print(f"Max: {np.max(predictions_loaded):.4f}")
-        print(f"Average: {np.mean(predictions_loaded):.4f}")
-        roc_auc_loaded = roc_auc_score(y, predictions_loaded)
-        print("Model fit time:", model_loaded.fit_time)
-        print("Loaded ROC AUC from H5:", roc_auc_loaded)
-        print("H5 test completed successfully.")
-        shutil.rmtree("test_model")
-        os.remove("test_data.h5")
