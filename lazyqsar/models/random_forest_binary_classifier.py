@@ -712,7 +712,7 @@ class LazyRandomForestBinaryClassifier(object):
         else:
             raise Exception("Wrong feature reduction method. Use 'pca' or 'best'.")
 
-    def fit(self, X=None, h5_file=None, h5_idxs=None, y=None):
+    def fit(self, X=None, y=None, h5_file=None, h5_idxs=None):
         t0 = time.time()
         iu = InputUtils()
         su = SamplingUtils()

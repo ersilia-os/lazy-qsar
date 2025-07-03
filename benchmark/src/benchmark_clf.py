@@ -28,7 +28,7 @@ if __name__ == '__main__':
             name = benchmark['name']
             train_val, test = benchmark['train_val'], benchmark['test']
             print(len(train_val), len(test))
-            if model_type=="zeroshot" and len(train_val) > 1000:
+            if model_type=="zstunetables" and len(train_val) > 1000:
                 print("Skipping zeroshot for dataset with more than 1000 samples")
                 continue
             model = lq.LazyBinaryQSAR(model_type=model_type, descriptor_type=desc)
