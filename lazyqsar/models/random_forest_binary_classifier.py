@@ -432,7 +432,7 @@ class BaseRandomForestBinaryClassifier(BaseEstimator, ClassifierMixin):
         self,
         num_splits: int = 3,
         test_size: float = 0.25,
-        num_trials: int = 100,
+        num_trials: int = 50,
         timeout: int = 600,
         random_state: int=42
     ):
@@ -656,10 +656,10 @@ class LazyRandomForestBinaryClassifier(object):
     def __init__(self,
                  reducer_method: str = None,
                  max_reducer_dim: int = 500,
-                 num_trials: int = 100,
+                 num_trials: int = 10,
                  base_test_size: float = 0.25,
                  base_num_splits: int = 3,
-                 base_timeout: int = 600,
+                 base_timeout: int = 120,
                  min_positive_proportion: float=0.01,
                  max_positive_proportion: float=0.5,
                  min_samples: int=30,
