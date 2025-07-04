@@ -1,0 +1,26 @@
+{
+  "cyp2c9_veith": [
+    0.771,
+    0.0
+  ],
+  "cyp2d6_veith": [
+    0.689,
+    0.002
+  ],
+  "cyp3a4_veith": [
+    0.852,
+    0.0
+  ],
+  "cyp2c9_substrate_carbonmangels": [
+    0.389,
+    0.007
+  ],
+  "cyp2d6_substrate_carbonmangels": [
+    0.629,
+    0.001
+  ],
+  "dili": [
+    0.934,
+    0.002
+  ]
+}
