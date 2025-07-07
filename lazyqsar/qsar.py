@@ -3,7 +3,7 @@ import json
 import numpy as np
 
 from .descriptors import MorganDescriptor, MordredDescriptor, RdkitDescriptor, ClassicDescriptor, MaccsDescriptor
-from .models import LazyXGBoostBinaryClassifier, TuneTablesClassifierLight, TuneTablesZeroShotClassifier, LazyZSRFBinaryClassifier
+from .models import LazyXGBoostBinaryClassifier, TuneTablesClassifierLight, TuneTablesZeroShotClassifier, LazyZSRandomForestBinaryClassifier, LazyRandomForestBinaryClassifier
 
 
 descriptors_dict = {
@@ -18,14 +18,15 @@ descriptors_dict = {
 models_dict = {
     "xgboost": LazyXGBoostBinaryClassifier,
     "tunetables": TuneTablesClassifierLight,
-    "zeroshot": TuneTablesZeroShotClassifier,
-    "zsrandomforest": LazyZSRFBinaryClassifier
+    "zstunetables": TuneTablesZeroShotClassifier,
+    "zsrandomforest": LazyZSRandomForestBinaryClassifier,
+    "randomforest":LazyRandomForestBinaryClassifier
 }
 
 
 class LazyBinaryQSAR(object):
 
-    def __init__(self, descriptor_type="morgan", model_type="xgboost", **kwargs):
+    def __init__(self, descriptor_type="morgan", model_type="randomforest", **kwargs):
         self.descriptor_type = descriptor_type
         self.model_type = model_type
 
@@ -45,7 +46,7 @@ class LazyBinaryQSAR(object):
         print(f"Transforming inputs to feature descriptors using {self.descriptor_type}")
         descriptors = np.array(self.descriptor.transform(X))
         print(f"Performing predictions on input feature of shape: {descriptors.shape}")
-        self.model.fit(descriptors, y)
+        self.model.fit(X=descriptors, y=y)
 
     def predict_proba(self, X):
         # Returns the probability of the positive class

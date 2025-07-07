@@ -9,12 +9,18 @@ FIGUREPATH =  "../figures"
 DATAPATH = "../data"
 
 # Compare METHODS
-
+"""
 descs = ["morgan", "mordred"]
 models = ["zstunetables","tunetables","xgboost", "xgboost_pca", "zsrandomforest"]
 assays = ["bioavailability_ma", "hia_hou", "pgp_broccatelli", "bbb_martins", "cyp2c9_veith","cyp2d6_veith",
                   "cyp3a4_veith", "cyp2c9_substrate_carbonmangels", "cyp2d6_substrate_carbonmangels",
                   "cyp3a4_substrate_carbonmangels","herg","ames", "dili"]
+"""
+descs = ["morgan", "mordred"]
+models = ["xgboost", "xgboost_pca", "zsrandomforest", "randomforest"]
+assays = ["cyp2c9_veith","cyp2d6_veith",
+                "cyp3a4_veith", "cyp2c9_substrate_carbonmangels", "cyp2d6_substrate_carbonmangels",
+                "dili"]
 
 seed = 1
 
@@ -62,6 +68,6 @@ for model in models:
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
 
     # Save the combined figure
-    outname = f"distribution_{model}.png"
+    outname = f"distribution_{model}_rf.png"
     plt.savefig(os.path.join(FIGUREPATH, outname), dpi=300)
     plt.close()

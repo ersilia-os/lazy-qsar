@@ -8,11 +8,14 @@ model_type = sys.argv[1]
 desc = sys.argv[2]
 
 DATAPATH = "../data"
-
+"""
 clf_datasets = ["bioavailability_ma", "hia_hou", "pgp_broccatelli", "bbb_martins", "cyp2c9_veith","cyp2d6_veith",
                   "cyp3a4_veith", "cyp2c9_substrate_carbonmangels", "cyp2d6_substrate_carbonmangels",
                   "cyp3a4_substrate_carbonmangels","herg","ames", "dili"]
-
+"""
+clf_datasets = ["cyp2c9_veith","cyp2d6_veith",
+                "cyp3a4_veith", "cyp2c9_substrate_carbonmangels", "cyp2d6_substrate_carbonmangels",
+                "dili"]
 def get_data():
     group = admet_group(path = '../data/')
     names = group.dataset_names
@@ -28,7 +31,7 @@ if __name__ == '__main__':
             name = benchmark['name']
             train_val, test = benchmark['train_val'], benchmark['test']
             print(len(train_val), len(test))
-            if model_type=="zeroshot" and len(train_val) > 1000:
+            if model_type=="zstunetables" and len(train_val) > 1000:
                 print("Skipping zeroshot for dataset with more than 1000 samples")
                 continue
             model = lq.LazyBinaryQSAR(model_type=model_type, descriptor_type=desc)

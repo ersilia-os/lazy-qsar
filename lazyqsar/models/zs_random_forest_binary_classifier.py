@@ -191,7 +191,7 @@ class BaseZSRFBinaryClassifier(BaseEstimator, ClassifierMixin):
         return obj
 
 
-class LazyZSRFBinaryClassifier(object):
+class LazyZSRandomForestBinaryClassifier(object):
 
     def __init__(self,
                  reducer_method=None,
