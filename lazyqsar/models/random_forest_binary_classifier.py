@@ -22,7 +22,7 @@ from sklearn.metrics import roc_curve, auc, roc_auc_score
 from sklearn.model_selection import train_test_split
 from sklearn.naive_bayes import BernoulliNB, GaussianNB
 from sklearn.model_selection import StratifiedKFold
-from sklearn.isotonic import IsotonicRegression
+from sklearn.linear_model import LogisticRegression
 from flaml.default import RandomForestClassifier as ZeroShotRandomForestClassifier
 
 NUM_CPU = max(1, multiprocessing.cpu_count() - 1)
@@ -618,10 +618,10 @@ class BaseRandomForestBinaryClassifier(BaseEstimator, ClassifierMixin):
             print(f"Internal AUROC CV-{r}: {auroc}")
             y_cal += list(valid_y)
             probs_cal += list(valid_y_hat)
-        print(f"Doing isotonic regression for calibration...")
-        self.iso_reg_ = IsotonicRegression(out_of_bounds='clip')
-        self.iso_reg_.fit(probs_cal, y_cal)
-        print(f"Isotonic regression fit done.")
+        print(f"Logistic regression for calibration...")
+        self.platt_reg_ = LogisticRegression(solver='lbfgs', max_iter=1000)
+        self.platt_reg_.fit(np.array(probs_cal).reshape(-1, 1), y_cal)
+        print(f"Logistic regression fit done.")
         self.mean_score_ = np.mean(scores)
         self.std_score_ = np.std(scores)
         print(f"Average AUROC: {self.mean_score_}")
@@ -633,7 +633,7 @@ class BaseRandomForestBinaryClassifier(BaseEstimator, ClassifierMixin):
         if not hasattr(self, "model_") or self.model_ is None:
             raise ValueError("Model not fitted. Call `fit` first.")
         y_hat = self.model_.predict_proba(X)[:,1]
-        y_hat = self.iso_reg_.predict(y_hat)
+        y_hat = self.platt_reg_.predict_proba(y_hat.reshape(-1, 1))[:, 1]
         return np.vstack((1 - y_hat, y_hat)).T
     
     def predict(self, X):
@@ -652,7 +652,7 @@ class BaseRandomForestBinaryClassifier(BaseEstimator, ClassifierMixin):
 
         model_path = os.path.join(model_dir, "model.joblib")
         joblib.dump(self.model_, model_path)
-        joblib.dump(self.iso_reg_, os.path.join(model_dir, "iso_reg.joblib"))
+        joblib.dump(self.platt_reg_, os.path.join(model_dir, "platt_reg.joblib"))
 
         metadata = {
             "random_state": self.random_state,
@@ -674,10 +674,10 @@ class BaseRandomForestBinaryClassifier(BaseEstimator, ClassifierMixin):
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"Model file {model_path} not found.")
         model = joblib.load(model_path)
-        iso_reg_path = os.path.join(model_dir, "iso_reg.joblib")
-        if not os.path.exists(iso_reg_path):
-            raise FileNotFoundError(f"Isotonic regression file {iso_reg_path} not found.")
-        iso_reg = joblib.load(iso_reg_path)
+        platt_reg_path = os.path.join(model_dir, "platt_reg.joblib")
+        if not os.path.exists(platt_reg_path):
+            raise FileNotFoundError(f"Isotonic regression file {platt_reg_path} not found.")
+        platt_reg = joblib.load(platt_reg_path)
         meta_path = os.path.join(model_dir, "metadata.json")
         if not os.path.exists(meta_path):
             raise FileNotFoundError(f"Metadata file {meta_path} not found.")
@@ -690,7 +690,7 @@ class BaseRandomForestBinaryClassifier(BaseEstimator, ClassifierMixin):
             test_size=metadata["test_size"]
         )
         obj.model_ = model
-        obj.iso_reg_ = iso_reg
+        obj.platt_reg_ = platt_reg
         obj.mean_score_ = metadata.get("mean_score_", None)
         obj.std_score_ = metadata.get("std_score_", None)
 
