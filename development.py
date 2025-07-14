@@ -6,11 +6,11 @@ from sklearn.datasets import make_classification
 if __name__ == "__main__":
     # Generate synthetic classification data with specified class proportions
     X, y = make_classification(
-        n_samples=15000,
-        n_features=4,
+        n_samples=10000,
+        n_features=100,
         n_informative=2,
         n_redundant=0,
-        weights=[0.5, 0.5],
+        weights=[0.9, 0.1],
         random_state=42
     )
 

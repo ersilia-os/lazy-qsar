@@ -458,29 +458,35 @@ class BaseRandomForestBinaryClassifier(BaseEstimator, ClassifierMixin):
         max_n_estimators = min(1000, int(def_n_estimators) + 100)
         # suggesting range of max_features
         def_max_features = hyperparams["max_features"]
-        if def_max_features is None:
-            def_max_features = 1.0
-        elif str(def_max_features) == "sqrt":
-            def_max_features = np.sqrt(n_features) / n_features
-        elif str(def_max_features) == "log2":
-            def_max_features = np.log2(n_features) / n_features
-        elif str(def_max_features) == "auto":
-            def_max_features = np.sqrt(n_features) / n_features # if auto, assume sqrt
-        elif def_max_features > 1:
-            def_max_features = def_max_features / n_features # if it is above 1, assume it is an absolute number
+        if def_max_features == "auto" or def_max_features == "sqrt" or def_max_features == "log2":
+            max_features_range = [def_max_features]
         else:
-            pass
-        min_max_features = max(0.05, def_max_features - 0.2)
-        max_max_features = min(1.0, def_max_features + 0.2)
+            if def_max_features is None:
+                def_max_features = 1.0
+            elif def_max_features > 1:
+                def_max_features = def_max_features / n_features # if it is above 1, assume it is an absolute number
+            else:
+                pass
+            min_max_features = max(0.05, def_max_features - 0.2)
+            max_max_features = min(1.0, def_max_features + 0.2)
+            max_features_range = sorted([min_max_features, max_max_features])
+            if min_max_features == max_max_features:
+                min_max_features = min_max_features-0.01
         # suggesting max leaf nodes
-        def_max_leaf_nodes = hyperparams["max_leaf_nodes"]
-        def_max_leaf_nodes_log2 = math.log2(def_max_leaf_nodes) if def_max_leaf_nodes > 0 else 0
-        min_max_leaf_nodes_log2 = max(4, def_max_leaf_nodes_log2 - 1)
-        max_max_leaf_nodes_log2 = min(10, def_max_leaf_nodes_log2 + 1)
-        min_max_leaf_nodes = int(np.round(2 ** min_max_leaf_nodes_log2, 0))
-        max_max_leaf_nodes = int(np.round(2 ** max_max_leaf_nodes_log2, 0))
-        min_max_leaf_nodes = min(min_max_leaf_nodes, int(n_samples*(1-test_size)))
-        max_max_leaf_nodes = max(max_max_leaf_nodes, max(int(n_samples*(1-test_size)), def_max_leaf_nodes))
+        if hyperparams["max_leaf_nodes"] is None:
+            max_leaf_nodes_range = [None]
+        else:
+            def_max_leaf_nodes = hyperparams["max_leaf_nodes"]
+            def_max_leaf_nodes_log2 = math.log2(def_max_leaf_nodes) if def_max_leaf_nodes > 0 else 0
+            min_max_leaf_nodes_log2 = max(4, def_max_leaf_nodes_log2 - 1)
+            max_max_leaf_nodes_log2 = min(10, def_max_leaf_nodes_log2 + 1)
+            min_max_leaf_nodes = int(np.round(2 ** min_max_leaf_nodes_log2, 0))
+            max_max_leaf_nodes = int(np.round(2 ** max_max_leaf_nodes_log2, 0))
+            min_max_leaf_nodes = min(min_max_leaf_nodes, int(n_samples*(1-test_size)))
+            max_max_leaf_nodes = max(max_max_leaf_nodes, max(int(n_samples*(1-test_size)), def_max_leaf_nodes))
+            max_leaf_nodes_range = sorted([min_max_leaf_nodes, max_max_leaf_nodes])
+            if min_max_leaf_nodes == max_max_leaf_nodes:
+                min_max_leaf_nodes = min_max_leaf_nodes - 1
         # criterion
         if "criterion" in hyperparams:
             criterion = hyperparams["criterion"]
@@ -489,25 +495,28 @@ class BaseRandomForestBinaryClassifier(BaseEstimator, ClassifierMixin):
         # sanity check (should not happen)
         if min_n_estimators == max_n_estimators:
             max_n_estimators = min_n_estimators + 1
-        if min_max_features == max_max_features:
-            min_max_features = min_max_features-0.01
-        if min_max_leaf_nodes == max_max_leaf_nodes:
-            min_max_leaf_nodes = min_max_leaf_nodes - 1
         # preparing the parameters
         param = {
             "n_estimators": sorted([min_n_estimators, max_n_estimators]),
-            "max_features": sorted([min_max_features, max_max_features]), 
-            "max_leaf_nodes": sorted([min_max_leaf_nodes, max_max_leaf_nodes]),
+            "max_features": max_features_range, 
+            "max_leaf_nodes": max_leaf_nodes_range,
             "criterion": [criterion],
             "class_weight": ["balanced_subsample"]
         }
         return param
 
     def _objective(self, trial, X, y, param):
-        param = {"n_estimators": trial.suggest_int("n_estimators", param["n_estimators"][0], param["n_estimators"][1]),
-                 "max_features": trial.suggest_float("max_features", param["max_features"][0], param["max_features"][1]),
-                 "max_leaf_nodes": trial.suggest_int("max_leaf_nodes", param["max_leaf_nodes"][0], param["max_leaf_nodes"][1], log=True),
-                 "criterion": trial.suggest_categorical("criterion", param["criterion"])}
+        param_ = {"n_estimators": trial.suggest_int("n_estimators", param["n_estimators"][0], param["n_estimators"][1])}
+        if len(param["max_features"]) == 1:
+            param_["max_features"] = trial.suggest_categorical("max_features", param["max_features"])
+        else:
+            param_["max_features"] = trial.suggest_float("max_features", param["max_features"][0], param["max_features"][1])
+        if len(param["max_leaf_nodes"]) == 1:
+            param_["max_leaf_nodes"] = trial.suggest_categorical("max_leaf_nodes", param["max_leaf_nodes"])
+        else:
+            param_["max_leaf_nodes"] = trial.suggest_int("max_leaf_nodes", param["max_leaf_nodes"][0], param["max_leaf_nodes"][1], log=True)
+        param_["criterion"] = trial.suggest_categorical("criterion", param["criterion"])
+        param = param_
         param["n_jobs"] = NUM_CPU
         scores = []
         for _ in range(self.num_splits):
@@ -524,6 +533,13 @@ class BaseRandomForestBinaryClassifier(BaseEstimator, ClassifierMixin):
     def _suggest_best_params(self, X, y, test_size):
         zero_shot_cv = ZeroShotRandomForestClassifier()
         hyperparams = zero_shot_cv.suggest_hyperparams(X, y)[0]
+        if hyperparams == {}:
+            hyperparams = {
+                "n_estimators": 100,
+                "max_features": "sqrt",
+                "max_leaf_nodes": None,
+                "criterion": "gini"
+            }
         hyperparams["class_weight"] = "balanced_subsample"
         print("Suggested zero-shot hyperparameters:", hyperparams)
         n_samples, n_features = X.shape
