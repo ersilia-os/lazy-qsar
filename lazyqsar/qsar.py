@@ -3,7 +3,7 @@ import json
 import numpy as np
 
 from .descriptors import MorganDescriptor, MordredDescriptor, RdkitDescriptor, ClassicDescriptor, MaccsDescriptor
-from .models import LazyXGBoostBinaryClassifier, TuneTablesClassifierLight, TuneTablesZeroShotClassifier, LazyZSRandomForestBinaryClassifier, LazyRandomForestBinaryClassifier
+from .models import LazyXGBoostBinaryClassifier, TuneTablesBinaryClassifier, TuneTablesZeroShotBinaryClassifier, LazyZSRandomForestBinaryClassifier, LazyRandomForestBinaryClassifier
 
 
 descriptors_dict = {
@@ -17,8 +17,8 @@ descriptors_dict = {
 
 models_dict = {
     "xgboost": LazyXGBoostBinaryClassifier,
-    "tunetables": TuneTablesClassifierLight,
-    "zstunetables": TuneTablesZeroShotClassifier,
+    "tunetables": TuneTablesBinaryClassifier,
+    "zstunetables": TuneTablesZeroShotBinaryClassifier,
     "zsrandomforest": LazyZSRandomForestBinaryClassifier,
     "randomforest":LazyRandomForestBinaryClassifier
 }
@@ -85,4 +85,3 @@ class LazyBinaryQSAR(object):
         obj.model = models_dict[model_type].load_model(model_dir)
         print("Loading done!")
         return obj
-

@@ -1,7 +1,8 @@
 import os
 import sys
-from tdc import utils
 from tdc.benchmark_group import admet_group
+from sklearn.metrics import roc_curve, auc
+from sklearn.metrics import precision_recall_curve, auc, average_precision_score
 import lazyqsar as lq
 
 model_type = sys.argv[1]
@@ -24,7 +25,7 @@ def get_data():
 if __name__ == '__main__':
 
     group = admet_group(path = '../data/')
-    for seed in [1,2,3,4,5]:
+    for seed in [1, 2, 3, 4, 5]:
         for a in clf_datasets:
             print(seed, a)
             benchmark = group.get(a) 
@@ -37,8 +38,16 @@ if __name__ == '__main__':
             model = lq.LazyBinaryQSAR(model_type=model_type, descriptor_type=desc)
             model.fit(train_val["Drug"], train_val["Y"])
             y_pred_test = model.predict_proba(test["Drug"])
+
+            if a not in ("cyp2c9_veith","cyp2d6_veith",
+                  "cyp3a4_veith", "cyp2c9_substrate_carbonmangels", "cyp2d6_substrate_carbonmangels",
+                  "cyp3a4_substrate_carbonmangels"):
+                fpr, tpr, _ = roc_curve(test["Y"], y_pred_test)
+                auc_ = auc(fpr, tpr)
+                print("AUROC", auc_)
+                
             test["pred"] = y_pred_test
-            save_path = os.path.join(DATAPATH, f"tdc_preds_{model_type}_{desc}")
+            save_path = os.path.join(DATAPATH, f"tdc_preds_{model_type}_{desc}_latest")
             if not os.path.exists(save_path):
                 os.makedirs(save_path)
             test.to_csv(os.path.join(save_path, "{}_test_{}.csv".format(a,seed)), index=False)

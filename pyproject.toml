@@ -8,37 +8,37 @@ version = "1.0"
 description = "A library to quickly build QSAR models"
 readme = "README.md"
 requires-python = ">=3.10"
-license = {text = "GPLv3"}
+license = { text = "GPLv3" }
 authors = [
-    {name = "Ersilia Open Source Initiative", email = "hello@ersilia.io"},
-    {name = "Miquel Duran Frigola", email = "miquel@ersilia.io"},
-    {name = "Gemma Turon Rodrigo", email = "gemma@ersilia.io"},
+  { name = "Ersilia Open Source Initiative", email = "hello@ersilia.io" },
+  { name = "Miquel Duran Frigola",       email = "miquel@ersilia.io" },
+  { name = "Gemma Turon Rodrigo",        email = "gemma@ersilia.io" },
 ]
 keywords = ["qsar", "machine-learning", "chemistry", "computer-aided-drug-design"]
 classifiers = [
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
-    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
-    "Operating System :: OS Independent",
-    "Topic :: Scientific/Engineering :: Artificial Intelligence"
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+  "Operating System :: OS Independent",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
-    "requests==2.32.3",
-    "rdkit==2023.9.5",
-    "mordredcommunity==2.0.6",
-    "scikit-learn==1.6.1",
-    "optuna==4.3.0",
-    "xgboost==3.0.2",
-    "tunetables_light @ git+https://github.com/Abellegese/TuneTables.git@main",
-    "flaml==2.3.5"
+  "requests==2.32.3",
+  "scikit-learn==1.6.1",
+  "optuna==4.3.0",
+  "xgboost==3.0.2",
+  "tunetables_light @ git+https://github.com/ersilia-os/TuneTablesLight.git@main",
+  "flaml==2.3.5",
 ]
 
 [project.optional-dependencies]
 test = [
-    "pytdc==1.1.15"
+  "pytdc==1.1.15",
 ]
-
+full = [
+  "rdkit==2023.9.5", "mordredcommunity==2.0.6"
+]
 
 [project.urls]
 "Source Code" = "https://github.com/ersilia-os/lazy-qsar"
