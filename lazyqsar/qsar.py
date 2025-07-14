@@ -3,7 +3,10 @@ import json
 import numpy as np
 
 from .descriptors import MorganDescriptor, MordredDescriptor, RdkitDescriptor, ClassicDescriptor, MaccsDescriptor
-from .models import LazyXGBoostBinaryClassifier, TuneTablesClassifierLight, TuneTablesZeroShotClassifier, LazyZSRandomForestBinaryClassifier, LazyRandomForestBinaryClassifier
+from .models.xgboost_binary_classifier import LazyXGBoostBinaryClassifier
+from .models.tunetables_classifier_light import TuneTablesClassifierLight, TuneTablesZeroShotClassifier
+from .models.zs_random_forest_binary_classifier import LazyZSRandomForestBinaryClassifier
+from .models.random_forest_binary_classifier import LazyRandomForestBinaryClassifier
 
 
 descriptors_dict = {

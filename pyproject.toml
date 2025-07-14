@@ -30,6 +30,14 @@ dependencies = [
     "scikit-learn==1.6.1",
     "optuna==4.3.0",
     "xgboost==3.0.2",
+    "joblib==1.5.1",
+    "pandas==2.3.0",
+    "scikit-learn==1.7.0",
+    "rdkit==2025.3.3",
+    "mordred==1.2.0",
+    "optuna==4.4.0",
+    "h5py==3.14.0",
+    "psutil==7.0.0",
     "tunetables_light @ git+https://github.com/Abellegese/TuneTables.git@main",
     "flaml==2.3.5"
 ]

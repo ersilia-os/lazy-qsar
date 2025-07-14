@@ -234,6 +234,7 @@ class SamplingUtils(object):
             raise Exception(f"Not enough total samples: {n_tot} < {min_samples}.")
         n_pos_original = int(n_pos)
         n_tot_original = int(n_tot)
+        n_neg_original = n_tot_original - n_pos_original
         print(f"Original positive samples: {n_pos_original}, total samples: {n_tot_original}")
         print("Maximum samples:", max_samples)
         if n_tot <= max_samples:
@@ -242,7 +243,13 @@ class SamplingUtils(object):
                 n_tot = int(np.round(n_pos / min_positive_proportion, 0))
                 return n_pos, n_tot
             elif pos_prop > max_positive_proportion:
+                n_tot = int(np.round(n_neg_original / (1 - max_positive_proportion), 0))
                 n_pos = int(np.round(n_tot * max_positive_proportion, 0))
+                if n_pos > n_pos_original:
+                    n_pos = n_pos_original
+                    n_tot = int(np.round(n_pos / max_positive_proportion, 0))
+                else:
+                    n_tot = int(np.round(n_pos / max_positive_proportion, 0))
                 return n_pos, n_tot
             else:
                 return n_pos, n_tot
