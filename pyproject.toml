@@ -25,11 +25,11 @@ classifiers = [
 ]
 dependencies = [
   "requests==2.32.3",
-  "scikit-learn==1.6.1",
+  "scikit-learn==1.6.0",
   "optuna==4.3.0",
   "xgboost==3.0.2",
   "tunetables_light @ git+https://github.com/ersilia-os/TuneTablesLight.git@main",
-  "flaml==2.3.5",
+  "flaml==2.3.2",
 ]
 
 [project.optional-dependencies]
