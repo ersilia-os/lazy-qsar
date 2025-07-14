@@ -22,6 +22,7 @@ from sklearn.metrics import roc_curve, auc, roc_auc_score
 from sklearn.model_selection import train_test_split
 from sklearn.naive_bayes import BernoulliNB, GaussianNB
 from sklearn.model_selection import StratifiedKFold
+from sklearn.isotonic import IsotonicRegression
 from flaml.default import RandomForestClassifier as ZeroShotRandomForestClassifier
 
 NUM_CPU = max(1, multiprocessing.cpu_count() - 1)
@@ -497,7 +498,8 @@ class BaseRandomForestBinaryClassifier(BaseEstimator, ClassifierMixin):
             "n_estimators": sorted([min_n_estimators, max_n_estimators]),
             "max_features": sorted([min_max_features, max_max_features]), 
             "max_leaf_nodes": sorted([min_max_leaf_nodes, max_max_leaf_nodes]),
-            "criterion": [criterion]
+            "criterion": [criterion],
+            "class_weight": ["balanced_subsample"]
         }
         return param
 
@@ -522,6 +524,7 @@ class BaseRandomForestBinaryClassifier(BaseEstimator, ClassifierMixin):
     def _suggest_best_params(self, X, y, test_size):
         zero_shot_cv = ZeroShotRandomForestClassifier()
         hyperparams = zero_shot_cv.suggest_hyperparams(X, y)[0]
+        hyperparams["class_weight"] = "balanced_subsample"
         print("Suggested zero-shot hyperparameters:", hyperparams)
         n_samples, n_features = X.shape
         hyperparam_search = self._suggest_param_search(hyperparams, n_samples, n_features, test_size)
@@ -581,19 +584,30 @@ class BaseRandomForestBinaryClassifier(BaseEstimator, ClassifierMixin):
         score = results['best_value']
         hyperparams['n_jobs'] = NUM_CPU
         hyperparams['random_state'] = self.random_state
+        hyperparams['class_weight'] = 'balanced_subsample'
         print(f"Best hyperparameters: {hyperparams}, Inner hyperparameter AUROC: {score}")
         scores = []
+        y_cal = []
+        probs_cal = []
         for r in range(self.num_splits):
             train_x, valid_x, train_y, valid_y = train_test_split(
                 X, y, test_size=self.test_size, random_state=self.random_state + r, stratify=y
             )
             model_cv = RandomForestClassifier(**hyperparams)
             model_cv.fit(train_x, train_y)
-            fpr, tpr, _ = roc_curve(valid_y, model_cv.predict_proba(valid_x)[:, 1])
+            valid_y_hat = model_cv.predict_proba(valid_x)[:, 1]
+            fpr, tpr, _ = roc_curve(valid_y, valid_y_hat)
             auroc = auc(fpr, tpr)
             scores.append(auroc)
             print(f"Internal AUROC CV-{r}: {auroc}")
+            y_cal += list(valid_y)
+            probs_cal += list(valid_y_hat)
+        print(f"Doing isotonic regression for calibration...")
+        self.iso_reg_ = IsotonicRegression(out_of_bounds='clip')
+        self.iso_reg_.fit(probs_cal, y_cal)
+        print(f"Isotonic regression fit done.")
         self.mean_score_ = np.mean(scores)
+        self.std_score_ = np.std(scores)
         print(f"Average AUROC: {self.mean_score_}")
         self.model_ = RandomForestClassifier(**hyperparams)
         self.model_.fit(X, y)
@@ -602,7 +616,9 @@ class BaseRandomForestBinaryClassifier(BaseEstimator, ClassifierMixin):
     def predict_proba(self, X):
         if not hasattr(self, "model_") or self.model_ is None:
             raise ValueError("Model not fitted. Call `fit` first.")
-        return self.model_.predict_proba(X)
+        y_hat = self.model_.predict_proba(X)[:,1]
+        y_hat = self.iso_reg_.predict(y_hat)
+        return np.vstack((1 - y_hat, y_hat)).T
     
     def predict(self, X):
         proba = self.predict_proba(X)[:, 1]
@@ -620,12 +636,14 @@ class BaseRandomForestBinaryClassifier(BaseEstimator, ClassifierMixin):
 
         model_path = os.path.join(model_dir, "model.joblib")
         joblib.dump(self.model_, model_path)
+        joblib.dump(self.iso_reg_, os.path.join(model_dir, "iso_reg.joblib"))
 
         metadata = {
             "random_state": self.random_state,
             "num_splits": self.num_splits,
             "test_size": self.test_size,
-            "mean_score_": getattr(self, "mean_score_", None)
+            "mean_score_": getattr(self, "mean_score_", None),
+            "std_score_": getattr(self, "std_score_", None)
         }
         meta_path = os.path.join(model_dir, "metadata.json")
         with open(meta_path, "w") as f:
@@ -640,7 +658,10 @@ class BaseRandomForestBinaryClassifier(BaseEstimator, ClassifierMixin):
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"Model file {model_path} not found.")
         model = joblib.load(model_path)
-
+        iso_reg_path = os.path.join(model_dir, "iso_reg.joblib")
+        if not os.path.exists(iso_reg_path):
+            raise FileNotFoundError(f"Isotonic regression file {iso_reg_path} not found.")
+        iso_reg = joblib.load(iso_reg_path)
         meta_path = os.path.join(model_dir, "metadata.json")
         if not os.path.exists(meta_path):
             raise FileNotFoundError(f"Metadata file {meta_path} not found.")
@@ -653,7 +674,9 @@ class BaseRandomForestBinaryClassifier(BaseEstimator, ClassifierMixin):
             test_size=metadata["test_size"]
         )
         obj.model_ = model
+        obj.iso_reg_ = iso_reg
         obj.mean_score_ = metadata.get("mean_score_", None)
+        obj.std_score_ = metadata.get("std_score_", None)
 
         return obj
 
