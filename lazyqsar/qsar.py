@@ -5,7 +5,6 @@ import numpy as np
 from .descriptors import MorganDescriptor, MordredDescriptor, RdkitDescriptor, ClassicDescriptor, MaccsDescriptor
 from .models.xgboost_binary_classifier import LazyXGBoostBinaryClassifier
 from .models.tunetables_classifier_light import TuneTablesClassifierLight, TuneTablesZeroShotClassifier
-from .models.zs_random_forest_binary_classifier import LazyZSRandomForestBinaryClassifier
 from .models.random_forest_binary_classifier import LazyRandomForestBinaryClassifier
 
 
@@ -19,17 +18,15 @@ descriptors_dict = {
 
 
 models_dict = {
-    "xgboost": LazyXGBoostBinaryClassifier,
     "tunetables": TuneTablesClassifierLight,
     "zstunetables": TuneTablesZeroShotClassifier,
-    "zsrandomforest": LazyZSRandomForestBinaryClassifier,
-    "randomforest": LazyRandomForestBinaryClassifier
+    "random_forest": LazyRandomForestBinaryClassifier
 }
 
 
 class LazyBinaryQSAR(object):
 
-    def __init__(self, descriptor_type="morgan", model_type="randomforest", **kwargs):
+    def __init__(self, descriptor_type="morgan", model_type="random_forest", **kwargs):
         self.descriptor_type = descriptor_type
         self.model_type = model_type
 
