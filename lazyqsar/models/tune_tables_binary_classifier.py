@@ -9,6 +9,11 @@ from tqdm import tqdm
 
 from .utils import SamplingUtils, InputUtils
 
+class BaseTuneTablesBinaryClassifier(object):
+    # TODO class
+
+
+
 
 class TuneTablesBinaryClassifier(object):
 
@@ -58,7 +63,8 @@ class TuneTablesBinaryClassifier(object):
         else:
             pass
         # TODO Fit model
-        # self.model = ...
+        # self.model = BaseTuneTablesBinaryClassifier(...)
+        # self.model.fit(X, y)
         t1 = time.time()
         self.fit_time = t1 - t0
         print(f"Fitting completed in {self.fit_time:.2f} seconds.")
@@ -130,5 +136,5 @@ class TuneTablesBinaryClassifier(object):
         if num_partitions <= 0:
             raise Exception("No partitions found in metadata.")
         # TODO load model
-        # obj.model = ...
+        # obj.model = BaseTuneTablesBinaryClassifier.load_model(model_dir)
         return obj
