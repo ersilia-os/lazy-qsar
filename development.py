@@ -40,5 +40,5 @@ plt.grid()
 plt.show()
 
 # Step 5: Brier Score
-brier = brier_score_loss(y, prob_pos)
+brier = brier_score_loss(y_test, prob_pos)
 print(f"Brier score: {brier:.4f}")
