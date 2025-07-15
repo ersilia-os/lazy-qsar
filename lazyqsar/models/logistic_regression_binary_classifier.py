@@ -74,8 +74,6 @@ class BaseLogisticRegressionBinaryClassifier(BaseEstimator, ClassifierMixin):
         fit_intercept = model_cv.fit_intercept
         class_weight = model_cv.class_weight
         intercept_scaling = getattr(model_cv, 'intercept_scaling', 1)
-
-        # Step 3: Create and train equivalent LogisticRegression
         model = LogisticRegression(
                     C=best_C,
                     solver=solver,
