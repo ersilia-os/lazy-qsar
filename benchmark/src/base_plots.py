@@ -11,7 +11,7 @@ DATAPATH = "../data"
 # Compare METHODS
 
 descs = ["morgan", "mordred"]
-models = ["zstunetables","tunetables","xgboost", "xgboost_pca", "zsrandomforest"]
+models = ["xgboost", "xgboost_pca","randomforest","zsrandomforest"]
 
 
 benchmark = {"bioavailability_ma":[0.748,0.033], "hia_hou":[0.989,0.001], "pgp_broccatelli":[0.938,0.002], 

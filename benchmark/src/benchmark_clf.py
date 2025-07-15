@@ -4,19 +4,17 @@ from tdc.benchmark_group import admet_group
 from sklearn.metrics import roc_curve, auc
 from sklearn.metrics import precision_recall_curve, auc, average_precision_score
 import lazyqsar as lq
+from lazyqsar.qsar import LazyBinaryQSAR
 
 model_type = sys.argv[1]
 desc = sys.argv[2]
 
 DATAPATH = "../data"
-"""
+
 clf_datasets = ["bioavailability_ma", "hia_hou", "pgp_broccatelli", "bbb_martins", "cyp2c9_veith","cyp2d6_veith",
                   "cyp3a4_veith", "cyp2c9_substrate_carbonmangels", "cyp2d6_substrate_carbonmangels",
                   "cyp3a4_substrate_carbonmangels","herg","ames", "dili"]
-"""
-clf_datasets = ["cyp2c9_veith","cyp2d6_veith",
-                "cyp3a4_veith", "cyp2c9_substrate_carbonmangels", "cyp2d6_substrate_carbonmangels",
-                "dili"]
+
 def get_data():
     group = admet_group(path = '../data/')
     names = group.dataset_names
@@ -35,7 +33,7 @@ if __name__ == '__main__':
             if model_type=="zstunetables" and len(train_val) > 1000:
                 print("Skipping zeroshot for dataset with more than 1000 samples")
                 continue
-            model = lq.LazyBinaryQSAR(model_type=model_type, descriptor_type=desc)
+            model = LazyBinaryQSAR(model_type=model_type, descriptor_type=desc)
             model.fit(train_val["Drug"], train_val["Y"])
             y_pred_test = model.predict_proba(test["Drug"])
 

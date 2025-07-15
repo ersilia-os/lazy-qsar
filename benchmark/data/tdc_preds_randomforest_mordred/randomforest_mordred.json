@@ -1,4 +1,20 @@
 {
+  "bioavailability_ma": [
+    0.659,
+    0.007
+  ],
+  "hia_hou": [
+    0.966,
+    0.003
+  ],
+  "pgp_broccatelli": [
+    0.896,
+    0.002
+  ],
+  "bbb_martins": [
+    0.907,
+    0.001
+  ],
   "cyp2c9_veith": [
     0.771,
     0.0
@@ -17,6 +33,18 @@
   ],
   "cyp2d6_substrate_carbonmangels": [
     0.629,
+    0.001
+  ],
+  "cyp3a4_substrate_carbonmangels": [
+    0.655,
+    0.003
+  ],
+  "herg": [
+    0.791,
+    0.001
+  ],
+  "ames": [
+    0.861,
     0.001
   ],
   "dili": [

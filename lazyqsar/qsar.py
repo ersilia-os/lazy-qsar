@@ -20,7 +20,7 @@ models_dict = {
     "tunetables": TuneTablesBinaryClassifier,
     "zstunetables": TuneTablesZeroShotBinaryClassifier,
     "zsrandomforest": LazyZSRandomForestBinaryClassifier,
-    "randomforest":LazyRandomForestBinaryClassifier
+    "randomforest": LazyRandomForestBinaryClassifier
 }
 
 

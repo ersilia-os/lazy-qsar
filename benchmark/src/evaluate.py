@@ -11,14 +11,10 @@ DATAPATH = "../data"
 model_type = sys.argv[1]
 desc = sys.argv[2]
 
-"""
 clf_datasets = ["bioavailability_ma", "hia_hou", "pgp_broccatelli", "bbb_martins", "cyp2c9_veith","cyp2d6_veith",
                   "cyp3a4_veith", "cyp2c9_substrate_carbonmangels", "cyp2d6_substrate_carbonmangels",
                   "cyp3a4_substrate_carbonmangels","herg","ames", "dili"]
-"""
-clf_datasets = ["cyp2c9_veith","cyp2d6_veith",
-                "cyp3a4_veith", "cyp2c9_substrate_carbonmangels", "cyp2d6_substrate_carbonmangels",
-                "dili"]
+
 
 group = admet_group(path = '../data/')
 

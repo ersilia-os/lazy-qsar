@@ -22,6 +22,7 @@ from sklearn.metrics import roc_curve, auc, roc_auc_score
 from sklearn.model_selection import train_test_split
 from sklearn.naive_bayes import BernoulliNB, GaussianNB
 from sklearn.model_selection import StratifiedKFold
+from sklearn.linear_model import LogisticRegression
 from flaml.default import RandomForestClassifier as ZeroShotRandomForestClassifier
 
 NUM_CPU = max(1, multiprocessing.cpu_count() - 1)
@@ -234,6 +235,7 @@ class SamplingUtils(object):
             raise Exception(f"Not enough total samples: {n_tot} < {min_samples}.")
         n_pos_original = int(n_pos)
         n_tot_original = int(n_tot)
+        n_neg_original = n_tot_original - n_pos_original
         print(f"Original positive samples: {n_pos_original}, total samples: {n_tot_original}")
         print("Maximum samples:", max_samples)
         if n_tot <= max_samples:
@@ -242,7 +244,13 @@ class SamplingUtils(object):
                 n_tot = int(np.round(n_pos / min_positive_proportion, 0))
                 return n_pos, n_tot
             elif pos_prop > max_positive_proportion:
+                n_tot = int(np.round(n_neg_original / (1 - max_positive_proportion), 0))
                 n_pos = int(np.round(n_tot * max_positive_proportion, 0))
+                if n_pos > n_pos_original:
+                    n_pos = n_pos_original
+                    n_tot = int(np.round(n_pos / max_positive_proportion, 0))
+                else:
+                    n_tot = int(np.round(n_pos / max_positive_proportion, 0))
                 return n_pos, n_tot
             else:
                 return n_pos, n_tot
@@ -450,29 +458,35 @@ class BaseRandomForestBinaryClassifier(BaseEstimator, ClassifierMixin):
         max_n_estimators = min(1000, int(def_n_estimators) + 100)
         # suggesting range of max_features
         def_max_features = hyperparams["max_features"]
-        if def_max_features is None:
-            def_max_features = 1.0
-        elif str(def_max_features) == "sqrt":
-            def_max_features = np.sqrt(n_features) / n_features
-        elif str(def_max_features) == "log2":
-            def_max_features = np.log2(n_features) / n_features
-        elif str(def_max_features) == "auto":
-            def_max_features = np.sqrt(n_features) / n_features # if auto, assume sqrt
-        elif def_max_features > 1:
-            def_max_features = def_max_features / n_features # if it is above 1, assume it is an absolute number
+        if def_max_features == "auto" or def_max_features == "sqrt" or def_max_features == "log2":
+            max_features_range = [def_max_features]
         else:
-            pass
-        min_max_features = max(0.05, def_max_features - 0.2)
-        max_max_features = min(1.0, def_max_features + 0.2)
+            if def_max_features is None:
+                def_max_features = 1.0
+            elif def_max_features > 1:
+                def_max_features = def_max_features / n_features # if it is above 1, assume it is an absolute number
+            else:
+                pass
+            min_max_features = max(0.05, def_max_features - 0.2)
+            max_max_features = min(1.0, def_max_features + 0.2)
+            max_features_range = sorted([min_max_features, max_max_features])
+            if min_max_features == max_max_features:
+                min_max_features = min_max_features-0.01
         # suggesting max leaf nodes
-        def_max_leaf_nodes = hyperparams["max_leaf_nodes"]
-        def_max_leaf_nodes_log2 = math.log2(def_max_leaf_nodes) if def_max_leaf_nodes > 0 else 0
-        min_max_leaf_nodes_log2 = max(4, def_max_leaf_nodes_log2 - 1)
-        max_max_leaf_nodes_log2 = min(10, def_max_leaf_nodes_log2 + 1)
-        min_max_leaf_nodes = int(np.round(2 ** min_max_leaf_nodes_log2, 0))
-        max_max_leaf_nodes = int(np.round(2 ** max_max_leaf_nodes_log2, 0))
-        min_max_leaf_nodes = min(min_max_leaf_nodes, int(n_samples*(1-test_size)))
-        max_max_leaf_nodes = max(max_max_leaf_nodes, max(int(n_samples*(1-test_size)), def_max_leaf_nodes))
+        if hyperparams["max_leaf_nodes"] is None:
+            max_leaf_nodes_range = [None]
+        else:
+            def_max_leaf_nodes = hyperparams["max_leaf_nodes"]
+            def_max_leaf_nodes_log2 = math.log2(def_max_leaf_nodes) if def_max_leaf_nodes > 0 else 0
+            min_max_leaf_nodes_log2 = max(4, def_max_leaf_nodes_log2 - 1)
+            max_max_leaf_nodes_log2 = min(10, def_max_leaf_nodes_log2 + 1)
+            min_max_leaf_nodes = int(np.round(2 ** min_max_leaf_nodes_log2, 0))
+            max_max_leaf_nodes = int(np.round(2 ** max_max_leaf_nodes_log2, 0))
+            min_max_leaf_nodes = min(min_max_leaf_nodes, int(n_samples*(1-test_size)))
+            max_max_leaf_nodes = max(max_max_leaf_nodes, max(int(n_samples*(1-test_size)), def_max_leaf_nodes))
+            max_leaf_nodes_range = sorted([min_max_leaf_nodes, max_max_leaf_nodes])
+            if min_max_leaf_nodes == max_max_leaf_nodes:
+                min_max_leaf_nodes = min_max_leaf_nodes - 1
         # criterion
         if "criterion" in hyperparams:
             criterion = hyperparams["criterion"]
@@ -481,24 +495,28 @@ class BaseRandomForestBinaryClassifier(BaseEstimator, ClassifierMixin):
         # sanity check (should not happen)
         if min_n_estimators == max_n_estimators:
             max_n_estimators = min_n_estimators + 1
-        if min_max_features == max_max_features:
-            min_max_features = min_max_features-0.01
-        if min_max_leaf_nodes == max_max_leaf_nodes:
-            min_max_leaf_nodes = min_max_leaf_nodes - 1
         # preparing the parameters
         param = {
             "n_estimators": sorted([min_n_estimators, max_n_estimators]),
-            "max_features": sorted([min_max_features, max_max_features]), 
-            "max_leaf_nodes": sorted([min_max_leaf_nodes, max_max_leaf_nodes]),
-            "criterion": [criterion]
+            "max_features": max_features_range, 
+            "max_leaf_nodes": max_leaf_nodes_range,
+            "criterion": [criterion],
+            "class_weight": ["balanced_subsample"]
         }
         return param
 
     def _objective(self, trial, X, y, param):
-        param = {"n_estimators": trial.suggest_int("n_estimators", param["n_estimators"][0], param["n_estimators"][1]),
-                 "max_features": trial.suggest_float("max_features", param["max_features"][0], param["max_features"][1]),
-                 "max_leaf_nodes": trial.suggest_int("max_leaf_nodes", param["max_leaf_nodes"][0], param["max_leaf_nodes"][1], log=True),
-                 "criterion": trial.suggest_categorical("criterion", param["criterion"])}
+        param_ = {"n_estimators": trial.suggest_int("n_estimators", param["n_estimators"][0], param["n_estimators"][1])}
+        if len(param["max_features"]) == 1:
+            param_["max_features"] = trial.suggest_categorical("max_features", param["max_features"])
+        else:
+            param_["max_features"] = trial.suggest_float("max_features", param["max_features"][0], param["max_features"][1])
+        if len(param["max_leaf_nodes"]) == 1:
+            param_["max_leaf_nodes"] = trial.suggest_categorical("max_leaf_nodes", param["max_leaf_nodes"])
+        else:
+            param_["max_leaf_nodes"] = trial.suggest_int("max_leaf_nodes", param["max_leaf_nodes"][0], param["max_leaf_nodes"][1], log=True)
+        param_["criterion"] = trial.suggest_categorical("criterion", param["criterion"])
+        param = param_
         param["n_jobs"] = NUM_CPU
         scores = []
         for _ in range(self.num_splits):
@@ -515,6 +533,14 @@ class BaseRandomForestBinaryClassifier(BaseEstimator, ClassifierMixin):
     def _suggest_best_params(self, X, y, test_size):
         zero_shot_cv = ZeroShotRandomForestClassifier()
         hyperparams = zero_shot_cv.suggest_hyperparams(X, y)[0]
+        if hyperparams == {}:
+            hyperparams = {
+                "n_estimators": 100,
+                "max_features": "sqrt",
+                "max_leaf_nodes": None,
+                "criterion": "gini"
+            }
+        hyperparams["class_weight"] = "balanced_subsample"
         print("Suggested zero-shot hyperparameters:", hyperparams)
         n_samples, n_features = X.shape
         hyperparam_search = self._suggest_param_search(hyperparams, n_samples, n_features, test_size)
@@ -574,19 +600,30 @@ class BaseRandomForestBinaryClassifier(BaseEstimator, ClassifierMixin):
         score = results['best_value']
         hyperparams['n_jobs'] = NUM_CPU
         hyperparams['random_state'] = self.random_state
+        hyperparams['class_weight'] = 'balanced_subsample'
         print(f"Best hyperparameters: {hyperparams}, Inner hyperparameter AUROC: {score}")
         scores = []
+        y_cal = []
+        probs_cal = []
         for r in range(self.num_splits):
             train_x, valid_x, train_y, valid_y = train_test_split(
                 X, y, test_size=self.test_size, random_state=self.random_state + r, stratify=y
             )
             model_cv = RandomForestClassifier(**hyperparams)
             model_cv.fit(train_x, train_y)
-            fpr, tpr, _ = roc_curve(valid_y, model_cv.predict_proba(valid_x)[:, 1])
+            valid_y_hat = model_cv.predict_proba(valid_x)[:, 1]
+            fpr, tpr, _ = roc_curve(valid_y, valid_y_hat)
             auroc = auc(fpr, tpr)
             scores.append(auroc)
             print(f"Internal AUROC CV-{r}: {auroc}")
+            y_cal += list(valid_y)
+            probs_cal += list(valid_y_hat)
+        print(f"Logistic regression for calibration...")
+        self.platt_reg_ = LogisticRegression(solver='lbfgs', max_iter=1000)
+        self.platt_reg_.fit(np.array(probs_cal).reshape(-1, 1), y_cal)
+        print(f"Logistic regression fit done.")
         self.mean_score_ = np.mean(scores)
+        self.std_score_ = np.std(scores)
         print(f"Average AUROC: {self.mean_score_}")
         self.model_ = RandomForestClassifier(**hyperparams)
         self.model_.fit(X, y)
@@ -595,7 +632,9 @@ class BaseRandomForestBinaryClassifier(BaseEstimator, ClassifierMixin):
     def predict_proba(self, X):
         if not hasattr(self, "model_") or self.model_ is None:
             raise ValueError("Model not fitted. Call `fit` first.")
-        return self.model_.predict_proba(X)
+        y_hat = self.model_.predict_proba(X)[:,1]
+        y_hat = self.platt_reg_.predict_proba(y_hat.reshape(-1, 1))[:, 1]
+        return np.vstack((1 - y_hat, y_hat)).T
     
     def predict(self, X):
         proba = self.predict_proba(X)[:, 1]
@@ -613,12 +652,14 @@ class BaseRandomForestBinaryClassifier(BaseEstimator, ClassifierMixin):
 
         model_path = os.path.join(model_dir, "model.joblib")
         joblib.dump(self.model_, model_path)
+        joblib.dump(self.platt_reg_, os.path.join(model_dir, "platt_reg.joblib"))
 
         metadata = {
             "random_state": self.random_state,
             "num_splits": self.num_splits,
             "test_size": self.test_size,
-            "mean_score_": getattr(self, "mean_score_", None)
+            "mean_score_": getattr(self, "mean_score_", None),
+            "std_score_": getattr(self, "std_score_", None)
         }
         meta_path = os.path.join(model_dir, "metadata.json")
         with open(meta_path, "w") as f:
@@ -633,7 +674,10 @@ class BaseRandomForestBinaryClassifier(BaseEstimator, ClassifierMixin):
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"Model file {model_path} not found.")
         model = joblib.load(model_path)
-
+        platt_reg_path = os.path.join(model_dir, "platt_reg.joblib")
+        if not os.path.exists(platt_reg_path):
+            raise FileNotFoundError(f"Isotonic regression file {platt_reg_path} not found.")
+        platt_reg = joblib.load(platt_reg_path)
         meta_path = os.path.join(model_dir, "metadata.json")
         if not os.path.exists(meta_path):
             raise FileNotFoundError(f"Metadata file {meta_path} not found.")
@@ -646,7 +690,9 @@ class BaseRandomForestBinaryClassifier(BaseEstimator, ClassifierMixin):
             test_size=metadata["test_size"]
         )
         obj.model_ = model
+        obj.platt_reg_ = platt_reg
         obj.mean_score_ = metadata.get("mean_score_", None)
+        obj.std_score_ = metadata.get("std_score_", None)
 
         return obj
 
@@ -660,12 +706,12 @@ class LazyRandomForestBinaryClassifier(object):
                  base_test_size: float = 0.25,
                  base_num_splits: int = 3,
                  base_timeout: int = 120,
-                 min_positive_proportion: float=0.01,
-                 max_positive_proportion: float=0.5,
-                 min_samples: int=30,
-                 max_samples: int=10000,
-                 min_positive_samples: int=10,
-                 max_num_partitions: int=100,
+                 min_positive_proportion: float = 0.01,
+                 max_positive_proportion: float = 0.5,
+                 min_samples: int = 30,
+                 max_samples: int = 10000,
+                 min_positive_samples: int = 10,
+                 max_num_partitions: int = 100,
                  min_seen_across_partitions: int = 1,
                  force_on_disk: bool = False,
                  random_state: int = 42):
