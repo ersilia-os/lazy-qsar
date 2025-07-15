@@ -1,4 +1,4 @@
-from lazyqsar.models.random_forest_binary_classifier import LazyRandomForestBinaryClassifier
+from lazyqsar.models.logistic_regression_binary_classifier import LazyLogisticRegressionBinaryClassifier
 from sklearn.datasets import make_classification
 from sklearn.calibration import calibration_curve
 from sklearn.metrics import brier_score_loss
@@ -19,7 +19,7 @@ X, y = make_classification(
 from sklearn.model_selection import train_test_split
 # Step 2: Train the classifier
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-clf = LazyRandomForestBinaryClassifier()
+clf = LazyLogisticRegressionBinaryClassifier()
 clf.fit(X_train, y_train)
 
 # Step 3: Get predicted probabilities for class 1
