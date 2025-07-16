@@ -21,9 +21,9 @@ y_valid = list(split["valid"]["Y"])
 def fit():
     import time
     st = time.perf_counter()
-    model = lazyqsar.LazyBinaryQSAR(descriptor_type="chemeleon", model_type="tunetables")
+    model = lazyqsar.LazyBinaryQSAR(descriptor_type="chemeleon", model_type="randomforest")
     model.fit(smiles_train, y_train)
-    model_path = os.path.abspath("tunetables_chemeleon_new_4_epoch")
+    model_path = os.path.abspath("rf")
     model.save_model(model_path)
     y_hat = model.predict_proba(smiles_valid)
     fpr, tpr, _ = roc_curve(y_valid, y_hat)
@@ -35,7 +35,7 @@ def predict():
     import time
     print(f"Length of the X sample: {len(smiles_valid)}")
     st = time.perf_counter()
-    model_path = os.path.abspath("tunetables_chemetunetables_chemeleon_new_4_epochleon_new")
+    model_path = os.path.abspath("rf")
     model = lazyqsar.LazyBinaryQSAR.load_model(model_path)
     y_hat = model.predict_proba(smiles_valid)
     fpr, tpr, _ = roc_curve(y_valid, y_hat)

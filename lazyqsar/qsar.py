@@ -24,7 +24,7 @@ models_dict = {
 
 class LazyBinaryQSAR(object):
 
-    def __init__(self, descriptor_type="morgan", model_type="random_forest", **kwargs):
+    def __init__(self, descriptor_type="morgan", model_type="randomforest", **kwargs):
         self.descriptor_type = descriptor_type
         self.model_type = model_type
 
