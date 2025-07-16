@@ -13,6 +13,7 @@ authors = [
   { name = "Ersilia Open Source Initiative", email = "hello@ersilia.io" },
   { name = "Miquel Duran Frigola",       email = "miquel@ersilia.io" },
   { name = "Gemma Turon Rodrigo",        email = "gemma@ersilia.io" },
+  { name = "Gemma Turon Rodrigo",        email = "gemma@ersilia.io" },
 ]
 keywords = ["qsar", "machine-learning", "chemistry", "computer-aided-drug-design"]
 classifiers = [

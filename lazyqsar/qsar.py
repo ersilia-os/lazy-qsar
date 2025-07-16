@@ -3,7 +3,7 @@ import json
 import numpy as np
 
 from .descriptors import MorganDescriptor, MordredDescriptor, RdkitDescriptor, ClassicDescriptor, MaccsDescriptor, ChemeleonDescriptor
-from .models import LazyXGBoostBinaryClassifier, LazyZSRandomForestBinaryClassifier, LazyRandomForestBinaryClassifier, LazyTuneTablesBinaryClassifier
+from .models import LazyRandomForestBinaryClassifier, LazyTuneTablesBinaryClassifier
 
 
 descriptors_dict = {
@@ -17,16 +17,14 @@ descriptors_dict = {
 
 
 models_dict = {
-    "xgboost": LazyXGBoostBinaryClassifier,
     "tunetables": LazyTuneTablesBinaryClassifier,
-    "zsrandomforest": LazyZSRandomForestBinaryClassifier,
     "randomforest": LazyRandomForestBinaryClassifier
 }
 
 
 class LazyBinaryQSAR(object):
 
-    def __init__(self, descriptor_type="morgan", model_type="randomforest", **kwargs):
+    def __init__(self, descriptor_type="morgan", model_type="random_forest", **kwargs):
         self.descriptor_type = descriptor_type
         self.model_type = model_type
 

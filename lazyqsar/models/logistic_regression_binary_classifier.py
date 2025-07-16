@@ -1,31 +1,26 @@
 import joblib
 import json
-import math
 import time
 import numpy as np
-import optuna
 import os
 import shutil
-import sklearn
 import h5py
 import multiprocessing
 from tqdm import tqdm
-from sklearn.ensemble import RandomForestClassifier
 from sklearn.base import BaseEstimator, ClassifierMixin
+from sklearn.model_selection import StratifiedKFold
 from sklearn.decomposition import PCA
 from sklearn.feature_selection import SelectKBest, f_classif
 from sklearn.feature_selection import VarianceThreshold
-from sklearn.metrics import roc_curve, auc, roc_auc_score
-from sklearn.model_selection import train_test_split
-from sklearn.linear_model import LogisticRegression
-from flaml.default import RandomForestClassifier as ZeroShotRandomForestClassifier
+from sklearn.metrics import roc_auc_score
+from sklearn.linear_model import LogisticRegression, LogisticRegressionCV
 from .utils import SamplingUtils, InputUtils
 
 
 NUM_CPU = max(1, multiprocessing.cpu_count() - 1)
 
 
-class BaseRandomForestBinaryClassifier(BaseEstimator, ClassifierMixin):
+class BaseLogisticRegressionBinaryClassifier(BaseEstimator, ClassifierMixin):
     def __init__(
         self,
         num_splits: int = 3,
@@ -41,189 +36,61 @@ class BaseRandomForestBinaryClassifier(BaseEstimator, ClassifierMixin):
         self.timeout = timeout
         self.mean_score_ = None
 
-    def _suggest_param_search(self, hyperparams, n_samples, n_features, test_size):
-        # suggesting range of n_estimators
-        def_n_estimators = hyperparams["n_estimators"]
-        min_n_estimators = max(10, int(def_n_estimators) - 100)
-        max_n_estimators = min(1000, int(def_n_estimators) + 100)
-        # suggesting range of max_features
-        def_max_features = hyperparams["max_features"]
-        if def_max_features == "auto" or def_max_features == "sqrt" or def_max_features == "log2":
-            max_features_range = [def_max_features]
-        else:
-            if def_max_features is None:
-                def_max_features = 1.0
-            elif def_max_features > 1:
-                def_max_features = def_max_features / n_features # if it is above 1, assume it is an absolute number
-            else:
-                pass
-            min_max_features = max(0.05, def_max_features - 0.2)
-            max_max_features = min(1.0, def_max_features + 0.2)
-            max_features_range = sorted([min_max_features, max_max_features])
-            if min_max_features == max_max_features:
-                min_max_features = min_max_features-0.01
-        # suggesting max leaf nodes
-        if hyperparams["max_leaf_nodes"] is None:
-            max_leaf_nodes_range = [None]
-        else:
-            def_max_leaf_nodes = hyperparams["max_leaf_nodes"]
-            def_max_leaf_nodes_log2 = math.log2(def_max_leaf_nodes) if def_max_leaf_nodes > 0 else 0
-            min_max_leaf_nodes_log2 = max(4, def_max_leaf_nodes_log2 - 1)
-            max_max_leaf_nodes_log2 = min(10, def_max_leaf_nodes_log2 + 1)
-            min_max_leaf_nodes = int(np.round(2 ** min_max_leaf_nodes_log2, 0))
-            max_max_leaf_nodes = int(np.round(2 ** max_max_leaf_nodes_log2, 0))
-            min_max_leaf_nodes = min(min_max_leaf_nodes, int(n_samples*(1-test_size)))
-            max_max_leaf_nodes = max(max_max_leaf_nodes, max(int(n_samples*(1-test_size)), def_max_leaf_nodes))
-            max_leaf_nodes_range = sorted([min_max_leaf_nodes, max_max_leaf_nodes])
-            if min_max_leaf_nodes == max_max_leaf_nodes:
-                min_max_leaf_nodes = min_max_leaf_nodes - 1
-        # criterion
-        if "criterion" in hyperparams:
-            criterion = hyperparams["criterion"]
-        else:
-            criterion = "gini"
-        # sanity check (should not happen)
-        if min_n_estimators == max_n_estimators:
-            max_n_estimators = min_n_estimators + 1
-        # preparing the parameters
-        param = {
-            "n_estimators": sorted([min_n_estimators, max_n_estimators]),
-            "max_features": max_features_range, 
-            "max_leaf_nodes": max_leaf_nodes_range,
-            "criterion": [criterion],
-            "class_weight": ["balanced_subsample"]
-        }
-        return param
-
-    def _objective(self, trial, X, y, param):
-        param_ = {"n_estimators": trial.suggest_int("n_estimators", param["n_estimators"][0], param["n_estimators"][1])}
-        if len(param["max_features"]) == 1:
-            param_["max_features"] = trial.suggest_categorical("max_features", param["max_features"])
-        else:
-            param_["max_features"] = trial.suggest_float("max_features", param["max_features"][0], param["max_features"][1])
-        if len(param["max_leaf_nodes"]) == 1:
-            param_["max_leaf_nodes"] = trial.suggest_categorical("max_leaf_nodes", param["max_leaf_nodes"])
-        else:
-            param_["max_leaf_nodes"] = trial.suggest_int("max_leaf_nodes", param["max_leaf_nodes"][0], param["max_leaf_nodes"][1], log=True)
-        param_["criterion"] = trial.suggest_categorical("criterion", param["criterion"])
-        param = param_
-        param["n_jobs"] = NUM_CPU
-        scores = []
-        for _ in range(self.num_splits):
-            train_x, valid_x, train_y, valid_y = train_test_split(
-                X, y, test_size=self.test_size, random_state=self.random_state, stratify=y
-            )
-            model = RandomForestClassifier(**param)
-            model.fit(train_x, train_y)
-            preds = model.predict_proba(valid_x)[:, 1]
-            score = sklearn.metrics.roc_auc_score(valid_y, preds)
-            scores += [float(score)]
-        return np.mean(scores)
-
-    def _suggest_best_params(self, X, y, test_size):
-        zero_shot_cv = ZeroShotRandomForestClassifier()
-        hyperparams = zero_shot_cv.suggest_hyperparams(X, y)[0]
-        if hyperparams == {}:
-            hyperparams = {
-                "n_estimators": 100,
-                "max_features": "sqrt",
-                "max_leaf_nodes": None,
-                "criterion": "gini"
-            }
-        hyperparams["class_weight"] = "balanced_subsample"
-        print("Suggested zero-shot hyperparameters:", hyperparams)
-        n_samples, n_features = X.shape
-        hyperparam_search = self._suggest_param_search(hyperparams, n_samples, n_features, test_size)
-
-        sampler = optuna.samplers.TPESampler(seed=self.random_state)
-        study = optuna.create_study(
-            direction="maximize",
-            study_name=None,
-            sampler=sampler,
-        )
-
-        study.enqueue_trial(hyperparams)
-
-        print("Fitting...")
-        best_score = -np.inf
-        trials_without_improvement = 0
-        improvement_threshold = 0.01
-        patience = max(5, self.num_trials // 5)
-        early_stopping = False
-        baseline_score_for_patience = best_score
-
-        def objective_with_custom_early_stop(trial):
-            nonlocal best_score, trials_without_improvement, early_stopping, baseline_score_for_patience
-            if early_stopping:
-                print("Skipping trial due to early stopping criteria.")
-                raise optuna.exceptions.TrialPruned()
-            score = self._objective(trial, X, y, hyperparam_search)
-            if score > best_score:
-                best_score = score
-            if score > baseline_score_for_patience + improvement_threshold:
-                trials_without_improvement = 0
-                baseline_score_for_patience = score
-            else:
-                trials_without_improvement += 1
-            if trials_without_improvement >= patience:
-                early_stopping = True
-                print(f"Early stopping: No significant improvement in the last {patience} trials.")
-                raise optuna.exceptions.TrialPruned()
-            return score
-        
-        study.optimize(
-            objective_with_custom_early_stop,
-            n_trials=self.num_trials,
-            timeout=self.timeout
-        )
-
-        results = {
-            "best_params": study.best_params,
-            "best_value": study.best_value,
-        }
-        
-        return results
-
     def fit(self, X, y):
-        results = self._suggest_best_params(X, y, self.test_size)
-        hyperparams = results['best_params']
-        score = results['best_value']
-        hyperparams['n_jobs'] = NUM_CPU
-        hyperparams['random_state'] = self.random_state
-        hyperparams['class_weight'] = 'balanced_subsample'
-        print(f"Best hyperparameters: {hyperparams}, Inner hyperparameter AUROC: {score}")
         scores = []
-        y_cal = []
-        probs_cal = []
-        for r in range(self.num_splits):
-            train_x, valid_x, train_y, valid_y = train_test_split(
-                X, y, test_size=self.test_size, random_state=self.random_state + r, stratify=y
-            )
-            model_cv = RandomForestClassifier(**hyperparams)
-            model_cv.fit(train_x, train_y)
-            valid_y_hat = model_cv.predict_proba(valid_x)[:, 1]
-            fpr, tpr, _ = roc_curve(valid_y, valid_y_hat)
-            auroc = auc(fpr, tpr)
-            scores.append(auroc)
-            print(f"Internal AUROC CV-{r}: {auroc}")
-            y_cal += list(valid_y)
-            probs_cal += list(valid_y_hat)
-        print(f"Logistic regression for calibration...")
-        self.platt_reg_ = LogisticRegression(solver='lbfgs', max_iter=1000)
-        self.platt_reg_.fit(np.array(probs_cal).reshape(-1, 1), y_cal)
+        num_splits = self.num_splits
+        test_size = self.test_size
+        if num_splits is None:
+            num_splits = 3
+        if test_size is None:
+            test_size = 0.25
+        num_splits = max(num_splits, int(1 / test_size))
+        cv = StratifiedKFold(n_splits=num_splits, shuffle=True, random_state=self.random_state)
+        model_cv = LogisticRegressionCV(
+            class_weight="balanced",
+            refit=True,
+            n_jobs=NUM_CPU,
+            cv=cv,
+            random_state=self.random_state,
+            scoring="roc_auc"
+        )
+        model_cv.fit(X, y)
+        if hasattr(model_cv, "scores_"):
+            scores_dict = model_cv.scores_
+            if 1 in scores_dict:
+                scores = scores_dict[1].mean(axis=1)
+            else:
+                scores = list(scores_dict.values())[0].mean(axis=1)
+        else:
+            scores = []
         print(f"Logistic regression fit done.")
         self.mean_score_ = np.mean(scores)
         self.std_score_ = np.std(scores)
         print(f"Average AUROC: {self.mean_score_}")
-        self.model_ = RandomForestClassifier(**hyperparams)
-        self.model_.fit(X, y)
+
+        best_C = model_cv.C_[0]
+        solver = model_cv.solver
+        penalty = model_cv.penalty
+        fit_intercept = model_cv.fit_intercept
+        class_weight = model_cv.class_weight
+        intercept_scaling = getattr(model_cv, 'intercept_scaling', 1)
+        model = LogisticRegression(
+                    C=best_C,
+                    solver=solver,
+                    penalty=penalty,
+                    fit_intercept=fit_intercept,
+                    class_weight=class_weight,
+                    intercept_scaling=intercept_scaling,
+                    max_iter=1000
+                )
+        model.fit(X, y)
+        self.model_ = model
         return self
 
     def predict_proba(self, X):
         if not hasattr(self, "model_") or self.model_ is None:
             raise ValueError("Model not fitted. Call `fit` first.")
         y_hat = self.model_.predict_proba(X)[:,1]
-        y_hat = self.platt_reg_.predict_proba(y_hat.reshape(-1, 1))[:, 1]
         return np.vstack((1 - y_hat, y_hat)).T
     
     def predict(self, X):
@@ -264,10 +131,6 @@ class BaseRandomForestBinaryClassifier(BaseEstimator, ClassifierMixin):
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"Model file {model_path} not found.")
         model = joblib.load(model_path)
-        platt_reg_path = os.path.join(model_dir, "platt_reg.joblib")
-        if not os.path.exists(platt_reg_path):
-            raise FileNotFoundError(f"Isotonic regression file {platt_reg_path} not found.")
-        platt_reg = joblib.load(platt_reg_path)
         meta_path = os.path.join(model_dir, "metadata.json")
         if not os.path.exists(meta_path):
             raise FileNotFoundError(f"Metadata file {meta_path} not found.")
@@ -280,14 +143,13 @@ class BaseRandomForestBinaryClassifier(BaseEstimator, ClassifierMixin):
             test_size=metadata["test_size"]
         )
         obj.model_ = model
-        obj.platt_reg_ = platt_reg
         obj.mean_score_ = metadata.get("mean_score_", None)
         obj.std_score_ = metadata.get("std_score_", None)
 
         return obj
 
 
-class LazyRandomForestBinaryClassifier(object):
+class LazyLogisticRegressionBinaryClassifier(object):
 
     def __init__(self,
                  reducer_method: str = None,
@@ -378,7 +240,7 @@ class LazyRandomForestBinaryClassifier(object):
             for red in reducer_:
                 X_sampled = red.transform(X_sampled)
             print(f"Fitting model on {len(idxs)} samples, positive samples: {np.sum(y_sampled)}, negative samples: {len(y_sampled) - np.sum(y_sampled)}, number of features {X_sampled.shape[1]}")
-            model = BaseRandomForestBinaryClassifier(num_splits=self.base_num_splits, test_size=self.base_test_size, num_trials=self.base_num_trials, timeout = self.base_timeout, random_state=self.random_state)
+            model = BaseLogisticRegressionBinaryClassifier(num_splits=self.base_num_splits, test_size=self.base_test_size, num_trials=self.base_num_trials, timeout = self.base_timeout, random_state=self.random_state)
             model.fit(X_sampled, y_sampled)
             print("Model fitted.")
             reducers += [reducer_]
@@ -481,7 +343,7 @@ class LazyRandomForestBinaryClassifier(object):
             print(f"Loading reducer from {reducer_path}")
             reducer = joblib.load(reducer_path)
             print(f"Loading model from {partition_dir}")
-            model = BaseRandomForestBinaryClassifier.load_model(partition_dir)
+            model = BaseLogisticRegressionBinaryClassifier.load_model(partition_dir)
             obj.reducers += [reducer]
             obj.models += [model]
         return obj

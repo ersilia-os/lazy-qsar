@@ -46,7 +46,7 @@ Now we can train a model based on Morgan fingerprints.
 ```python
 import lazyqsar as lq
 
-model = lq.LazyBinaryQSAR(descriptor_type="morgan", model_type="xgboost") 
+model = lq.LazyBinaryQSAR(descriptor_type="morgan", model_type="random_forest") 
 model.fit(smiles_list=smiles_train, y=y_train)
 model.save_model(model_dir="my_model")
 ```
@@ -79,28 +79,6 @@ smiles_train = list(split["train"]["Drug"])
 y_train = list(split["train"]["Y"])
 smiles_valid = list(split["valid"]["Drug"])
 y_valid = list(split["valid"]["Y"])
-```
-
-#### Build a model
-
-Now we can train a model based on Morgan fingerprints.
-
-```python
-import lazyqsar as lq
-
-model = lq.MorganRegressor() 
-# time_budget (in seconds) and estimator_list can be passed as parameters of the regressor. Defaults to 20s and all the available estimators in FLAML.
-model.fit(smiles_train, y_train)
-```
-
-#### Validate its performance
-
-```python
-from sklearn.metrics import mean_absolute_error, r2_score
-y_hat = model.predict(smiles_valid)
-mae = mean_absolute_error(y_valid, y_hat)
-r2 = r2_score(y_valid, y_hat)
-print("MAE", mae, "R2", r2)
 ```
 
 ## Benchmark

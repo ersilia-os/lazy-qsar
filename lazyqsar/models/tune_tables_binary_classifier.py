@@ -1,5 +1,4 @@
 
-
 import time
 import h5py
 import numpy as np
@@ -53,9 +52,7 @@ class BaseTuneTablesZeroShotBinaryClassifier(TuneTablesZeroShotClassifierBase):
 
 
 
-
 class LazyTuneTablesBinaryClassifier(object):
-
     def __init__(self,
                  min_positive_proportion: float = 0.01,
                  max_positive_proportion: float = 0.5,
@@ -77,33 +74,9 @@ class LazyTuneTablesBinaryClassifier(object):
         self.indices = None
         self.model = BaseTuneTablesBinaryClassifier()
 
-    def _fit_feature_reducer(self, X, y):
-        method = self.reducer_method
-        max_dim = self.max_reducer_dim
-        if X.shape[1] <= max_dim:
-            return []
-        reducer_0 = VarianceThreshold(threshold=0)
-        reducer_0.fit(X)
-        X = reducer_0.transform(X)
-        if X.shape[1] <= max_dim:
-            return [reducer_0]
-        if method == "pca":
-            max_dim = min(max_dim, X.shape[0])
-            reducer_1 = PCA(n_components=max_dim)
-            reducer_1.fit(X)
-            return [reducer_0, reducer_1]
-        elif method == "best":
-            reducer_1 = SelectKBest(f_classif, k=max_dim)
-            reducer_1.fit(X, y)
-            return [reducer_0, reducer_1]
-        elif method is None:
-            return [reducer_0]
-        else:
-            raise Exception("Wrong feature reduction method. Use 'pca' or 'best'.")
     def fit(self, X=None, y=None, h5_file=None, h5_idxs=None):
         t0 = time.time()
         iu = InputUtils()
-        su = SamplingUtils()
         iu.evaluate_input(X=X, h5_file=h5_file, h5_idxs=h5_idxs, y=y, is_y_mandatory=True)
         X, h5_file, h5_idxs = iu.preprocessing(X=X, h5_file=h5_file, h5_idxs=h5_idxs, force_on_disk=self.force_on_disk)
         if h5_file is not None:
@@ -119,6 +92,7 @@ class LazyTuneTablesBinaryClassifier(object):
     
     def predict(self, X=None, h5_file=None, h5_idxs=None, chunk_size=1000):
         chunk_size = X.shape[0]
+
         iu = InputUtils()
         iu.evaluate_input(X=X, h5_file=h5_file, h5_idxs=h5_idxs, y=None, is_y_mandatory=False)
         X, h5_file, h5_idxs = iu.preprocessing(X=X, h5_file=h5_file, h5_idxs=h5_idxs, force_on_disk=self.force_on_disk)
