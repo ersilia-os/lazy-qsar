@@ -34,7 +34,7 @@ dependencies = [
     "optuna==4.4.0",
     "h5py==3.14.0",
     "psutil==7.0.0",
-    "tunetables_light @ git+https://github.com/Abellegese/TuneTables.git@main",
+    "tunetables_light @ git+https://github.com/ersilia-os/TuneTablesLight.git@main",
     "flaml==2.3.5"
 ]
 
