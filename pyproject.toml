@@ -30,7 +30,7 @@ dependencies = [
     "xgboost==3.0.2",
     "joblib==1.5.1",
     "pandas==2.2.0",
-    "scikit-learn==1.7.0",
+    "scikit-learn==1.6.1",
     "optuna==4.4.0",
     "h5py==3.14.0",
     "psutil==7.0.0",
