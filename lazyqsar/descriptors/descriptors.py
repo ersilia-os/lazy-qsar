@@ -17,7 +17,7 @@ from rdkit.Chem import MACCSkeys
 from rdkit.Chem import MolFromSmarts
 from rdkit.Chem import Descriptors as RdkitDescriptors
 from rdkit.ML.Descriptors import MoleculeDescriptors
-
+from lazyqsar.descriptors.chemeleon_descriptor import CheMeleonFingerprint
 
 from mordred import Calculator, descriptors
 
@@ -48,6 +48,7 @@ class NanFilter(object):
         self.col_idxs = idxs
 
     def transform(self, X):
+        print(f"Length of col_idxs: {len(self.col_idxs)} | X.shape: {X.shape}")
         return X[:, self.col_idxs]
 
     def save(self, file_name):
@@ -135,6 +136,77 @@ class VarianceFilter(object):
     def load(self, file_name):
         return joblib.load(file_name)
 
+
+class ChemeleonDescriptor(object):
+    def __init__(self):
+        self.nan_filter = NanFilter()
+        self.imputer = Imputer()
+        self.variance_filter = VarianceFilter()
+        self.scaler = Scaler()
+        self.chemeleon_fingerprint = CheMeleonFingerprint()
+
+    def fit(self, smiles):
+        df = self.chemeleon_fingerprint(smiles)
+        X = np.array(df, dtype=np.float32)
+        self.nan_filter.fit(X)
+        X = self.nan_filter.transform(X)
+        self.imputer.fit(X)
+        X = self.imputer.transform(X)
+        self.variance_filter.fit(X)
+        X = self.variance_filter.transform(X)
+        self.scaler.fit(X)
+        X = self.scaler.transform(X)
+        self.features = list(f"dim_{i}" for i in range(len(self.nan_filter.col_idxs)))
+        self.features = [self.features[i] for i in self.nan_filter.col_idxs]
+        self.features = [self.features[i] for i in self.variance_filter.col_idxs]
+        return pd.DataFrame(X, columns=self.features)
+
+    def transform(self, smiles):
+        df = self.chemeleon_fingerprint(smiles)
+        X = np.array(df, dtype=np.float32)
+        X = self.nan_filter.transform(X)
+        X = self.imputer.transform(X)
+        X = self.variance_filter.transform(X)
+        X = self.scaler.transform(X)
+        return pd.DataFrame(X, columns=self.features)
+    
+    def save(self, dir_name: str):
+        if not os.path.exists(dir_name):
+            os.makedirs(dir_name)
+        metadata = {
+            "rdkit_version": Chem.rdBase.rdkitVersion,
+            "features": self.features
+        }
+        with open(os.path.join(dir_name, "descriptor_metadata.json"), "w") as f:
+            json.dump(metadata, f)
+        transformer = {
+            "nan_filter": self.nan_filter,
+            "imputer": self.imputer,
+            "variance_filter": self.variance_filter,
+            "scaler": self.scaler,
+        }
+        joblib.dump(transformer, os.path.join(dir_name, "transformer.joblib"))
+
+    @classmethod
+    def load(cls, dir_name: str):
+        if not os.path.exists(dir_name):
+            raise FileNotFoundError(f"Directory {dir_name} does not exist.")
+        obj = cls()
+        with open(os.path.join(dir_name, "descriptor_metadata.json"), "r") as f:
+            metadata = json.load(f)
+            rdkit_version = metadata.get("rdkit_version")
+            if rdkit_version:
+                print(f"Loaded RDKit version: {rdkit_version}")
+            current_rdkit_version = Chem.rdBase.rdkitVersion
+            if current_rdkit_version != rdkit_version:
+                raise ValueError(f"RDKit version mismatch: expected {current_rdkit_version}, got {rdkit_version}")
+        transformer = joblib.load(os.path.join(dir_name, "transformer.joblib"))
+        obj.nan_filter = transformer["nan_filter"]
+        obj.imputer = transformer["imputer"]
+        obj.variance_filter = transformer["variance_filter"]
+        obj.scaler = transformer["scaler"]
+        obj.features = metadata.get("features", [])
+        return obj
 
 class MordredDescriptor(object):
     def __init__(self, cache_path: str = 'mordred_cache.sqlite', chunk_size: int = 10000):

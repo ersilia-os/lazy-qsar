@@ -2,8 +2,8 @@ import os
 import json
 import numpy as np
 
-from .descriptors import MorganDescriptor, MordredDescriptor, RdkitDescriptor, ClassicDescriptor, MaccsDescriptor
-from .models import LazyXGBoostBinaryClassifier, TuneTablesBinaryClassifier, TuneTablesZeroShotBinaryClassifier, LazyZSRandomForestBinaryClassifier, LazyRandomForestBinaryClassifier
+from .descriptors import MorganDescriptor, MordredDescriptor, RdkitDescriptor, ClassicDescriptor, MaccsDescriptor, ChemeleonDescriptor
+from .models import LazyXGBoostBinaryClassifier, LazyZSRandomForestBinaryClassifier, LazyRandomForestBinaryClassifier, LazyTuneTablesBinaryClassifier
 
 
 descriptors_dict = {
@@ -12,13 +12,13 @@ descriptors_dict = {
     "rdkit": RdkitDescriptor,
     "classic": ClassicDescriptor,
     "maccs": MaccsDescriptor,
+    "chemeleon": ChemeleonDescriptor,
 }
 
 
 models_dict = {
     "xgboost": LazyXGBoostBinaryClassifier,
-    "tunetables": TuneTablesBinaryClassifier,
-    "zstunetables": TuneTablesZeroShotBinaryClassifier,
+    "tunetables": LazyTuneTablesBinaryClassifier,
     "zsrandomforest": LazyZSRandomForestBinaryClassifier,
     "randomforest": LazyRandomForestBinaryClassifier
 }

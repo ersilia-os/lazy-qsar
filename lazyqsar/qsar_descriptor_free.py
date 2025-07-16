@@ -2,13 +2,12 @@ import os
 import json
 import numpy as np
 
-from .models import LazyXGBoostBinaryClassifier, TuneTablesBinaryClassifier, TuneTablesZeroShotBinaryClassifier, LazyZSRandomForestBinaryClassifier, LazyRandomForestBinaryClassifier
+from .models import LazyXGBoostBinaryClassifier, LazyZSRandomForestBinaryClassifier, LazyRandomForestBinaryClassifier, LazyTuneTablesBinaryClassifier
 
 
 models_dict = {
     "xgboost": LazyXGBoostBinaryClassifier,
-    "tunetables": TuneTablesBinaryClassifier,
-    "zstunetables": TuneTablesZeroShotBinaryClassifier,
+    "tunetables": LazyTuneTablesBinaryClassifier,
     "zsrandomforest": LazyZSRandomForestBinaryClassifier,
     "randomforest":LazyRandomForestBinaryClassifier
 }

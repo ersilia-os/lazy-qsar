@@ -7,7 +7,7 @@ name = "lazyqsar"
 version = "1.0"
 description = "A library to quickly build QSAR models"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = { text = "GPLv3" }
 authors = [
   { name = "Ersilia Open Source Initiative", email = "hello@ersilia.io" },
@@ -16,7 +16,6 @@ authors = [
 ]
 keywords = ["qsar", "machine-learning", "chemistry", "computer-aided-drug-design"]
 classifiers = [
-  "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
@@ -33,8 +32,6 @@ dependencies = [
     "joblib==1.5.1",
     "pandas==2.3.0",
     "scikit-learn==1.7.0",
-    "rdkit==2025.3.3",
-    "mordred==1.2.0",
     "optuna==4.4.0",
     "h5py==3.14.0",
     "psutil==7.0.0",
@@ -47,7 +44,7 @@ test = [
   "pytdc==1.1.15",
 ]
 full = [
-  "rdkit==2023.9.5", "mordredcommunity==2.0.6"
+  "rdkit==2023.9.5", "mordredcommunity==2.0.6", "chemprop<=2.2.0", "mordred==1.2.0"
 ]
 
 [project.urls]
