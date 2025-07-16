@@ -1,8 +1,11 @@
 import os
 import joblib
 import json
+import sqlite3
 import pandas as pd
+from pathlib import Path
 import numpy as np
+import zlib
 from dataclasses import dataclass
 
 from sklearn.preprocessing import RobustScaler
@@ -14,7 +17,7 @@ from rdkit.Chem import MACCSkeys
 from rdkit.Chem import MolFromSmarts
 from rdkit.Chem import Descriptors as RdkitDescriptors
 from rdkit.ML.Descriptors import MoleculeDescriptors
-
+from lazyqsar.descriptors.chemeleon_descriptor import CheMeleonFingerprint
 
 from mordred import Calculator, descriptors
 
@@ -45,6 +48,7 @@ class NanFilter(object):
         self.col_idxs = idxs
 
     def transform(self, X):
+        print(f"Length of col_idxs: {len(self.col_idxs)} | X.shape: {X.shape}")
         return X[:, self.col_idxs]
 
     def save(self, file_name):
@@ -133,26 +137,16 @@ class VarianceFilter(object):
         return joblib.load(file_name)
 
 
-# Mordred Descriptors
-
-class MordredDescriptor(object):
+class ChemeleonDescriptor(object):
     def __init__(self):
-        self.nan_filter = None
-        self.imputer = None
-        self.variance_filter = None
-        self.scaler = None
-
-    def mordred_featurizer(self, smiles):
-        calc = Calculator(descriptors, ignore_3D=True)
-        df = calc.pandas([Chem.MolFromSmiles(smi) for smi in smiles])
-        return df
-
-    def fit(self, smiles):
         self.nan_filter = NanFilter()
         self.imputer = Imputer()
         self.variance_filter = VarianceFilter()
         self.scaler = Scaler()
-        df = self.mordred_featurizer(smiles)
+        self.chemeleon_fingerprint = CheMeleonFingerprint()
+
+    def fit(self, smiles):
+        df = self.chemeleon_fingerprint(smiles)
         X = np.array(df, dtype=np.float32)
         self.nan_filter.fit(X)
         X = self.nan_filter.transform(X)
@@ -162,13 +156,13 @@ class MordredDescriptor(object):
         X = self.variance_filter.transform(X)
         self.scaler.fit(X)
         X = self.scaler.transform(X)
-        self.features = list(df.columns)
+        self.features = list(f"dim_{i}" for i in range(len(self.nan_filter.col_idxs)))
         self.features = [self.features[i] for i in self.nan_filter.col_idxs]
         self.features = [self.features[i] for i in self.variance_filter.col_idxs]
         return pd.DataFrame(X, columns=self.features)
 
     def transform(self, smiles):
-        df = self.mordred_featurizer(smiles)
+        df = self.chemeleon_fingerprint(smiles)
         X = np.array(df, dtype=np.float32)
         X = self.nan_filter.transform(X)
         X = self.imputer.transform(X)
@@ -206,13 +200,151 @@ class MordredDescriptor(object):
             current_rdkit_version = Chem.rdBase.rdkitVersion
             if current_rdkit_version != rdkit_version:
                 raise ValueError(f"RDKit version mismatch: expected {current_rdkit_version}, got {rdkit_version}")
-            
         transformer = joblib.load(os.path.join(dir_name, "transformer.joblib"))
         obj.nan_filter = transformer["nan_filter"]
         obj.imputer = transformer["imputer"]
         obj.variance_filter = transformer["variance_filter"]
         obj.scaler = transformer["scaler"]
         obj.features = metadata.get("features", [])
+        return obj
+
+class MordredDescriptor(object):
+    def __init__(self, cache_path: str = 'mordred_cache.sqlite', chunk_size: int = 10000):
+        self.nan_filter = None
+        self.imputer = None
+        self.variance_filter = None
+        self.scaler = None
+        self.features = None
+        self.raw_features = None
+        self.chunk_size = chunk_size
+        eos_dir = os.path.join(str(Path.home()), "eos", "temp")
+        os.makedirs(eos_dir, exist_ok=True)
+        self.cache_path = os.path.join(eos_dir, cache_path)
+        os.makedirs(os.path.dirname(self.cache_path) or '.', exist_ok=True)
+        self.conn = sqlite3.connect(self.cache_path)
+        self._init_db()
+
+    def _init_db(self):
+        cur = self.conn.cursor()
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS descriptors (
+                smiles TEXT PRIMARY KEY,
+                desc BLOB
+            )
+            """
+        )
+        self.conn.commit()
+
+    def _featurize_batch(self, smiles_batch):
+        n = len(smiles_batch)
+        results = [None] * n
+        missing = []
+        missing_idx = []
+        cur = self.conn.cursor()
+        max16, min16 = np.finfo(np.float16).max, np.finfo(np.float16).min
+        for i, smi in enumerate(smiles_batch):
+            cur.execute("SELECT desc FROM descriptors WHERE smiles = ?", (smi,))
+            row = cur.fetchone()
+            if row:
+                raw = zlib.decompress(row[0])
+                arr16 = np.frombuffer(raw, dtype=np.float16)
+                arr16 = np.clip(arr16, min16, max16)
+                results[i] = arr16.astype(np.float32)
+            else:
+                missing.append(smi)
+                missing_idx.append(i)
+        if missing:
+            calc = Calculator(descriptors, ignore_3D=True)
+            mols = [Chem.MolFromSmiles(s) for s in missing]
+            df_new = calc.pandas(mols)
+            arr_new = np.array(df_new, dtype=np.float32)
+            if self.raw_features is None:
+                self.raw_features = list(df_new.columns)
+            for j, idx in enumerate(missing_idx):
+                row = arr_new[j]
+                clipped = np.clip(row, min16, max16).astype(np.float16)
+                comp = zlib.compress(clipped.tobytes())
+                cur.execute(
+                    "INSERT OR IGNORE INTO descriptors (smiles, desc) VALUES (?, ?)",
+                    (missing[j], sqlite3.Binary(comp))
+                )
+                results[idx] = row
+            self.conn.commit()
+        return np.vstack(results)
+
+    def mordred_featurizer(self, smiles):
+        dfs = []
+        for i in range(0, len(smiles), self.chunk_size):
+            batch = smiles[i:i + self.chunk_size]
+            arr_batch = self._featurize_batch(batch)
+            dfs.append(pd.DataFrame(arr_batch, columns=self.raw_features))
+        df_full = pd.concat(dfs, ignore_index=True)
+        del dfs
+        return df_full
+
+    def fit(self, smiles):
+        df = self.mordred_featurizer(smiles)
+        X = df.values.astype(np.float32)
+        self.nan_filter = NanFilter(); self.nan_filter.fit(X); X = self.nan_filter.transform(X)
+        self.imputer = Imputer(); self.imputer.fit(X); X = self.imputer.transform(X)
+        self.variance_filter = VarianceFilter(); self.variance_filter.fit(X); X = self.variance_filter.transform(X)
+        self.scaler = Scaler(); self.scaler.fit(X); X = self.scaler.transform(X)
+        feats = list(df.columns)
+        feats = [feats[i] for i in self.nan_filter.col_idxs]
+        feats = [feats[i] for i in self.variance_filter.col_idxs]
+        self.features = feats
+        return pd.DataFrame(X, columns=self.features)
+
+    def transform(self, smiles):
+        processed = []
+        for i in range(0, len(smiles), self.chunk_size):
+            batch = smiles[i:i + self.chunk_size]
+            arr_raw = self._featurize_batch(batch)
+            X = arr_raw.astype(np.float32)
+            X = self.nan_filter.transform(X)
+            X = self.imputer.transform(X)
+            X = self.variance_filter.transform(X)
+            X = self.scaler.transform(X)
+            processed.append(pd.DataFrame(X, columns=self.features))
+        df_out = pd.concat(processed, ignore_index=True)
+        del processed
+        return df_out
+
+    def save(self, dir_name: str):
+        os.makedirs(dir_name, exist_ok=True)
+        meta = {
+            'rdkit_version': Chem.rdBase.rdkitVersion,
+            'features': self.features,
+            'raw_features': self.raw_features
+        }
+        with open(os.path.join(dir_name, 'descriptor_metadata.json'), 'w') as f:
+            json.dump(meta, f)
+        joblib.dump({
+            'nan_filter': self.nan_filter,
+            'imputer': self.imputer,
+            'variance_filter': self.variance_filter,
+            'scaler': self.scaler
+        }, os.path.join(dir_name, 'transformer.joblib'))
+
+    @classmethod
+    def load(cls, dir_name: str, cache_filename: str = None):
+        if not os.path.exists(dir_name):
+            raise FileNotFoundError(f"Directory {dir_name} does not exist.")
+        with open(os.path.join(dir_name, 'descriptor_metadata.json'), 'r') as f:
+            meta = json.load(f)
+        if meta.get('rdkit_version'):
+            print(f"Loaded RDKit version: {meta['rdkit_version']}")
+        if Chem.rdBase.rdkitVersion != meta.get('rdkit_version'):
+            raise ValueError('RDKit version mismatch')
+        obj = cls()
+        transf = joblib.load(os.path.join(dir_name, 'transformer.joblib'))
+        obj.nan_filter = transf['nan_filter']
+        obj.imputer = transf['imputer']
+        obj.variance_filter = transf['variance_filter']
+        obj.scaler = transf['scaler']
+        obj.features = meta.get('features')
+        obj.raw_features = meta.get('raw_features')
         return obj
 
 

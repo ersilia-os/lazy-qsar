@@ -2,10 +2,8 @@ import os
 import json
 import numpy as np
 
-from .descriptors import MorganDescriptor, MordredDescriptor, RdkitDescriptor, ClassicDescriptor, MaccsDescriptor
-from .models.xgboost_binary_classifier import LazyXGBoostBinaryClassifier
-from .models.tunetables_classifier_light import TuneTablesClassifierLight, TuneTablesZeroShotClassifier
-from .models.random_forest_binary_classifier import LazyRandomForestBinaryClassifier
+from .descriptors import MorganDescriptor, MordredDescriptor, RdkitDescriptor, ClassicDescriptor, MaccsDescriptor, ChemeleonDescriptor
+from .models import LazyRandomForestBinaryClassifier, LazyTuneTablesBinaryClassifier
 
 
 descriptors_dict = {
@@ -14,19 +12,19 @@ descriptors_dict = {
     "rdkit": RdkitDescriptor,
     "classic": ClassicDescriptor,
     "maccs": MaccsDescriptor,
+    "chemeleon": ChemeleonDescriptor,
 }
 
 
 models_dict = {
-    "tunetables": TuneTablesClassifierLight,
-    "zstunetables": TuneTablesZeroShotClassifier,
-    "random_forest": LazyRandomForestBinaryClassifier
+    "tunetables": LazyTuneTablesBinaryClassifier,
+    "randomforest": LazyRandomForestBinaryClassifier
 }
 
 
 class LazyBinaryQSAR(object):
 
-    def __init__(self, descriptor_type="morgan", model_type="random_forest", **kwargs):
+    def __init__(self, descriptor_type="morgan", model_type="randomforest", **kwargs):
         self.descriptor_type = descriptor_type
         self.model_type = model_type
 
@@ -85,4 +83,3 @@ class LazyBinaryQSAR(object):
         obj.model = models_dict[model_type].load_model(model_dir)
         print("Loading done!")
         return obj
-

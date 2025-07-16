@@ -25,7 +25,7 @@ for seed in [1, 2, 3, 4, 5]:
         benchmark = group.get(a)
         name = benchmark['name']
         try:
-            test = pd.read_csv(os.path.join(DATAPATH, f"tdc_preds_{model_type}_{desc}", "{}_test_{}.csv".format(a,seed)))
+            test = pd.read_csv(os.path.join(DATAPATH, f"tdc_preds_{model_type}_{desc}_updated", "{}_test_{}.csv".format(a,seed)))
         except:
             print(f"Skipping {a} for seed {seed} as the file does not exist.")
             continue
@@ -36,5 +36,5 @@ print(results)
 
 results_file = f"{model_type}_{desc}.json"
 
-with open(os.path.join(DATAPATH,f"tdc_preds_{model_type}_{desc}", results_file), "w") as f:
+with open(os.path.join(DATAPATH,f"tdc_preds_{model_type}_{desc}_updated", results_file), "w") as f:
     json.dump(results, f, indent=2)

@@ -1,1 +1,1 @@
-from .descriptors import MordredDescriptor, MaccsDescriptor, RdkitDescriptor, MorganDescriptor, ClassicDescriptor
+from .descriptors import MordredDescriptor, MaccsDescriptor, RdkitDescriptor, MorganDescriptor, ClassicDescriptor, ChemeleonDescriptor
