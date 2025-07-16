@@ -27,7 +27,6 @@ dependencies = [
     "requests==2.32.3",
     "rdkit==2023.9.5",
     "mordredcommunity==2.0.6",
-    "optuna==4.3.0",
     "xgboost==3.0.2",
     "joblib==1.5.1",
     "pandas==2.3.0",
