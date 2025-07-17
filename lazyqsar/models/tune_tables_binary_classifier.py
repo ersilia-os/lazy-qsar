@@ -130,13 +130,6 @@ class LazyTuneTablesBinaryClassifier(object):
             raise Exception("Metadata file not found.")
         with open(metadata_path, 'r') as f:
             metadata = json.load(f)
-        obj.reducer_method = metadata.get("reducer_method", None)
-        obj.max_reducer_dim = metadata.get("max_reducer_dim", None)
-        obj.random_state = metadata.get("random_state", None)
-        obj.base_test_size = metadata.get("base_test_size", None)
-        obj.base_num_splits = metadata.get("base_num_splits", None)
-        obj.base_num_trials = metadata.get("base_num_trials", None)
-        obj.base_timeout = metadata.get("base_timeout", None)
         obj.fit_time = metadata.get("fit_time", None)
         obj.model = BaseTuneTablesBinaryClassifier.load_model(model_dir)
         return obj

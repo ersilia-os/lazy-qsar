@@ -3,7 +3,7 @@ import json
 import numpy as np
 
 from .descriptors import ChemeleonDescriptor
-from .models import LazyRandomForestBinaryClassifier, LazyTuneTablesBinaryClassifier
+from .models import LazyRandomForestBinaryClassifier, LazyTuneTablesBinaryClassifier, LazyLogisticRegressionBinaryClassifier
 
 
 descriptors_dict = {
@@ -13,7 +13,9 @@ descriptors_dict = {
 
 models_dict = {
     "tune_tables": LazyTuneTablesBinaryClassifier,
-    "random_forest": LazyRandomForestBinaryClassifier
+    "random_forest": LazyRandomForestBinaryClassifier,
+    "logistic_regression": LazyLogisticRegressionBinaryClassifier,
+    
 }
 
 

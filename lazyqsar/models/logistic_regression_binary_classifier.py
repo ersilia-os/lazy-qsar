@@ -156,7 +156,6 @@ class LazyLogisticRegressionBinaryClassifier(object):
                  num_trials: int = 10,
                  base_test_size: float = 0.25,
                  base_num_splits: int = 3,
-                 base_timeout: int = 120,
                  min_positive_proportion: float = 0.01,
                  max_positive_proportion: float = 0.5,
                  min_samples: int = 30,
@@ -306,7 +305,6 @@ class LazyLogisticRegressionBinaryClassifier(object):
             "base_test_size": self.base_test_size,
             "base_num_splits": self.base_num_splits,
             "base_num_trials": self.base_num_trials,
-            "base_timeout": self.base_timeout,
             "fit_time": self.fit_time
         }
         metadata_path = os.path.join(model_dir, "metadata.json")
@@ -327,7 +325,6 @@ class LazyLogisticRegressionBinaryClassifier(object):
         obj.base_test_size = metadata.get("base_test_size", None)
         obj.base_num_splits = metadata.get("base_num_splits", None)
         obj.base_num_trials = metadata.get("base_num_trials", None)
-        obj.base_timeout = metadata.get("base_timeout", None)
         obj.fit_time = metadata.get("fit_time", None)
         num_partitions = metadata.get("num_partitions", None)
         if num_partitions <= 0:

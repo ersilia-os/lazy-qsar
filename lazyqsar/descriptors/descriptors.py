@@ -1,5 +1,4 @@
 import os
-import joblib
 import json
 import numpy as np
 from tqdm import tqdm
@@ -26,7 +25,7 @@ class ChemeleonDescriptor(object):
             chunk = smiles[i:i + chunk_size]
             X_chunk = np.array(self.chemeleon_fingerprint(chunk), dtype=np.float32)
             R += [X_chunk]
-        return np.concat(R, dtype=np.float32, axis=0)
+        return np.concatenate(R, dtype=np.float32, axis=0)
     
     def save(self, dir_name: str):
         if not os.path.exists(dir_name):
@@ -37,13 +36,6 @@ class ChemeleonDescriptor(object):
         }
         with open(os.path.join(dir_name, "descriptor_metadata.json"), "w") as f:
             json.dump(metadata, f)
-        transformer = {
-            "nan_filter": self.nan_filter,
-            "imputer": self.imputer,
-            "variance_filter": self.variance_filter,
-            "scaler": self.scaler,
-        }
-        joblib.dump(transformer, os.path.join(dir_name, "transformer.joblib"))
 
     @classmethod
     def load(cls, dir_name: str):
@@ -58,10 +50,5 @@ class ChemeleonDescriptor(object):
             current_rdkit_version = Chem.rdBase.rdkitVersion
             if current_rdkit_version != rdkit_version:
                 raise ValueError(f"RDKit version mismatch: expected {current_rdkit_version}, got {rdkit_version}")
-        transformer = joblib.load(os.path.join(dir_name, "transformer.joblib"))
-        obj.nan_filter = transformer["nan_filter"]
-        obj.imputer = transformer["imputer"]
-        obj.variance_filter = transformer["variance_filter"]
-        obj.scaler = transformer["scaler"]
         obj.features = metadata.get("features", [])
         return obj
