@@ -15,6 +15,7 @@ from sklearn.linear_model import LogisticRegression, LogisticRegressionCV
 from .utils import BinaryClassifierSamplingUtils as SamplingUtils
 from .utils import InputUtils
 from .utils import StratifiedKFolder
+from .utils import BinaryClassifierPCADecider
 
 import optuna
 from sklearn.pipeline import Pipeline
@@ -77,7 +78,7 @@ class BaseLogisticRegressionBinaryClassifier(BaseEstimator, ClassifierMixin):
             sampler=sampler,
         )
 
-        n_components = 0.999
+        n_components = 0.99
         hyperparams = {
             "n_components": n_components,
         }
@@ -314,7 +315,7 @@ class BaseLogisticRegressionBinaryClassifier(BaseEstimator, ClassifierMixin):
 class LazyLogisticRegressionBinaryClassifier(object):
 
     def __init__(self,
-                 pca: bool = False,
+                 pca: bool = None,
                  num_trials: int = 10,
                  base_test_size: float = 0.25,
                  base_num_splits: int = 3,
@@ -382,7 +383,11 @@ class LazyLogisticRegressionBinaryClassifier(object):
             for red in reducer_:
                 X_sampled = red.transform(X_sampled)
             print(f"Fitting model on {len(idxs)} samples, positive samples: {np.sum(y_sampled)}, negative samples: {len(y_sampled) - np.sum(y_sampled)}, number of features {X_sampled.shape[1]}")
-            model = BaseLogisticRegressionBinaryClassifier(pca=self.pca, num_splits=self.base_num_splits, test_size=self.base_test_size, num_trials=self.base_num_trials, random_state=self.random_state, max_positive_proportion=self.max_positive_proportion)
+            if self.pca is None:
+                pca = BinaryClassifierPCADecider(X_sampled, y_sampled, max_positive_proportion=self.max_positive_proportion).decide()
+            else:
+                pca = self.pca
+            model = BaseLogisticRegressionBinaryClassifier(pca=pca, num_splits=self.base_num_splits, test_size=self.base_test_size, num_trials=self.base_num_trials, random_state=self.random_state, max_positive_proportion=self.max_positive_proportion)
             model.fit(X_sampled, y_sampled)
             print("Model fitted.")
             reducers += [reducer_]

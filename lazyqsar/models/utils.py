@@ -10,6 +10,8 @@ from tqdm import tqdm
 from sklearn.metrics import roc_auc_score
 from sklearn.naive_bayes import BernoulliNB, GaussianNB
 from sklearn.model_selection import StratifiedKFold
+from sklearn.decomposition import PCA
+from sklearn.preprocessing import StandardScaler
 
 
 
@@ -447,6 +449,58 @@ class StratifiedKFolder(object):
                     random.shuffle(train_idxs)
             yield train_idxs, test_idxs
 
+
+class BinaryClassifierPCADecider(object):
+    
+    def __init__(self, X, y, max_positive_proportion=0.5):
+        self.X = X
+        self.y = y
+        self.max_positive_proportion = max_positive_proportion
+
+    def decide(self):
+        cv = StratifiedKFolder(
+            n_splits=5,
+            max_positive_proportion=self.max_positive_proportion,
+            shuffle=True,
+            random_state=42
+        )
+        pca_scores = []
+        for n_components in [0.5, 0.6, 0.7, 0.8, 0.9, 0.999]:
+            scores = []
+            for train_idxs, test_idxs in cv.split(self.X, self.y):
+                X_train = self.X[train_idxs]
+                y_train = self.y[train_idxs]
+                X_test = self.X[test_idxs]
+                scaler = StandardScaler()
+                pca = PCA(n_components=n_components)
+                X_train = scaler.fit_transform(X_train)
+                X_test = scaler.transform(X_test)
+                X_train_pca = pca.fit_transform(X_train)
+                X_test_pca = pca.transform(X_test)
+                model = GaussianNB()
+                model.fit(X_train_pca, y_train)
+                y_pred = model.predict_proba(X_test_pca)[:, 1]
+                auc_score = roc_auc_score(self.y[test_idxs], y_pred)
+                scores += [auc_score]
+            pca_scores += [np.mean(scores)]
+        best_pca_score = np.max(pca_scores)
+
+        scores = []
+        for train_idxs, test_idxs in cv.split(self.X, self.y):
+            X_train = self.X[train_idxs]
+            y_train = self.y[train_idxs]
+            X_test = self.X[test_idxs]
+            model = GaussianNB()
+            model.fit(X_train, y_train)
+            y_pred = model.predict_proba(X_test)[:, 1]
+            auc_score = roc_auc_score(self.y[test_idxs], y_pred)
+            scores += [auc_score]
+        no_pca_score = np.mean(scores)
+
+        if best_pca_score > no_pca_score:
+            return True
+        else:
+            return False
 
 
 #TODO : Implement a regression weighter

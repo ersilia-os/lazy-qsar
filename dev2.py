@@ -5,7 +5,7 @@ import pandas as pd
 from sklearn.model_selection import train_test_split
 
 
-file_path = "data/herg.tab"
+file_path = "data/bioavailability_ma.tab"
 
 df = pd.read_csv(file_path, sep="\t")
 df = df.dropna(subset=["Drug", "Y"])
