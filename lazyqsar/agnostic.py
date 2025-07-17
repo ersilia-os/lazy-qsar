@@ -2,12 +2,13 @@ import os
 import json
 import numpy as np
 
-from .models import LazyRandomForestBinaryClassifier, LazyTuneTablesBinaryClassifier
+from .models import LazyRandomForestBinaryClassifier, LazyTuneTablesBinaryClassifier, LazyLogisticRegressionBinaryClassifier
 
 
 models_dict = {
     "tune_tables": LazyTuneTablesBinaryClassifier,
-    "random_forest":LazyRandomForestBinaryClassifier
+    "random_forest":LazyRandomForestBinaryClassifier,
+    "logistic_regression": LazyLogisticRegressionBinaryClassifier
 }
 
 

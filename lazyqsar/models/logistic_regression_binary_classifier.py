@@ -107,7 +107,6 @@ class BaseLogisticRegressionBinaryClassifier(BaseEstimator, ClassifierMixin):
 
         model_path = os.path.join(model_dir, "model.joblib")
         joblib.dump(self.model_, model_path)
-        joblib.dump(self.platt_reg_, os.path.join(model_dir, "platt_reg.joblib"))
 
         metadata = {
             "random_state": self.random_state,

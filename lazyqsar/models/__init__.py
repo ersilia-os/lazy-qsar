@@ -1,2 +1,3 @@
 from .random_forest_binary_classifier import LazyRandomForestBinaryClassifier
 from .tune_tables_binary_classifier import LazyTuneTablesBinaryClassifier
+from .logistic_regression_binary_classifier import LazyLogisticRegressionBinaryClassifier
