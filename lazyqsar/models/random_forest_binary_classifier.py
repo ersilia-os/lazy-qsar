@@ -19,7 +19,8 @@ from sklearn.metrics import roc_curve, auc, roc_auc_score
 from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LogisticRegression
 from flaml.default import RandomForestClassifier as ZeroShotRandomForestClassifier
-from .utils import SamplingUtils, InputUtils
+from .utils import BinaryClassifierSamplingUtils as SamplingUtils
+from .utils import InputUtils
 
 
 NUM_CPU = max(1, multiprocessing.cpu_count() - 1)

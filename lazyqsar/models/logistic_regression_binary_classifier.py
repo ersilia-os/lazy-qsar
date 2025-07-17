@@ -14,7 +14,8 @@ from sklearn.feature_selection import SelectKBest, f_classif
 from sklearn.feature_selection import VarianceThreshold
 from sklearn.metrics import roc_auc_score
 from sklearn.linear_model import LogisticRegression, LogisticRegressionCV
-from .utils import SamplingUtils, InputUtils
+from .utils import BinaryClassifierSamplingUtils as SamplingUtils
+from .utils import InputUtils
 
 
 NUM_CPU = max(1, multiprocessing.cpu_count() - 1)

@@ -4,14 +4,13 @@ import h5py
 import numpy as np
 import os
 import json
-from sklearn.decomposition import PCA
-from sklearn.feature_selection import SelectKBest, f_classif
-from sklearn.feature_selection import VarianceThreshold
 import shutil
 from tqdm import tqdm
 from tunetables_light.scripts.transformer_prediction_interface import TuneTablesClassifierLight as TuneTablesClassifierLightBase
 from tunetables_light.scripts.transformer_prediction_interface import TuneTablesZeroShotClassifier as TuneTablesZeroShotClassifierBase
-from .utils import SamplingUtils, InputUtils
+from .utils import BinaryClassifierSamplingUtils as SamplingUtils
+from .utils import InputUtils
+
 
 class BaseTuneTablesBinaryClassifier(TuneTablesClassifierLightBase):
     def __init__(

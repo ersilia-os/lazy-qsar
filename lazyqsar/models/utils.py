@@ -82,7 +82,7 @@ class InputUtils(object):
         return X, h5_file, h5_idxs
 
 
-class SamplingUtils(object):
+class BinaryClassifierSamplingUtils(object):
 
     def __init__(self):
         pass
@@ -418,3 +418,15 @@ class SamplingUtils(object):
             n_pos += pos
             n_neg += neg
         print(f"Avg positive samples: {n_pos/n}, avg negative samples: {n_neg/n}")
+
+
+class RegressionWeighter(object):
+
+    def __init__(self, uniform=False):
+        self.uniform = uniform
+
+    def get_weights(self, y):
+        if self.uniform:
+            return [1 for _ in y]
+        else:
+            raise Exception("Non-uniform weights are not implemented yet.")
