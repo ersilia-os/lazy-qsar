@@ -6,14 +6,14 @@ from .models import LazyRandomForestBinaryClassifier, LazyTuneTablesBinaryClassi
 
 
 models_dict = {
-    "tunetables": LazyTuneTablesBinaryClassifier,
-    "randomforest":LazyRandomForestBinaryClassifier
+    "tune_tables": LazyTuneTablesBinaryClassifier,
+    "random_forest":LazyRandomForestBinaryClassifier
 }
 
 
-class LazyBinaryQSAR(object):
+class LazyBinaryClassifier(object):
 
-    def __init__(self, model_type="zsrandomforest", **kwargs):
+    def __init__(self, model_type="random_forest", **kwargs):
         self.model_type = model_type
 
         if model_type not in models_dict:

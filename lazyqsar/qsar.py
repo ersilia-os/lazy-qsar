@@ -2,29 +2,24 @@ import os
 import json
 import numpy as np
 
-from .descriptors import MorganDescriptor, MordredDescriptor, RdkitDescriptor, ClassicDescriptor, MaccsDescriptor, ChemeleonDescriptor
+from .descriptors import ChemeleonDescriptor
 from .models import LazyRandomForestBinaryClassifier, LazyTuneTablesBinaryClassifier
 
 
 descriptors_dict = {
-    "morgan": MorganDescriptor,
-    "mordred": MordredDescriptor,
-    "rdkit": RdkitDescriptor,
-    "classic": ClassicDescriptor,
-    "maccs": MaccsDescriptor,
-    "chemeleon": ChemeleonDescriptor,
+    "chemeleon": ChemeleonDescriptor
 }
 
 
 models_dict = {
-    "tunetables": LazyTuneTablesBinaryClassifier,
-    "randomforest": LazyRandomForestBinaryClassifier
+    "tune_tables": LazyTuneTablesBinaryClassifier,
+    "random_forest": LazyRandomForestBinaryClassifier
 }
 
 
 class LazyBinaryQSAR(object):
 
-    def __init__(self, descriptor_type="morgan", model_type="randomforest", **kwargs):
+    def __init__(self, descriptor_type="chemeleon", model_type="random_forest", **kwargs):
         self.descriptor_type = descriptor_type
         self.model_type = model_type
 
@@ -42,7 +37,7 @@ class LazyBinaryQSAR(object):
         print(f"Fitting inputs to feature descriptors using {self.descriptor_type}")
         self.descriptor.fit(X)
         print(f"Transforming inputs to feature descriptors using {self.descriptor_type}")
-        descriptors = np.array(self.descriptor.transform(X))
+        descriptors = np.array(self.descriptor.transform(X), dtype=np.float32)
         print(f"Performing predictions on input feature of shape: {descriptors.shape}")
         self.model.fit(X=descriptors, y=y)
 

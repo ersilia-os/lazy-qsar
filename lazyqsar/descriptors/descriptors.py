@@ -4,6 +4,7 @@ import json
 import sqlite3
 import pandas as pd
 from pathlib import Path
+from tqdm import tqdm
 import numpy as np
 import zlib
 from dataclasses import dataclass
@@ -139,36 +140,24 @@ class VarianceFilter(object):
 
 class ChemeleonDescriptor(object):
     def __init__(self):
-        self.nan_filter = NanFilter()
-        self.imputer = Imputer()
-        self.variance_filter = VarianceFilter()
-        self.scaler = Scaler()
         self.chemeleon_fingerprint = CheMeleonFingerprint()
+        self.n_dim = 2048
 
     def fit(self, smiles):
-        df = self.chemeleon_fingerprint(smiles)
-        X = np.array(df, dtype=np.float32)
-        self.nan_filter.fit(X)
-        X = self.nan_filter.transform(X)
-        self.imputer.fit(X)
-        X = self.imputer.transform(X)
-        self.variance_filter.fit(X)
-        X = self.variance_filter.transform(X)
-        self.scaler.fit(X)
-        X = self.scaler.transform(X)
-        self.features = list(f"dim_{i}" for i in range(len(self.nan_filter.col_idxs)))
-        self.features = [self.features[i] for i in self.nan_filter.col_idxs]
-        self.features = [self.features[i] for i in self.variance_filter.col_idxs]
-        return pd.DataFrame(X, columns=self.features)
+        self.features = ["dim_{0}".format(i) for i in range(self.n_dim)]
+        print("No fitting is necessary for Chemeleon descriptor")
+        return None
 
     def transform(self, smiles):
-        df = self.chemeleon_fingerprint(smiles)
-        X = np.array(df, dtype=np.float32)
-        X = self.nan_filter.transform(X)
-        X = self.imputer.transform(X)
-        X = self.variance_filter.transform(X)
-        X = self.scaler.transform(X)
-        return pd.DataFrame(X, columns=self.features)
+        if self.features is None:
+            self.features = ["dim_{0}".format(i) for i in range(self.n_dim)]
+        chunk_size = 1000
+        R = []
+        for i in tqdm(range(0, len(smiles), chunk_size), desc="Transforming CheMeleon descriptors in chunks of 1000"):
+            chunk = smiles[i:i + chunk_size]
+            X_chunk = np.array(self.chemeleon_fingerprint(chunk), dtype=np.float32)
+            R += [X_chunk]
+        return np.concat(R, dtype=np.float32, axis=0)
     
     def save(self, dir_name: str):
         if not os.path.exists(dir_name):
