@@ -25,15 +25,13 @@ class BaseLogisticRegressionBinaryClassifier(BaseEstimator, ClassifierMixin):
         self,
         num_splits: int = 3,
         test_size: float = 0.25,
+        random_state: int = 42,
         num_trials: int = 50,
-        timeout: int = 600,
-        random_state: int=42
     ):
         self.random_state = random_state
         self.num_splits = num_splits
         self.test_size = test_size
         self.num_trials = num_trials
-        self.timeout = timeout
         self.mean_score_ = None
 
     def fit(self, X, y):
@@ -81,7 +79,7 @@ class BaseLogisticRegressionBinaryClassifier(BaseEstimator, ClassifierMixin):
                     fit_intercept=fit_intercept,
                     class_weight=class_weight,
                     intercept_scaling=intercept_scaling,
-                    max_iter=1000
+                    max_iter=min(1000, self.num_trials*20)
                 )
         model.fit(X, y)
         self.model_ = model
@@ -115,6 +113,7 @@ class BaseLogisticRegressionBinaryClassifier(BaseEstimator, ClassifierMixin):
             "random_state": self.random_state,
             "num_splits": self.num_splits,
             "test_size": self.test_size,
+            "num_trials": self.num_trials,
             "mean_score_": getattr(self, "mean_score_", None),
             "std_score_": getattr(self, "std_score_", None)
         }
@@ -140,7 +139,8 @@ class BaseLogisticRegressionBinaryClassifier(BaseEstimator, ClassifierMixin):
         obj = cls(
             random_state=metadata["random_state"],
             num_splits=metadata["num_splits"],
-            test_size=metadata["test_size"]
+            test_size=metadata["test_size"],
+            num_trials=metadata["num_trials"]
         )
         obj.model_ = model
         obj.mean_score_ = metadata.get("mean_score_", None)
@@ -173,7 +173,6 @@ class LazyLogisticRegressionBinaryClassifier(object):
         self.base_test_size = base_test_size
         self.base_num_splits = base_num_splits
         self.base_num_trials = num_trials
-        self.base_timeout = base_timeout
         self.min_positive_proportion = min_positive_proportion
         self.max_positive_proportion = max_positive_proportion
         self.min_samples = min_samples
@@ -240,7 +239,7 @@ class LazyLogisticRegressionBinaryClassifier(object):
             for red in reducer_:
                 X_sampled = red.transform(X_sampled)
             print(f"Fitting model on {len(idxs)} samples, positive samples: {np.sum(y_sampled)}, negative samples: {len(y_sampled) - np.sum(y_sampled)}, number of features {X_sampled.shape[1]}")
-            model = BaseLogisticRegressionBinaryClassifier(num_splits=self.base_num_splits, test_size=self.base_test_size, num_trials=self.base_num_trials, timeout = self.base_timeout, random_state=self.random_state)
+            model = BaseLogisticRegressionBinaryClassifier(num_splits=self.base_num_splits, test_size=self.base_test_size, num_trials=self.base_num_trials, random_state=self.random_state)
             model.fit(X_sampled, y_sampled)
             print("Model fitted.")
             reducers += [reducer_]
