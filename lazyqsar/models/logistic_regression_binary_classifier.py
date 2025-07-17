@@ -8,7 +8,6 @@ import h5py
 import multiprocessing
 from tqdm import tqdm
 from sklearn.base import BaseEstimator, ClassifierMixin
-from sklearn.model_selection import StratifiedKFold
 from sklearn.decomposition import PCA
 from sklearn.feature_selection import SelectKBest, f_classif
 from sklearn.feature_selection import VarianceThreshold
@@ -16,6 +15,12 @@ from sklearn.metrics import roc_auc_score
 from sklearn.linear_model import LogisticRegression, LogisticRegressionCV
 from .utils import BinaryClassifierSamplingUtils as SamplingUtils
 from .utils import InputUtils
+from .utils import StratifiedKFolder
+
+import optuna
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import cross_val_score
 
 
 NUM_CPU = max(1, multiprocessing.cpu_count() - 1)
@@ -24,18 +29,113 @@ NUM_CPU = max(1, multiprocessing.cpu_count() - 1)
 class BaseLogisticRegressionBinaryClassifier(BaseEstimator, ClassifierMixin):
     def __init__(
         self,
+        pca: bool = False,
         num_splits: int = 3,
         test_size: float = 0.25,
         random_state: int = 42,
         num_trials: int = 50,
+        timeout: int = 600,
+        max_positive_proportion: float = 0.5
     ):
+        self.pca = pca
         self.random_state = random_state
         self.num_splits = num_splits
         self.test_size = test_size
         self.num_trials = num_trials
+        self.timeout = timeout
+        self.max_positive_proportion = max_positive_proportion
         self.mean_score_ = None
 
-    def fit(self, X, y):
+    def _objective(self, trial, X, y):
+
+        n_components = trial.suggest_float("n_components", 0.5, 0.99, step=0.01)
+
+        num_splits = max(self.num_splits, int(1 / self.test_size))
+
+        cv = StratifiedKFolder(n_splits=num_splits, max_positive_proportion=self.max_positive_proportion, random_state=self.random_state)
+
+        pipe = Pipeline([
+            ("scaler", StandardScaler()),
+            ("pca", PCA(n_components=n_components)),
+            ("clf", LogisticRegressionCV(class_weight="balanced", 
+                                         refit=False, n_jobs=NUM_CPU,
+                                         cv=cv, random_state=self.random_state,
+                                         scoring="roc_auc"))
+        ])
+
+        scores = []
+        for _ in range(3):
+            scores += [cross_val_score(pipe, X, y, cv=cv, scoring="roc_auc", n_jobs=NUM_CPU).mean()]
+
+        return np.mean(scores)
+    
+    def _suggest_best_params(self, X, y, test_size):
+
+        sampler = optuna.samplers.TPESampler(seed=self.random_state)
+        study = optuna.create_study(
+            direction="maximize",
+            study_name=None,
+            sampler=sampler,
+        )
+
+        n_components = 0.999
+        hyperparams = {
+            "n_components": n_components,
+        }
+
+        study.enqueue_trial(hyperparams)
+
+        print("Fitting...")
+        best_score = -np.inf
+        trials_without_improvement = 0
+        improvement_threshold = 0.01
+        patience = max(5, self.num_trials // 5)
+        early_stopping = False
+        baseline_score_for_patience = best_score
+
+        def objective_with_custom_early_stop(trial):
+            nonlocal best_score, trials_without_improvement, early_stopping, baseline_score_for_patience
+            if early_stopping:
+                print("Skipping trial due to early stopping criteria.")
+                raise optuna.exceptions.TrialPruned()
+            score = self._objective(trial, X, y)
+            if score > best_score:
+                best_score = score
+            if score > baseline_score_for_patience + improvement_threshold:
+                trials_without_improvement = 0
+                baseline_score_for_patience = score
+            else:
+                trials_without_improvement += 1
+            if trials_without_improvement >= patience:
+                early_stopping = True
+                print(f"Early stopping: No significant improvement in the last {patience} trials.")
+                raise optuna.exceptions.TrialPruned()
+            return score
+        
+        study.optimize(
+            objective_with_custom_early_stop,
+            n_trials=self.num_trials,
+            timeout=self.timeout
+        )
+
+        results = {
+            "best_params": study.best_params,
+            "best_value": study.best_value,
+        }
+        
+        return results
+
+    def _fit_pca(self, X, y):
+        results = self._suggest_best_params(X, y, self.test_size)
+        n_components = results['best_params']['n_components']
+        hyperparams = results['best_params']
+        score = results['best_value']
+        hyperparams['n_jobs'] = NUM_CPU
+        hyperparams['random_state'] = self.random_state
+        hyperparams['class_weight'] = 'balanced'
+        print(f"Best hyperparameters: {hyperparams}, Inner hyperparameter AUROC: {score}")
+
+        print("Fitting on data with shape:", X.shape)
         scores = []
         num_splits = self.num_splits
         test_size = self.test_size
@@ -44,7 +144,64 @@ class BaseLogisticRegressionBinaryClassifier(BaseEstimator, ClassifierMixin):
         if test_size is None:
             test_size = 0.25
         num_splits = max(num_splits, int(1 / test_size))
-        cv = StratifiedKFold(n_splits=num_splits, shuffle=True, random_state=self.random_state)
+        cv = StratifiedKFolder(n_splits=num_splits, shuffle=True, random_state=self.random_state, max_positive_proportion=self.max_positive_proportion)
+        pipe = Pipeline([
+            ("scaler", StandardScaler()),
+            ("pca", PCA(n_components=n_components)),
+            ("clf", LogisticRegressionCV(class_weight="balanced",
+                                         refit=True, n_jobs=NUM_CPU,
+                                         cv=cv, random_state=self.random_state,
+                                         scoring="roc_auc"))
+        ])
+    
+        pipe.fit(X, y)
+        model_cv = pipe.named_steps["clf"]
+        if hasattr(model_cv, "scores_"):
+            scores_dict = model_cv.scores_
+            if 1 in scores_dict:
+                scores = scores_dict[1].mean(axis=1)
+            else:
+                scores = list(scores_dict.values())[0].mean(axis=1)
+        else:
+            scores = []
+        print(f"Logistic regression fit done.")
+        self.mean_score_ = np.mean(scores)
+        self.std_score_ = np.std(scores)
+        print(f"Average AUROC: {self.mean_score_}")
+
+        best_C = model_cv.C_[0]
+        solver = model_cv.solver
+        penalty = model_cv.penalty
+        fit_intercept = model_cv.fit_intercept
+        class_weight = model_cv.class_weight
+        intercept_scaling = getattr(model_cv, 'intercept_scaling', 1)
+        pipe = Pipeline([
+            ("scaler", StandardScaler()),
+            ("pca", PCA(n_components=n_components)),
+            ("clf", LogisticRegression(
+                C=best_C,
+                solver=solver,
+                penalty=penalty,
+                fit_intercept=fit_intercept,
+                class_weight=class_weight,
+                intercept_scaling=intercept_scaling,
+                max_iter=1000
+            ))
+        ])
+        pipe.fit(X, y)
+        self.model_ = pipe
+        return self
+    
+    def _fit_no_pca(self, X, y):
+        scores = []
+        num_splits = self.num_splits
+        test_size = self.test_size
+        if num_splits is None:
+            num_splits = 3
+        if test_size is None:
+            test_size = 0.25
+        num_splits = max(num_splits, int(1 / test_size))
+        cv = cv = StratifiedKFolder(n_splits=num_splits, shuffle=True, random_state=self.random_state, max_positive_proportion=self.max_positive_proportion)
         model_cv = LogisticRegressionCV(
             class_weight="balanced",
             refit=True,
@@ -80,11 +237,17 @@ class BaseLogisticRegressionBinaryClassifier(BaseEstimator, ClassifierMixin):
                     fit_intercept=fit_intercept,
                     class_weight=class_weight,
                     intercept_scaling=intercept_scaling,
-                    max_iter=min(1000, self.num_trials*20)
+                    max_iter=1000
                 )
         model.fit(X, y)
         self.model_ = model
         return self
+
+    def fit(self, X, y):
+        if self.pca:
+            return self._fit_pca(X, y)
+        else:
+            return self._fit_no_pca(X, y)
 
     def predict_proba(self, X):
         if not hasattr(self, "model_") or self.model_ is None:
@@ -152,8 +315,7 @@ class BaseLogisticRegressionBinaryClassifier(BaseEstimator, ClassifierMixin):
 class LazyLogisticRegressionBinaryClassifier(object):
 
     def __init__(self,
-                 reducer_method: str = None,
-                 max_reducer_dim: int = 500,
+                 pca: bool = False,
                  num_trials: int = 10,
                  base_test_size: float = 0.25,
                  base_num_splits: int = 3,
@@ -164,10 +326,10 @@ class LazyLogisticRegressionBinaryClassifier(object):
                  min_positive_samples: int = 10,
                  max_num_partitions: int = 100,
                  min_seen_across_partitions: int = 1,
+                 force_max_positive_proportion_at_partition: bool = False,
                  force_on_disk: bool = False,
                  random_state: int = 42):
-        self.reducer_method = reducer_method
-        self.max_reducer_dim = max_reducer_dim
+        self.pca = pca
         self.random_state = random_state
         self.base_test_size = base_test_size
         self.base_num_splits = base_num_splits
@@ -179,6 +341,7 @@ class LazyLogisticRegressionBinaryClassifier(object):
         self.min_positive_samples = min_positive_samples
         self.max_num_partitions = max_num_partitions
         self.min_seen_across_partitions = min_seen_across_partitions
+        self.force_max_positive_proportion_at_partition = force_max_positive_proportion_at_partition
         self.force_on_disk = force_on_disk
         self.fit_time = None
         self.reducers = None
@@ -186,28 +349,9 @@ class LazyLogisticRegressionBinaryClassifier(object):
         self.indices = None
 
     def _fit_feature_reducer(self, X, y):
-        method = self.reducer_method
-        max_dim = self.max_reducer_dim
-        if X.shape[1] <= max_dim:
-            return []
         reducer_0 = VarianceThreshold(threshold=0)
         reducer_0.fit(X)
-        X = reducer_0.transform(X)
-        if X.shape[1] <= max_dim:
-            return [reducer_0]
-        if method == "pca":
-            max_dim = min(max_dim, X.shape[0])
-            reducer_1 = PCA(n_components=max_dim)
-            reducer_1.fit(X)
-            return [reducer_0, reducer_1]
-        elif method == "best":
-            reducer_1 = SelectKBest(f_classif, k=max_dim)
-            reducer_1.fit(X, y)
-            return [reducer_0, reducer_1]
-        elif method is None:
-            return [reducer_0]
-        else:
-            raise Exception("Wrong feature reduction method. Use 'pca' or 'best'.")
+        return [reducer_0]
 
     def fit(self, X=None, y=None, h5_file=None, h5_idxs=None):
         t0 = time.time()
@@ -227,7 +371,8 @@ class LazyLogisticRegressionBinaryClassifier(object):
                                              max_samples=self.max_samples,
                                              min_positive_samples=self.min_positive_samples,
                                              max_num_partitions=self.max_num_partitions,
-                                             min_seen_across_partitions=self.min_seen_across_partitions):
+                                             min_seen_across_partitions=self.min_seen_across_partitions,
+                                             force_max_positive_proportion_at_partition=self.force_max_positive_proportion_at_partition):
             if h5_file is not None:
                 with h5py.File(h5_file, "r") as f:
                     X_sampled = iu.h5_data_reader(f["values"], [h5_idxs[i] for i in idxs])
@@ -238,7 +383,7 @@ class LazyLogisticRegressionBinaryClassifier(object):
             for red in reducer_:
                 X_sampled = red.transform(X_sampled)
             print(f"Fitting model on {len(idxs)} samples, positive samples: {np.sum(y_sampled)}, negative samples: {len(y_sampled) - np.sum(y_sampled)}, number of features {X_sampled.shape[1]}")
-            model = BaseLogisticRegressionBinaryClassifier(num_splits=self.base_num_splits, test_size=self.base_test_size, num_trials=self.base_num_trials, random_state=self.random_state)
+            model = BaseLogisticRegressionBinaryClassifier(pca=self.pca, num_splits=self.base_num_splits, test_size=self.base_test_size, num_trials=self.base_num_trials, random_state=self.random_state, max_positive_proportion=self.max_positive_proportion)
             model.fit(X_sampled, y_sampled)
             print("Model fitted.")
             reducers += [reducer_]
@@ -300,8 +445,7 @@ class LazyLogisticRegressionBinaryClassifier(object):
             partition_idx += 1
         metadata = {
             "num_partitions": len(self.models),
-            "reducer_method": self.reducer_method,
-            "max_reducer_dim": self.max_reducer_dim,
+            "pca": self.pca,
             "random_state": self.random_state,
             "base_test_size": self.base_test_size,
             "base_num_splits": self.base_num_splits,
@@ -320,8 +464,7 @@ class LazyLogisticRegressionBinaryClassifier(object):
             raise Exception("Metadata file not found.")
         with open(metadata_path, 'r') as f:
             metadata = json.load(f)
-        obj.reducer_method = metadata.get("reducer_method", None)
-        obj.max_reducer_dim = metadata.get("max_reducer_dim", None)
+        obj.pca = metadata.get("pca", None)
         obj.random_state = metadata.get("random_state", None)
         obj.base_test_size = metadata.get("base_test_size", None)
         obj.base_num_splits = metadata.get("base_num_splits", None)

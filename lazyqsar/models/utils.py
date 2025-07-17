@@ -213,7 +213,7 @@ class BinaryClassifierSamplingUtils(object):
         idxs_matrix = np.array(R, dtype=int)
         return idxs_matrix
     
-    def _get_number_of_positives_and_total(self, n_pos, n_tot, min_positive_proportion, max_positive_proportion, min_samples, max_samples, min_positive_samples):
+    def _get_number_of_positives_and_total(self, n_pos, n_tot, min_positive_proportion, max_positive_proportion, min_samples, max_samples, min_positive_samples, force_max_positive_proportion_at_partition):
         if n_pos < min_positive_samples:
             raise Exception(f"Not enough positive samples: {n_pos} < {min_positive_samples}.")
         if n_tot < min_samples:
@@ -228,7 +228,7 @@ class BinaryClassifierSamplingUtils(object):
             if pos_prop < min_positive_proportion:
                 n_tot = int(np.round(n_pos / min_positive_proportion, 0))
                 return n_pos, n_tot
-            elif pos_prop > max_positive_proportion:
+            elif (pos_prop > max_positive_proportion) and force_max_positive_proportion_at_partition:
                 n_tot = int(np.round(n_neg_original / (1 - max_positive_proportion), 0))
                 n_pos = int(np.round(n_tot * max_positive_proportion, 0))
                 if n_pos > n_pos_original:
@@ -284,7 +284,8 @@ class BinaryClassifierSamplingUtils(object):
                               max_samples,
                               min_positive_samples,
                               max_num_partitions,
-                              min_seen_across_partitions):
+                              min_seen_across_partitions,
+                              force_max_positive_proportion_at_partition=False):
         iu = InputUtils()
         iu.evaluate_input(X=X, h5_file=h5_file, h5_idxs=h5_idxs, y=y, is_y_mandatory=True)
         pos_idxs = [i for i, y_ in enumerate(y) if y_ == 1]
@@ -304,7 +305,8 @@ class BinaryClassifierSamplingUtils(object):
             max_positive_proportion=max_positive_proportion,
             min_samples=min_samples,
             max_samples=max_samples,
-            min_positive_samples=min_positive_samples
+            min_positive_samples=min_positive_samples,
+            force_max_positive_proportion_at_partition=force_max_positive_proportion_at_partition
         )
         n_neg_samples = n_tot_samples - n_pos_samples
         print(f"Sampling {n_pos_samples} positive and {n_neg_samples} negative samples from {n_tot_samples} total samples.")
@@ -420,6 +422,35 @@ class BinaryClassifierSamplingUtils(object):
         print(f"Avg positive samples: {n_pos/n}, avg negative samples: {n_neg/n}")
 
 
+
+class StratifiedKFolder(object):
+    def __init__(self, n_splits=5, max_positive_proportion=0.5, shuffle=True, random_state=None):
+        self.n_splits = n_splits
+        self.shuffle = shuffle
+        self.random_state = random_state
+        self.max_positive_proportion = max_positive_proportion
+
+    def get_n_splits(self, X=None, y=None, groups=None):
+        return self.n_splits
+
+    def split(self, X, y, groups=None):
+        splitter = StratifiedKFold(n_splits=self.n_splits, shuffle=self.shuffle, random_state=self.random_state)
+        for train_idxs, test_idxs in splitter.split(X, y):
+            train_idxs_pos = [i for i in train_idxs if y[i] == 1]
+            train_idxs_neg = [i for i in train_idxs if y[i] == 0]
+            if len(train_idxs_pos)/len(train_idxs) > self.max_positive_proportion:
+                expected_neg = len(train_idxs)*(1 - self.max_positive_proportion)
+                n_missing = int(expected_neg - len(train_idxs_neg))
+                if n_missing > 0:
+                    additional_neg_idxs = random.choices(train_idxs_neg, k=n_missing)
+                    train_idxs = list(train_idxs) + additional_neg_idxs
+                    random.shuffle(train_idxs)
+            yield train_idxs, test_idxs
+
+
+
+#TODO : Implement a regression weighter
+# This is a placeholder for a regression weighter class.
 class RegressionWeighter(object):
 
     def __init__(self, uniform=False):
@@ -430,3 +461,5 @@ class RegressionWeighter(object):
             return [1 for _ in y]
         else:
             raise Exception("Non-uniform weights are not implemented yet.")
+        
+

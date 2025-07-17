@@ -1,6 +1,4 @@
 import lazyqsar
-import numpy as np
-import warnings
 import os
 from sklearn.metrics import roc_curve, auc
 import pandas as pd
@@ -25,7 +23,7 @@ smiles_valid = [smiles_list[i] for i in test_idxs]
 y_valid = [y_list[i] for i in test_idxs]
 
 
-model_type = "tune_tables"
+model_type = "logistic_regression"
 
 def fit():
     import time
