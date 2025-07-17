@@ -9,7 +9,6 @@ import multiprocessing
 from tqdm import tqdm
 from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.decomposition import PCA
-from sklearn.feature_selection import SelectKBest, f_classif
 from sklearn.feature_selection import VarianceThreshold
 from sklearn.metrics import roc_auc_score
 from sklearn.linear_model import LogisticRegression, LogisticRegressionCV
