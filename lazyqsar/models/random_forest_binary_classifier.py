@@ -23,7 +23,7 @@ from .utils import BinaryClassifierSamplingUtils as SamplingUtils
 from .utils import InputUtils
 
 
-NUM_CPU = max(1, multiprocessing.cpu_count() - 1)
+NUM_CPU = max(1, int(multiprocessing.cpu_count()/2))
 
 
 class BaseRandomForestBinaryClassifier(BaseEstimator, ClassifierMixin):
@@ -43,11 +43,9 @@ class BaseRandomForestBinaryClassifier(BaseEstimator, ClassifierMixin):
         self.mean_score_ = None
 
     def _suggest_param_search(self, hyperparams, n_samples, n_features, test_size):
-        # suggesting range of n_estimators
         def_n_estimators = hyperparams["n_estimators"]
         min_n_estimators = max(10, int(def_n_estimators) - 100)
         max_n_estimators = min(1000, int(def_n_estimators) + 100)
-        # suggesting range of max_features
         def_max_features = hyperparams["max_features"]
         if def_max_features == "auto" or def_max_features == "sqrt" or def_max_features == "log2":
             max_features_range = [def_max_features]
@@ -55,7 +53,7 @@ class BaseRandomForestBinaryClassifier(BaseEstimator, ClassifierMixin):
             if def_max_features is None:
                 def_max_features = 1.0
             elif def_max_features > 1:
-                def_max_features = def_max_features / n_features # if it is above 1, assume it is an absolute number
+                def_max_features = def_max_features / n_features 
             else:
                 pass
             min_max_features = max(0.05, def_max_features - 0.2)
@@ -63,7 +61,6 @@ class BaseRandomForestBinaryClassifier(BaseEstimator, ClassifierMixin):
             max_features_range = sorted([min_max_features, max_max_features])
             if min_max_features == max_max_features:
                 min_max_features = min_max_features-0.01
-        # suggesting max leaf nodes
         if hyperparams["max_leaf_nodes"] is None:
             max_leaf_nodes_range = [None]
         else:
@@ -78,15 +75,12 @@ class BaseRandomForestBinaryClassifier(BaseEstimator, ClassifierMixin):
             max_leaf_nodes_range = sorted([min_max_leaf_nodes, max_max_leaf_nodes])
             if min_max_leaf_nodes == max_max_leaf_nodes:
                 min_max_leaf_nodes = min_max_leaf_nodes - 1
-        # criterion
         if "criterion" in hyperparams:
             criterion = hyperparams["criterion"]
         else:
             criterion = "gini"
-        # sanity check (should not happen)
         if min_n_estimators == max_n_estimators:
             max_n_estimators = min_n_estimators + 1
-        # preparing the parameters
         param = {
             "n_estimators": sorted([min_n_estimators, max_n_estimators]),
             "max_features": max_features_range, 

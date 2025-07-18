@@ -7,7 +7,6 @@ import json
 import shutil
 from tqdm import tqdm
 from tunetables_light.scripts.transformer_prediction_interface import TuneTablesClassifierLight as TuneTablesClassifierLightBase
-from tunetables_light.scripts.transformer_prediction_interface import TuneTablesZeroShotClassifier as TuneTablesZeroShotClassifierBase
 from .utils import BinaryClassifierSamplingUtils as SamplingUtils
 from .utils import InputUtils
 
@@ -44,12 +43,6 @@ class BaseTuneTablesBinaryClassifier(TuneTablesClassifierLightBase):
         )
     def predict(self, X):
         return super().predict_proba(X)[:, 1]
-
-class BaseTuneTablesZeroShotBinaryClassifier(TuneTablesZeroShotClassifierBase):
-    def __init__(self, subsample_features=True):
-        super().__init__(subsample_features=subsample_features)
-
-
 
 class LazyTuneTablesBinaryClassifier(object):
     def __init__(self,

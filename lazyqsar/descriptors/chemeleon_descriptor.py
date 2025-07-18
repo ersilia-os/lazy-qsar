@@ -39,8 +39,3 @@ class CheMeleonFingerprint:
         bmg = BatchMolGraph([self.featurizer(MolFromSmiles(m) if isinstance(m, str) else m) for m in molecules])
         bmg.to(device=self.model.device)
         return self.model.fingerprint(bmg).numpy(force=True)
-
-
-if __name__ == "__main__":
-    chemeleon_fingerprint = CheMeleonFingerprint()
-    chemeleon_fingerprint(["C", "CC", MolFromSmiles("CCC")])
