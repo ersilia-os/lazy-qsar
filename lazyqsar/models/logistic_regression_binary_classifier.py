@@ -326,7 +326,7 @@ class LazyLogisticRegressionBinaryClassifier(object):
                  max_samples: int = None,
                  min_positive_samples: int = 10,
                  max_num_partitions: int = 100,
-                 min_seen_across_partitions: int = 1,
+                 min_seen_across_partitions: int = None,
                  force_max_positive_proportion_at_partition: bool = False,
                  force_on_disk: bool = False,
                  random_state: int = 42):
@@ -363,6 +363,10 @@ class LazyLogisticRegressionBinaryClassifier(object):
         if self.max_samples is None:
             self.max_samples = BinaryClassifierMaxSamplesDecider(X=X, y=y, min_samples=self.min_samples, min_positive_proportion=self.min_positive_proportion).decide()
             print("Decided to use max samples:", self.max_samples)
+        if self.min_seen_across_partitions is None:
+            theoretical_min = 5 #TODO Abel put your formula
+            min_seen_across_partitions = max(1, theoretical_min)
+            self.min_seen_across_partitions = min(min_seen_across_partitions, 5)
         reducers = []
         models = []
         for idxs in su.get_partition_indices(X=X,
