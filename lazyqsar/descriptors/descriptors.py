@@ -57,3 +57,7 @@ class ChemeleonDescriptor(object):
                 )
         obj.features = metadata.get("features", [])
         return obj
+    
+
+class MorganFingerprint:
+    pass

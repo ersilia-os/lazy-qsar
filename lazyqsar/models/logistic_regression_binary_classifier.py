@@ -34,7 +34,7 @@ class BaseLogisticRegressionBinaryClassifier(BaseEstimator, ClassifierMixin):
         num_splits: int = 3,
         test_size: float = 0.25,
         random_state: int = 42,
-        num_trials: int = 50,
+        num_trials: int = 5,
         timeout: int = 600,
         max_positive_proportion: float = 0.5,
     ):
@@ -364,7 +364,7 @@ class LazyLogisticRegressionBinaryClassifier(object):
     def __init__(
         self,
         pca: bool = None,
-        num_trials: int = 10,
+        num_trials: int = 5,
         base_test_size: float = 0.25,
         base_num_splits: int = 3,
         min_positive_proportion: float = 0.01,
