@@ -6,6 +6,7 @@ import collections
 import random
 import h5py
 import psutil
+from scipy.stats import binom
 from tqdm import tqdm
 from sklearn.metrics import roc_auc_score
 from sklearn.naive_bayes import BernoulliNB, GaussianNB
@@ -284,6 +285,20 @@ class BinaryClassifierSamplingUtils(object):
                     if n_pos_original / n_tot < max_positive_proportion:
                         n_pos = n_pos_original
                     return n_pos, n_tot
+                
+    def get_theoretical_min_seen(self, y, max_sample):
+        n_tot = len(y)
+        m = min(max_sample, n_tot)
+        n = n_tot
+        k = 1
+        eps = 1e-6
+        p = m / n
+        threshold = eps / n
+        P = max(k, 1)
+        while True:
+            if binom.cdf(k - 1, P, p) <= threshold:
+                return P
+            P += 1
 
     def get_partition_indices(self,
                               X,

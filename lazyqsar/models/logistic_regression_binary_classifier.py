@@ -364,7 +364,7 @@ class LazyLogisticRegressionBinaryClassifier(object):
             self.max_samples = BinaryClassifierMaxSamplesDecider(X=X, y=y, min_samples=self.min_samples, min_positive_proportion=self.min_positive_proportion).decide()
             print("Decided to use max samples:", self.max_samples)
         if self.min_seen_across_partitions is None:
-            theoretical_min = 5 #TODO Abel put your formula
+            theoretical_min = su.get_theoretical_min_seen(y, self.max_samples)
             min_seen_across_partitions = max(1, theoretical_min)
             self.min_seen_across_partitions = min(min_seen_across_partitions, 5)
         reducers = []
