@@ -15,8 +15,9 @@ models_dict = {
     "tune_tables": LazyTuneTablesBinaryClassifier,
     "random_forest": LazyRandomForestBinaryClassifier,
     "logistic_regression": LazyLogisticRegressionBinaryClassifier,
-    
 }
+
+models_dict = dict((k, v) for k, v in models_dict.items() if v is not None)
 
 
 class LazyBinaryQSAR(object):

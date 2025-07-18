@@ -11,6 +11,8 @@ models_dict = {
     "logistic_regression": LazyLogisticRegressionBinaryClassifier
 }
 
+models_dict = ((k, v) for k, v in models_dict.items() if v is not None)
+
 
 class LazyBinaryClassifier(object):
 
