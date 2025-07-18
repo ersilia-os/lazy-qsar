@@ -57,7 +57,7 @@ class BaseLinearRegressor(BaseEstimator, ClassifierMixin):
             scores += [cross_val_score(pipe, X, y, cv=cv, scoring="r2", n_jobs=NUM_CPU).mean()]
 
         return np.mean(scores)
-    
+
     def _suggest_best_params(self, X, y, test_size):
 
         sampler = optuna.samplers.TPESampler(seed=self.random_state)
@@ -100,7 +100,7 @@ class BaseLinearRegressor(BaseEstimator, ClassifierMixin):
                 print(f"Early stopping: No significant improvement in the last {patience} trials.")
                 raise optuna.exceptions.TrialPruned()
             return score
-        
+
         study.optimize(
             objective_with_custom_early_stop,
             n_trials=self.num_trials,
@@ -111,7 +111,7 @@ class BaseLinearRegressor(BaseEstimator, ClassifierMixin):
             "best_params": study.best_params,
             "best_value": study.best_value,
         }
-        
+
         return results
 
     def _fit_pca(self, X, y):
@@ -141,7 +141,7 @@ class BaseLinearRegressor(BaseEstimator, ClassifierMixin):
                             cv=cv, random_state=self.random_state,
                             scoring="r2"))
         ])
-    
+
         pipe.fit(X, y)
         model_cv = pipe.named_steps["clf"]
         if hasattr(model_cv, "scores_"):
@@ -179,7 +179,7 @@ class BaseLinearRegressor(BaseEstimator, ClassifierMixin):
         pipe.fit(X, y)
         self.model_ = pipe
         return self
-    
+
     def _fit_no_pca(self, X, y):
         scores = []
         num_splits = self.num_splits
@@ -242,11 +242,11 @@ class BaseLinearRegressor(BaseEstimator, ClassifierMixin):
             raise ValueError("Model not fitted. Call `fit` first.")
         y_hat = self.model_.predict_proba(X)[:,1]
         return np.vstack((1 - y_hat, y_hat)).T
-    
+
     def predict(self, X):
         proba = self.predict_proba(X)[:, 1]
         return (proba >= 0.5).astype(int)
-    
+
     def score(self, X, y):
         return roc_auc_score(y, self.predict_proba(X)[:, 1])
 

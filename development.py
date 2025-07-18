@@ -1,9 +1,10 @@
-from lazyqsar.models.logistic_regression_binary_classifier import LazyLogisticRegressionBinaryClassifier
+from lazyqsar.models.logistic_regression_binary_classifier import (
+    LazyLogisticRegressionBinaryClassifier,
+)
 from sklearn.datasets import make_classification
 from sklearn.calibration import calibration_curve
 from sklearn.metrics import brier_score_loss
 import matplotlib.pyplot as plt
-import numpy as np
 
 # Step 1: Generate data
 X, y = make_classification(
@@ -12,13 +13,16 @@ X, y = make_classification(
     n_informative=30,
     n_redundant=0,
     weights=[0.5, 0.5],
-    random_state=42
+    random_state=42,
 )
 
 
 from sklearn.model_selection import train_test_split
+
 # Step 2: Train the classifier
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, random_state=42
+)
 clf = LazyLogisticRegressionBinaryClassifier()
 clf.fit(X_train, y_train)
 
@@ -27,7 +31,9 @@ prob_pos = clf.predict(X_test)
 print(prob_pos)
 
 # Step 4: Calibration Curve (Reliability Diagram)
-fraction_of_positives, mean_predicted_value = calibration_curve(y_test, prob_pos, n_bins=10)
+fraction_of_positives, mean_predicted_value = calibration_curve(
+    y_test, prob_pos, n_bins=10
+)
 
 plt.figure(figsize=(8, 6))
 plt.plot(mean_predicted_value, fraction_of_positives, "s-", label="Classifier")

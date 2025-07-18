@@ -2,25 +2,35 @@ import numpy as np
 import pandas as pd
 import os
 import matplotlib.pyplot as plt
-import json
-import sys
 
-FIGUREPATH =  "../figures"
+FIGUREPATH = "../figures"
 DATAPATH = "../data"
 
 # Compare METHODS
 
 descs = ["morgan", "mordred"]
 models = ["xgboost", "xgboost_pca", "zsrandomforest", "randomforest"]
-assays = ["bioavailability_ma", "hia_hou", "pgp_broccatelli", "bbb_martins", "cyp2c9_veith","cyp2d6_veith",
-                  "cyp3a4_veith", "cyp2c9_substrate_carbonmangels", "cyp2d6_substrate_carbonmangels",
-                  "cyp3a4_substrate_carbonmangels","herg","ames", "dili"]
+assays = [
+    "bioavailability_ma",
+    "hia_hou",
+    "pgp_broccatelli",
+    "bbb_martins",
+    "cyp2c9_veith",
+    "cyp2d6_veith",
+    "cyp3a4_veith",
+    "cyp2c9_substrate_carbonmangels",
+    "cyp2d6_substrate_carbonmangels",
+    "cyp3a4_substrate_carbonmangels",
+    "herg",
+    "ames",
+    "dili",
+]
 
 seed = 1
 
 for model in models:
     fig, axes = plt.subplots(1, 2, figsize=(16, 6), sharey=True)
-    
+
     for j, desc in enumerate(descs):
         ax = axes[j]
         predictions = {}
@@ -28,9 +38,7 @@ for model in models:
         for assay in assays:
             try:
                 file_path = os.path.join(
-                    DATAPATH,
-                    f"tdc_preds_{model}_{desc}",
-                    f"{assay}_test_{seed}.csv"
+                    DATAPATH, f"tdc_preds_{model}_{desc}", f"{assay}_test_{seed}.csv"
                 )
                 df = pd.read_csv(file_path)
                 predictions[assay] = df["pred"].tolist()
@@ -48,8 +56,7 @@ for model in models:
         for i, assay in enumerate(x_labels):
             preds = predictions[assay]
             jitter = np.random.normal(loc=0, scale=0.05, size=len(preds))
-            ax.scatter(np.full(len(preds), x_pos[i]) + jitter, preds,
-                       alpha=0.6, s=10)
+            ax.scatter(np.full(len(preds), x_pos[i]) + jitter, preds, alpha=0.6, s=10)
 
         ax.set_xticks(x_pos)
         ax.set_xticklabels(x_labels, rotation=45, ha="right")

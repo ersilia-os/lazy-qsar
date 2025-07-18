@@ -1,4 +1,3 @@
-
 import time
 import h5py
 import numpy as np
@@ -6,32 +5,34 @@ import os
 import json
 import shutil
 from tqdm import tqdm
-from tunetables_light.scripts.transformer_prediction_interface import TuneTablesClassifierLight as TuneTablesClassifierLightBase
+from tunetables_light.scripts.transformer_prediction_interface import (
+    TuneTablesClassifierLight as TuneTablesClassifierLightBase,
+)
 from .utils import BinaryClassifierSamplingUtils as SamplingUtils
 from .utils import InputUtils
 
 
 class BaseTuneTablesBinaryClassifier(TuneTablesClassifierLightBase):
     def __init__(
-            self, 
-            device="cpu",
-            epoch=4,
-            batch_size=4,
-            lr=0.1,
-            dropout=0.2,
-            tuned_prompt_size=5,
-            early_stopping=10,
-            boosting=False,
-            bagging=False, 
-            ensemble_size=5,
-            average_ensemble=False,
-            positive_fraction=0.2
-            ):
+        self,
+        device="cpu",
+        epoch=4,
+        batch_size=4,
+        lr=0.1,
+        dropout=0.2,
+        tuned_prompt_size=5,
+        early_stopping=10,
+        boosting=False,
+        bagging=False,
+        ensemble_size=5,
+        average_ensemble=False,
+        positive_fraction=0.2,
+    ):
         super().__init__(
-            lr=lr, 
-            epoch=epoch, 
-            device=device, 
-            tuned_prompt_size=tuned_prompt_size, 
+            lr=lr,
+            epoch=epoch,
+            device=device,
+            tuned_prompt_size=tuned_prompt_size,
             batch_size=batch_size,
             dropout=dropout,
             early_stopping=early_stopping,
@@ -39,21 +40,25 @@ class BaseTuneTablesBinaryClassifier(TuneTablesClassifierLightBase):
             bagging=bagging,
             ensemble_size=ensemble_size,
             average_ensemble=average_ensemble,
-            positive_fraction=positive_fraction
+            positive_fraction=positive_fraction,
         )
+
     def predict(self, X):
         return super().predict_proba(X)[:, 1]
 
+
 class LazyTuneTablesBinaryClassifier(object):
-    def __init__(self,
-                 min_positive_proportion: float = 0.01,
-                 max_positive_proportion: float = 0.5,
-                 min_samples: int = 30,
-                 max_samples: int = 10000,
-                 min_positive_samples: int = 10,
-                 max_num_partitions: int = 100,
-                 min_seen_across_partitions: int = 1,
-                 force_on_disk: bool = False):
+    def __init__(
+        self,
+        min_positive_proportion: float = 0.01,
+        max_positive_proportion: float = 0.5,
+        min_samples: int = 30,
+        max_samples: int = 10000,
+        min_positive_samples: int = 10,
+        max_num_partitions: int = 100,
+        min_seen_across_partitions: int = 1,
+        force_on_disk: bool = False,
+    ):
         self.min_positive_proportion = min_positive_proportion
         self.max_positive_proportion = max_positive_proportion
         self.min_samples = min_samples
@@ -69,8 +74,12 @@ class LazyTuneTablesBinaryClassifier(object):
     def fit(self, X=None, y=None, h5_file=None, h5_idxs=None):
         t0 = time.time()
         iu = InputUtils()
-        iu.evaluate_input(X=X, h5_file=h5_file, h5_idxs=h5_idxs, y=y, is_y_mandatory=True)
-        X, h5_file, h5_idxs = iu.preprocessing(X=X, h5_file=h5_file, h5_idxs=h5_idxs, force_on_disk=self.force_on_disk)
+        iu.evaluate_input(
+            X=X, h5_file=h5_file, h5_idxs=h5_idxs, y=y, is_y_mandatory=True
+        )
+        X, h5_file, h5_idxs = iu.preprocessing(
+            X=X, h5_file=h5_file, h5_idxs=h5_idxs, force_on_disk=self.force_on_disk
+        )
         if h5_file is not None:
             with h5py.File(h5_file, "r") as f:
                 X = iu.h5_data_reader(f["values"], [idx for idx in h5_idxs])
@@ -81,27 +90,38 @@ class LazyTuneTablesBinaryClassifier(object):
         self.fit_time = t1 - t0
         print(f"Fitting completed in {self.fit_time:.2f} seconds.")
         return self
-    
+
     def predict(self, X=None, h5_file=None, h5_idxs=None, chunk_size=1000):
         chunk_size = X.shape[0]
 
         iu = InputUtils()
-        iu.evaluate_input(X=X, h5_file=h5_file, h5_idxs=h5_idxs, y=None, is_y_mandatory=False)
-        X, h5_file, h5_idxs = iu.preprocessing(X=X, h5_file=h5_file, h5_idxs=h5_idxs, force_on_disk=self.force_on_disk)
+        iu.evaluate_input(
+            X=X, h5_file=h5_file, h5_idxs=h5_idxs, y=None, is_y_mandatory=False
+        )
+        X, h5_file, h5_idxs = iu.preprocessing(
+            X=X, h5_file=h5_file, h5_idxs=h5_idxs, force_on_disk=self.force_on_disk
+        )
         su = SamplingUtils()
         if self.model is None:
-            raise ValueError("Model has not been fitted yet. Please call fit() before predict().")
+            raise ValueError(
+                "Model has not been fitted yet. Please call fit() before predict()."
+            )
         model = self.model
         y_hat = []
         n = X.shape[0]
         if h5_file is None:
             y_hat = list(model.predict(X))
         else:
-            for X_chunk in tqdm(su.chunk_h5_file(h5_file, h5_idxs, chunk_size), desc="Predicting chunks..."):
+            for X_chunk in tqdm(
+                su.chunk_h5_file(h5_file, h5_idxs, chunk_size),
+                desc="Predicting chunks...",
+            ):
                 print(f"X chunk vales: {X_chunk}")
                 y_hat += list(model.predict(X_chunk))
         y_hat = np.array(y_hat)
-        assert len(y_hat) == n, f"Predicted labels length does not match input samples length. Y pred: {len(y_hat)} and sample size: {n}"
+        assert len(y_hat) == n, (
+            f"Predicted labels length does not match input samples length. Y pred: {len(y_hat)} and sample size: {n}"
+        )
         return y_hat
 
     def save_model(self, model_dir: str):
@@ -120,7 +140,7 @@ class LazyTuneTablesBinaryClassifier(object):
         metadata_path = os.path.join(model_dir, "metadata.json")
         if not os.path.exists(metadata_path):
             raise Exception("Metadata file not found.")
-        with open(metadata_path, 'r') as f:
+        with open(metadata_path, "r") as f:
             metadata = json.load(f)
         obj.fit_time = metadata.get("fit_time", None)
         obj.model = BaseTuneTablesBinaryClassifier.load_model(model_dir)

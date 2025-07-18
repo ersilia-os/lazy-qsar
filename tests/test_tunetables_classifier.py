@@ -1,10 +1,11 @@
-import os, csv
+import os
+import csv
 import lazyqsar as lq
 from sklearn.metrics import roc_curve, auc
 from sklearn.model_selection import train_test_split
 import warnings
+
 warnings.filterwarnings("ignore", category=ResourceWarning)
-from tdc.single_pred import ADME
 
 # data = ADME(
 #     name='bioavailability_ma',
@@ -16,7 +17,7 @@ from tdc.single_pred import ADME
 # y_valid = list(split["valid"]["Y"])
 
 # NOTE: This version of tunetables supports arbitrary dataset size. This requires training.
-# NOTE: If the dataset is small better to train them 1-4 epochs. 
+# NOTE: If the dataset is small better to train them 1-4 epochs.
 # NOTE: For big (>15k) one 10 epoch works fine. It has default early stopping of 4 epoch,
 # NOTE: I used internally in tunetables, a PCA method to reduce the dimensions of fetures of mordred to 100
 
@@ -28,11 +29,10 @@ def load_datasets():
         reader = list(reader)
     X = [row[1] for row in reader]
     y = [int(row[-1]) for row in reader]
-    pos_count = len([pos for pos in y if pos==1])
-    neg_count = len([neg for neg in y if neg==0])
+    pos_count = len([pos for pos in y if pos == 1])
+    neg_count = len([neg for neg in y if neg == 0])
     print(f"Pos count: {pos_count} | Neg count: {neg_count}")
     return train_test_split(X, y, test_size=0.15, stratify=y, random_state=42)
-
 
 
 # def fit():
@@ -45,6 +45,7 @@ def load_datasets():
 
 #     model.save_model("bioavailability_ma_mordered_one")
 
+
 def fit_scale():
     X_train, X_valid, Y_train, Y_valid = load_datasets()
     Y_valid = [int(label) for label in Y_valid]
@@ -55,6 +56,7 @@ def fit_scale():
     y_hat = model.predict_proba(X_valid)
     fpr, tpr, _ = roc_curve(Y_valid, y_hat)
     print("AUROC", auc(fpr, tpr))
+
 
 def fit_scale_zsrf():
     X_train, X_valid, Y_train, Y_valid = load_datasets()
@@ -67,6 +69,7 @@ def fit_scale_zsrf():
     fpr, tpr, _ = roc_curve(Y_valid, y_hat)
     print("AUROC", auc(fpr, tpr))
 
+
 def fit_scale_xgboost():
     X_train, X_valid, Y_train, Y_valid = load_datasets()
     Y_valid = [int(label) for label in Y_valid]
@@ -78,8 +81,10 @@ def fit_scale_xgboost():
     fpr, tpr, _ = roc_curve(Y_valid, y_hat)
     print("AUROC", auc(fpr, tpr))
 
+
 def predict():
-    import time, random
+    import time
+
     st = time.perf_counter()
     _, X_valid, _, Y_valid = load_datasets()
     Y_valid = [int(label) for label in Y_valid]
@@ -96,7 +101,7 @@ def predict():
     fpr, tpr, _ = roc_curve(Y_valid, y_hat)
     print("AUROC", auc(fpr, tpr))
     et = time.perf_counter()
-    print(f"Inference done in {et-st:.3} seconds")
+    print(f"Inference done in {et - st:.3} seconds")
 
 
 if __name__ == "__main__":

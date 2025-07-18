@@ -1,4 +1,6 @@
-from .logistic_regression_binary_classifier import LazyLogisticRegressionBinaryClassifier
+from .logistic_regression_binary_classifier import (
+    LazyLogisticRegressionBinaryClassifier,
+)
 from .random_forest_binary_classifier import LazyRandomForestBinaryClassifier
 
 try:

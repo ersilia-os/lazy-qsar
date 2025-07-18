@@ -21,18 +21,21 @@ class ChemeleonDescriptor(object):
             self.features = ["dim_{0}".format(i) for i in range(self.n_dim)]
         chunk_size = 1000
         R = []
-        for i in tqdm(range(0, len(smiles), chunk_size), desc="Transforming CheMeleon descriptors in chunks of 1000"):
-            chunk = smiles[i:i + chunk_size]
+        for i in tqdm(
+            range(0, len(smiles), chunk_size),
+            desc="Transforming CheMeleon descriptors in chunks of 1000",
+        ):
+            chunk = smiles[i : i + chunk_size]
             X_chunk = np.array(self.chemeleon_fingerprint(chunk), dtype=np.float32)
             R += [X_chunk]
         return np.concatenate(R, dtype=np.float32, axis=0)
-    
+
     def save(self, dir_name: str):
         if not os.path.exists(dir_name):
             os.makedirs(dir_name)
         metadata = {
             "rdkit_version": Chem.rdBase.rdkitVersion,
-            "features": self.features
+            "features": self.features,
         }
         with open(os.path.join(dir_name, "descriptor_metadata.json"), "w") as f:
             json.dump(metadata, f)
@@ -49,6 +52,8 @@ class ChemeleonDescriptor(object):
                 print(f"Loaded RDKit version: {rdkit_version}")
             current_rdkit_version = Chem.rdBase.rdkitVersion
             if current_rdkit_version != rdkit_version:
-                raise ValueError(f"RDKit version mismatch: expected {current_rdkit_version}, got {rdkit_version}")
+                raise ValueError(
+                    f"RDKit version mismatch: expected {current_rdkit_version}, got {rdkit_version}"
+                )
         obj.features = metadata.get("features", [])
         return obj

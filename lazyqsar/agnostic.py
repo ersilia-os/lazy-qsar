@@ -2,20 +2,23 @@ import os
 import json
 import numpy as np
 
-from .models import LazyRandomForestBinaryClassifier, LazyTuneTablesBinaryClassifier, LazyLogisticRegressionBinaryClassifier
+from .models import (
+    LazyRandomForestBinaryClassifier,
+    LazyTuneTablesBinaryClassifier,
+    LazyLogisticRegressionBinaryClassifier,
+)
 
 
 models_dict = {
     "tune_tables": LazyTuneTablesBinaryClassifier,
-    "random_forest":LazyRandomForestBinaryClassifier,
-    "logistic_regression": LazyLogisticRegressionBinaryClassifier
+    "random_forest": LazyRandomForestBinaryClassifier,
+    "logistic_regression": LazyLogisticRegressionBinaryClassifier,
 }
 
 models_dict = ((k, v) for k, v in models_dict.items() if v is not None)
 
 
 class LazyBinaryClassifier(object):
-
     def __init__(self, model_type="random_forest", **kwargs):
         self.model_type = model_type
 
@@ -27,12 +30,14 @@ class LazyBinaryClassifier(object):
     def fit(self, X, y):
         y = np.array(y, dtype=int)
         if isinstance(X[0], str):
-            raise ValueError("The input X can not be a string! Transfor it to the descriptors!")
+            raise ValueError(
+                "The input X can not be a string! Transfor it to the descriptors!"
+            )
         self.model.fit(X=X, y=y)
 
     def predict_proba(self, X):
         return self.model.predict(X)
-    
+
     def save_model(self, model_dir: str):
         print(f"LazyQSAR Saving model to {model_dir}")
         config = {

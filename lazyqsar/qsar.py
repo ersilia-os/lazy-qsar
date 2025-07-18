@@ -3,13 +3,14 @@ import json
 import numpy as np
 
 from .descriptors import ChemeleonDescriptor, MorganFingerprint
-from .models import LazyRandomForestBinaryClassifier, LazyTuneTablesBinaryClassifier, LazyLogisticRegressionBinaryClassifier
+from .models import (
+    LazyRandomForestBinaryClassifier,
+    LazyTuneTablesBinaryClassifier,
+    LazyLogisticRegressionBinaryClassifier,
+)
 
 
-descriptors_dict = {
-    "chemeleon": ChemeleonDescriptor,
-    "morgan": MorganFingerprint
-}
+descriptors_dict = {"chemeleon": ChemeleonDescriptor, "morgan": MorganFingerprint}
 
 
 models_dict = {
@@ -22,15 +23,16 @@ models_dict = dict((k, v) for k, v in models_dict.items() if v is not None)
 
 
 class LazyBinaryQSAR(object):
-
-    def __init__(self, descriptor_type="chemeleon", model_type="random_forest", **kwargs):
+    def __init__(
+        self, descriptor_type="chemeleon", model_type="random_forest", **kwargs
+    ):
         self.descriptor_type = descriptor_type
         self.model_type = model_type
 
         if descriptor_type not in descriptors_dict:
             raise ValueError(f"Unsupported descriptor type: {descriptor_type}")
         self.descriptor = descriptors_dict[descriptor_type]()
-        
+
         if model_type not in models_dict:
             raise ValueError(f"Unsupported model type: {model_type}")
         else:
@@ -40,17 +42,21 @@ class LazyBinaryQSAR(object):
         y = np.array(y, dtype=int)
         print(f"Fitting inputs to feature descriptors using {self.descriptor_type}")
         self.descriptor.fit(X)
-        print(f"Transforming inputs to feature descriptors using {self.descriptor_type}")
+        print(
+            f"Transforming inputs to feature descriptors using {self.descriptor_type}"
+        )
         descriptors = np.array(self.descriptor.transform(X), dtype=np.float32)
         print(f"Performing predictions on input feature of shape: {descriptors.shape}")
         self.model.fit(X=descriptors, y=y)
 
     def predict_proba(self, X):
-        print(f"Transforming inputs to feature descriptors using {self.descriptor_type}")
+        print(
+            f"Transforming inputs to feature descriptors using {self.descriptor_type}"
+        )
         descriptors = np.array(self.descriptor.transform(X))
         print(f"Performing predictions on input feature of shape: {descriptors.shape}")
         return self.model.predict(descriptors)
-    
+
     def save_model(self, model_dir: str):
         print(f"LazyQSAR Saving model to {model_dir}")
         config = {

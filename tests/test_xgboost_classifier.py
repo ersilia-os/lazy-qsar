@@ -1,20 +1,20 @@
 import os
 import lazyqsar as lq
-import numpy as np
-import pandas as pd
 import tempfile
-from sklearn.metrics import accuracy_score, roc_auc_score
 from sklearn.metrics import roc_curve, auc
 import warnings
+
 warnings.filterwarnings("ignore", category=ResourceWarning)
 
 from tdc.single_pred import Tox
-data = Tox(name = 'hERG')
+
+data = Tox(name="hERG")
 split = data.get_split()
 smiles_train = list(split["train"]["Drug"])
 y_train = list(split["train"]["Y"])
 smiles_valid = list(split["valid"]["Drug"])
 y_valid = list(split["valid"]["Y"])
+
 
 def fit():
     model = lq.LazyBinaryQSAR()
@@ -23,6 +23,7 @@ def fit():
     fpr, tpr, _ = roc_curve(y_valid, y_hat)
     print("AUROC", auc(fpr, tpr))
     model.save_model(model_dir="herg_xg")
+
 
 def predict():
     model_dir = os.path.abspath("herg_xg")
@@ -36,4 +37,4 @@ def predict():
 if __name__ == "__main__":
     predict()
     tmp = tempfile.TemporaryDirectory()
-    tmp.cleanup()  
+    tmp.cleanup()
