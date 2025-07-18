@@ -16,6 +16,7 @@ from .utils import BinaryClassifierSamplingUtils as SamplingUtils
 from .utils import InputUtils
 from .utils import StratifiedKFolder
 from .utils import BinaryClassifierPCADecider
+from .utils import BinaryClassifierMaxSamplesDecider
 
 import optuna
 from sklearn.pipeline import Pipeline
@@ -23,7 +24,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import cross_val_score
 
 
-NUM_CPU = max(1, multiprocessing.cpu_count() - 1)
+NUM_CPU = max(1, int(multiprocessing.cpu_count()/2))
 
 
 class BaseLogisticRegressionBinaryClassifier(BaseEstimator, ClassifierMixin):
@@ -48,7 +49,7 @@ class BaseLogisticRegressionBinaryClassifier(BaseEstimator, ClassifierMixin):
 
     def _objective(self, trial, X, y):
 
-        n_components = trial.suggest_float("n_components", 0.5, 0.99, step=0.01)
+        n_components = trial.suggest_float("n_components", 0.80, 0.99, step=0.01)
 
         num_splits = max(self.num_splits, int(1 / self.test_size))
 
@@ -322,7 +323,7 @@ class LazyLogisticRegressionBinaryClassifier(object):
                  min_positive_proportion: float = 0.01,
                  max_positive_proportion: float = 0.5,
                  min_samples: int = 30,
-                 max_samples: int = 10000,
+                 max_samples: int = None,
                  min_positive_samples: int = 10,
                  max_num_partitions: int = 100,
                  min_seen_across_partitions: int = 1,
@@ -359,6 +360,9 @@ class LazyLogisticRegressionBinaryClassifier(object):
         su = SamplingUtils()
         iu.evaluate_input(X=X, h5_file=h5_file, h5_idxs=h5_idxs, y=y, is_y_mandatory=True)
         X, h5_file, h5_idxs = iu.preprocessing(X=X, h5_file=h5_file, h5_idxs=h5_idxs, force_on_disk=self.force_on_disk)
+        if self.max_samples is None:
+            self.max_samples = BinaryClassifierMaxSamplesDecider(X=X, y=y, min_samples=self.min_samples, min_positive_proportion=self.min_positive_proportion).decide()
+            print("Decided to use max samples:", self.max_samples)
         reducers = []
         models = []
         for idxs in su.get_partition_indices(X=X,
@@ -385,6 +389,7 @@ class LazyLogisticRegressionBinaryClassifier(object):
             print(f"Fitting model on {len(idxs)} samples, positive samples: {np.sum(y_sampled)}, negative samples: {len(y_sampled) - np.sum(y_sampled)}, number of features {X_sampled.shape[1]}")
             if self.pca is None:
                 pca = BinaryClassifierPCADecider(X_sampled, y_sampled, max_positive_proportion=self.max_positive_proportion).decide()
+                print("PCA decision:", pca)
             else:
                 pca = self.pca
             model = BaseLogisticRegressionBinaryClassifier(pca=pca, num_splits=self.base_num_splits, test_size=self.base_test_size, num_trials=self.base_num_trials, random_state=self.random_state, max_positive_proportion=self.max_positive_proportion)
