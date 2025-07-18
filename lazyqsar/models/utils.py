@@ -590,6 +590,7 @@ class BinaryClassifierMaxSamplesDecider(object):
                 auc_score = self.quick_auc_estimator.estimate(X_sampled, y_sampled)
                 auc_scores += [auc_score]
             scores += [np.mean(auc_scores)]
+            n_samples += [n]
         return n_samples[np.argmax(scores)]
 
 

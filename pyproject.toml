@@ -36,7 +36,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-test = [
+benchmark = [
   "pytdc==1.1.15",
 ]
 tune_tables = [
@@ -44,9 +44,7 @@ tune_tables = [
 ]
 descriptors = [
   "rdkit==2023.9.5",
-  "mordredcommunity==2.0.6",
-  "chemprop<=2.2.0",
-  "mordred==1.2.0"
+  "chemprop<=2.2.0"
 ]
 
 [project.urls]
