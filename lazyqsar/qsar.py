@@ -2,12 +2,13 @@ import os
 import json
 import numpy as np
 
-from .descriptors import ChemeleonDescriptor
+from .descriptors import ChemeleonDescriptor, MorganFingerprint
 from .models import LazyRandomForestBinaryClassifier, LazyTuneTablesBinaryClassifier, LazyLogisticRegressionBinaryClassifier
 
 
 descriptors_dict = {
     "chemeleon": ChemeleonDescriptor
+    "morgan": MorganFingerprint
 }
 
 
