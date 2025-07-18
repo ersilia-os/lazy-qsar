@@ -7,7 +7,7 @@ from .models import LazyRandomForestBinaryClassifier, LazyTuneTablesBinaryClassi
 
 
 descriptors_dict = {
-    "chemeleon": ChemeleonDescriptor
+    "chemeleon": ChemeleonDescriptor,
     "morgan": MorganFingerprint
 }
 
