@@ -21,6 +21,7 @@ from sklearn.linear_model import LogisticRegression
 from flaml.default import RandomForestClassifier as ZeroShotRandomForestClassifier
 from .utils import BinaryClassifierSamplingUtils as SamplingUtils
 from .utils import InputUtils
+from .optimizers import PCADimensionsOptimizerForBinaryClassification
 
 
 NUM_CPU = max(1, int(multiprocessing.cpu_count() / 2))
@@ -29,12 +30,14 @@ NUM_CPU = max(1, int(multiprocessing.cpu_count() / 2))
 class BaseRandomForestBinaryClassifier(BaseEstimator, ClassifierMixin):
     def __init__(
         self,
+        pca: bool = False,
         num_splits: int = 3,
         test_size: float = 0.25,
         num_trials: int = 50,
         timeout: int = 600,
         random_state: int = 42,
     ):
+        self.pca = pca
         self.random_state = random_state
         self.num_splits = num_splits
         self.test_size = test_size
@@ -216,8 +219,22 @@ class BaseRandomForestBinaryClassifier(BaseEstimator, ClassifierMixin):
         }
 
         return results
-
-    def fit(self, X, y):
+    
+    def _fit_pca(self, X, y):
+        best_params = PCADimensionsOptimizerForBinaryClassification(
+                            num_splits = min(self.num_splits, 3),
+                            test_size = self.test_size,
+                            random_state = self.random_state,
+                            num_trials = min(5, self.num_trials),
+                            timeout = min(60, self.timeout),
+                            max_positive_proportion = self.max_positive_proportion
+                        ).get_best_params(X, y)["best_params"]
+        print("Working on the PCA")
+        n_components = best_params["n_components"]
+        reducer = PCA(n_components=n_components)
+        reducer.fit(X)
+        self.reducer_ = reducer
+        X = reducer.transform(X)
         results = self._suggest_best_params(X, y, self.test_size)
         hyperparams = results["best_params"]
         score = results["best_value"]
@@ -258,9 +275,61 @@ class BaseRandomForestBinaryClassifier(BaseEstimator, ClassifierMixin):
         self.model_.fit(X, y)
         return self
 
+    def _fit_no_pca(self, X, y):
+        self.reducer_ = None
+        results = self._suggest_best_params(X, y, self.test_size)
+        hyperparams = results["best_params"]
+        score = results["best_value"]
+        hyperparams["n_jobs"] = NUM_CPU
+        hyperparams["random_state"] = self.random_state
+        hyperparams["class_weight"] = "balanced_subsample"
+        print(
+            f"Best hyperparameters: {hyperparams}, Inner hyperparameter AUROC: {score}"
+        )
+        scores = []
+        y_cal = []
+        probs_cal = []
+        for r in range(self.num_splits):
+            train_x, valid_x, train_y, valid_y = train_test_split(
+                X,
+                y,
+                test_size=self.test_size,
+                random_state=self.random_state + r,
+                stratify=y,
+            )
+            model_cv = RandomForestClassifier(**hyperparams)
+            model_cv.fit(train_x, train_y)
+            valid_y_hat = model_cv.predict_proba(valid_x)[:, 1]
+            fpr, tpr, _ = roc_curve(valid_y, valid_y_hat)
+            auroc = auc(fpr, tpr)
+            scores.append(auroc)
+            print(f"Internal AUROC CV-{r}: {auroc}")
+            y_cal += list(valid_y)
+            probs_cal += list(valid_y_hat)
+        print("Logistic regression for calibration...")
+        self.platt_reg_ = LogisticRegression(solver="lbfgs", max_iter=1000)
+        self.platt_reg_.fit(np.array(probs_cal).reshape(-1, 1), y_cal)
+        print("Logistic regression fit done.")
+        self.mean_score_ = np.mean(scores)
+        self.std_score_ = np.std(scores)
+        print(f"Average AUROC: {self.mean_score_}")
+        self.model_ = RandomForestClassifier(**hyperparams)
+        self.model_.fit(X, y)
+        return self
+    
+    def fit(self, X, y):
+        if self.pca:
+            return self._fit_pca(X, y)
+        else:
+            return self._fit_no_pca(X, y)
+
     def predict_proba(self, X):
         if not hasattr(self, "model_") or self.model_ is None:
             raise ValueError("Model not fitted. Call `fit` first.")
+        if self.reducer_ is not None:
+            X = self.reducer_.transform(X)
+        else:
+            pass
         y_hat = self.model_.predict_proba(X)[:, 1]
         y_hat = self.platt_reg_.predict_proba(y_hat.reshape(-1, 1))[:, 1]
         return np.vstack((1 - y_hat, y_hat)).T
@@ -280,10 +349,12 @@ class BaseRandomForestBinaryClassifier(BaseEstimator, ClassifierMixin):
             os.makedirs(model_dir)
 
         model_path = os.path.join(model_dir, "model.joblib")
+        joblib.dump(self.reducer_, os.path.join(model_dir, "reducer.joblib"))
         joblib.dump(self.model_, model_path)
         joblib.dump(self.platt_reg_, os.path.join(model_dir, "platt_reg.joblib"))
 
         metadata = {
+            "pca": self.pca,
             "random_state": self.random_state,
             "num_splits": self.num_splits,
             "test_size": self.test_size,
@@ -331,8 +402,7 @@ class BaseRandomForestBinaryClassifier(BaseEstimator, ClassifierMixin):
 class LazyRandomForestBinaryClassifier(object):
     def __init__(
         self,
-        reducer_method: str = None,
-        max_reducer_dim: int = 500,
+        pca: bool = None,
         num_trials: int = 10,
         base_test_size: float = 0.25,
         base_num_splits: int = 3,
@@ -347,8 +417,7 @@ class LazyRandomForestBinaryClassifier(object):
         force_on_disk: bool = False,
         random_state: int = 42,
     ):
-        self.reducer_method = reducer_method
-        self.max_reducer_dim = max_reducer_dim
+        self.pca = pca
         self.random_state = random_state
         self.base_test_size = base_test_size
         self.base_num_splits = base_num_splits
