@@ -57,13 +57,6 @@ class ChemeleonDescriptor(object):
                 )
         obj.features = metadata.get("features", [])
         return obj
-<<<<<<< Updated upstream
-    
-
-class MorganFingerprint:
-    pass
-=======
-
 
 
 class MorganFingerprint(object):
@@ -132,6 +125,3 @@ class MorganFingerprint(object):
                 raise ValueError(f"RDKit version mismatch: expected {current_rdkit_version}, got {rdkit_version}")
         obj.features = metadata.get("features", [])
         return obj
-
-
->>>>>>> Stashed changes
