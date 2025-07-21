@@ -36,9 +36,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-benchmark = [
-  "pytdc==1.1.15",
-]
 tune_tables = [
   "tunetables_light @ git+https://github.com/ersilia-os/TuneTablesLight.git@main"
 ]
