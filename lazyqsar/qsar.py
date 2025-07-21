@@ -10,7 +10,14 @@ from .models import (
 )
 
 
+<<<<<<< Updated upstream
 descriptors_dict = {"chemeleon": ChemeleonDescriptor, "morgan": MorganFingerprint}
+=======
+descriptors_dict = {
+    "chemeleon": ChemeleonDescriptor,
+    "morgan": MorganFingerprint
+}
+>>>>>>> Stashed changes
 
 
 models_dict = {
