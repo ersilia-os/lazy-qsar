@@ -10,7 +10,7 @@ from scipy.stats import binom
 from tqdm import tqdm
 from sklearn.metrics import roc_auc_score
 from sklearn.naive_bayes import BernoulliNB, GaussianNB
-from sklearn.model_selection import StratifiedKFold
+from sklearn.model_selection import StratifiedKFold, KFold
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 
@@ -495,6 +495,24 @@ class BinaryClassifierSamplingUtils(object):
             n_pos += pos
             n_neg += neg
         print(f"Avg positive samples: {n_pos / n}, avg negative samples: {n_neg / n}")
+
+
+class KFolder(object):
+
+    def __init__(self, n_splits=5, shuffle=True, random_state=None):
+        self.n_splits = n_splits
+        self.shuffle = shuffle
+        self.random_state = random_state
+
+    def get_n_splits(self, X=None, y=None, groups=None):
+        return self.n_splits
+
+    def split(self, X, y, groups=None):
+        skf = KFold(
+            n_splits=self.n_splits, shuffle=self.shuffle, random_state=self.random_state
+        )
+        for train_idxs, test_idxs in skf.split(X, y):
+            yield train_idxs, test_idxs
 
 
 class StratifiedKFolder(object):

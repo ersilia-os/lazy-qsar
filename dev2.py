@@ -4,7 +4,6 @@ from sklearn.metrics import roc_curve, auc
 import pandas as pd
 from sklearn.model_selection import train_test_split
 
-
 file_path = "data/bioavailability_ma.tab"
 
 df = pd.read_csv(file_path, sep="\t")
