@@ -361,7 +361,6 @@ class BaseLogisticRegressionBinaryClassifier(BaseEstimator, ClassifierMixin):
 
 
 class LazyLogisticRegressionBinaryClassifier(object):
-<<<<<<< Updated upstream
     def __init__(
         self,
         pca: bool = None,
@@ -379,24 +378,6 @@ class LazyLogisticRegressionBinaryClassifier(object):
         force_on_disk: bool = False,
         random_state: int = 42,
     ):
-=======
-
-    def __init__(self,
-                 pca: bool = False,
-                 num_trials: int = 10,
-                 base_test_size: float = 0.25,
-                 base_num_splits: int = 3,
-                 min_positive_proportion: float = 0.01,
-                 max_positive_proportion: float = 0.5,
-                 min_samples: int = 30,
-                 max_samples: int = 10000,
-                 min_positive_samples: int = 10,
-                 max_num_partitions: int = 100,
-                 min_seen_across_partitions: int = None,
-                 force_max_positive_proportion_at_partition: bool = False,
-                 force_on_disk: bool = False,
-                 random_state: int = 42):
->>>>>>> Stashed changes
         self.pca = pca
         self.random_state = random_state
         self.base_test_size = base_test_size
