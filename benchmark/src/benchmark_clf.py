@@ -1,69 +1,71 @@
 import os
 import sys
-from tdc.benchmark_group import admet_group
+import json
+import pandas as pd
 from sklearn.metrics import roc_curve, auc
 from lazyqsar.qsar import LazyBinaryQSAR
+
+from sklearn.metrics import roc_auc_score, average_precision_score
+
+DATAPATH = "../data"
+PREDSPATH = "../predictions"
 
 model_type = sys.argv[1]
 desc = sys.argv[2]
 
-DATAPATH = "../data"
+root = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(root)
 
-clf_datasets = [
-    "bioavailability_ma",
-    "hia_hou",
-    "pgp_broccatelli",
-    "bbb_martins",
-    "cyp2c9_veith",
-    "cyp2d6_veith",
-    "cyp3a4_veith",
-    "cyp2c9_substrate_carbonmangels",
-    "cyp2d6_substrate_carbonmangels",
-    "cyp3a4_substrate_carbonmangels",
-    "herg",
-    "ames",
-    "dili",
-]
+from defaults import ADMET_CLF_TASKS
 
+for a in ADMET_CLF_TASKS.keys():
+    train = pd.read_csv(f"../data/{a}_train.csv")
+    smiles_train = train["Drug"].tolist()
+    y_train = train["Y"].tolist()
+    test = pd.read_csv(f"../data/{a}_test.csv")
+    smiles_test = test["Drug"].tolist()
+    y_test = test["Y"].tolist()
+    print(a, len(train), len(test))
+    model = LazyBinaryQSAR(model_type=model_type, descriptor_type=desc)
+    model.fit(smiles_train, y_train)
+    y_pred_test = model.predict_proba(smiles_test)
+    test["pred"] = y_pred_test
+    save_path = os.path.join(PREDSPATH, f"tdc_preds_{model_type}_{desc}")
+    if not os.path.exists(save_path):
+        os.makedirs(save_path)
+    test.to_csv(
+        os.path.join(save_path, "{}_test_pred.csv".format(a)), index=False
+    )
 
-def get_data():
-    group = admet_group(path="../data/")
-    names = group.dataset_names
-    return names
+def evaluate_task(y_true, y_pred, metric):
+    if metric == "roc-auc":
+        return roc_auc_score(y_true, y_pred)
+    elif metric == "pr-auc":
+        return average_precision_score(y_true, y_pred)
+    else:
+        raise ValueError(f"Unknown metric: {metric}")
 
-
-if __name__ == "__main__":
-    group = admet_group(path="../data/")
-    for seed in [1, 2, 3, 4, 5]:
-        for a in clf_datasets:
-            print(seed, a)
-            benchmark = group.get(a)
-            name = benchmark["name"]
-            train_val, test = benchmark["train_val"], benchmark["test"]
-            print(len(train_val), len(test))
-            if model_type == "zstunetables" and len(train_val) > 1000:
-                print("Skipping zeroshot for dataset with more than 1000 samples")
-                continue
-            model = LazyBinaryQSAR(model_type=model_type, descriptor_type=desc)
-            model.fit(train_val["Drug"], train_val["Y"])
-            y_pred_test = model.predict_proba(test["Drug"])
-
-            if a not in (
-                "cyp2c9_veith",
-                "cyp2d6_veith",
-                "cyp3a4_veith",
-                "cyp2c9_substrate_carbonmangels",
-                "cyp2d6_substrate_carbonmangels",
-                "cyp3a4_substrate_carbonmangels",
-            ):
-                fpr, tpr, _ = roc_curve(test["Y"], y_pred_test)
-                auc_ = auc(fpr, tpr)
-                print("AUROC", auc_)
-
-            test["pred"] = y_pred_test
-            save_path = os.path.join(DATAPATH, f"tdc_preds_{model_type}_{desc}_latest")
-            if not os.path.exists(save_path):
-                os.makedirs(save_path)
-            test.to_csv(
-                os.path.join(save_path, "{}_test_{}.csv".format(a, seed)), index=False
+predictions = {}
+for k,v in ADMET_CLF_TASKS.items():
+        try:
+            test = pd.read_csv(
+                os.path.join(
+                    PREDSPATH,
+                    f"tdc_preds_{model_type}_{desc}",
+                    f"{k}_test_pred.csv",
+                )
             )
+        except FileNotFoundError:
+            print(f"Skipping {k} as the file does not exist.")
+            continue
+        perf = evaluate_task(test["Y"], test["pred"], v["metric"])
+        predictions[k]=perf
+
+print(predictions)
+
+results_file = f"{model_type}_{desc}.json"
+
+with open(
+    os.path.join(PREDSPATH, f"tdc_preds_{model_type}_{desc}", results_file), "w"
+) as f:
+    json.dump(predictions, f, indent=2)

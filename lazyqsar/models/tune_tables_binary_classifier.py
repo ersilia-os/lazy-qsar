@@ -82,7 +82,14 @@ class LazyTuneTablesBinaryClassifier(object):
         )
         if h5_file is not None:
             with h5py.File(h5_file, "r") as f:
-                X = iu.h5_data_reader(f["values"], [idx for idx in h5_idxs])
+                keys = f.keys()
+                if "values" in keys:
+                    values_key = "values"
+                elif "Values" in keys:
+                    values_key = "Values"
+                else:
+                    raise Exception("HDF5 does not contain a values key")
+                X = iu.h5_data_reader(f[values_key], [idx for idx in h5_idxs])
         else:
             pass
         self.model.fit(X, y)

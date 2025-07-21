@@ -445,8 +445,15 @@ class LazyLogisticRegressionBinaryClassifier(object):
         ):
             if h5_file is not None:
                 with h5py.File(h5_file, "r") as f:
+                    keys = f.keys()
+                    if "values" in keys:
+                        values_key = "values"
+                    elif "Values" in keys:
+                        values_key = "Values"
+                    else:
+                        raise Exception("HDF5 does not contain a values key")
                     X_sampled = iu.h5_data_reader(
-                        f["values"], [h5_idxs[i] for i in idxs]
+                        f[values_key], [h5_idxs[i] for i in idxs]
                     )
             else:
                 X_sampled = X[idxs]

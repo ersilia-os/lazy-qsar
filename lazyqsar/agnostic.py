@@ -15,7 +15,7 @@ binary_models_dict = {
     "logistic_regression": LazyLogisticRegressionBinaryClassifier,
 }
 
-binary_models_dict = ((k, v) for k, v in binary_models_dict.items() if v is not None)
+binary_models_dict = dict((k, v) for k, v in binary_models_dict.items() if v is not None)
 
 regression_models_dict = {
     "linear_model": None
@@ -27,20 +27,17 @@ class LazyBinaryClassifier(object):
         self.model_type = model_type
 
         if model_type not in binary_models_dict:
+            print(binary_models_dict)
             raise ValueError(f"Unsupported model type: {model_type}")
         else:
             self.model = binary_models_dict[model_type](**kwargs)
 
-    def fit(self, X, y):
+    def fit(self, X=None, y=None, h5_file=None, h5_idxs=None):
         y = np.array(y, dtype=int)
-        if isinstance(X[0], str):
-            raise ValueError(
-                "The input X can not be a string! Transfor it to the descriptors!"
-            )
-        self.model.fit(X=X, y=y)
+        self.model.fit(X=X, y=y, h5_file=h5_file, h5_idxs=h5_idxs)
 
-    def predict_proba(self, X):
-        return self.model.predict(X)
+    def predict_proba(self, X=None, h5_file=None, h5_idxs=None):
+        return self.model.predict(X=X,h5_file=h5_file, h5_idxs=h5_idxs)
 
     def save_model(self, model_dir: str):
         print(f"LazyQSAR Saving model to {model_dir}")
@@ -53,7 +50,6 @@ class LazyBinaryClassifier(object):
         metadata["model_type"] = self.model_type
         with open(os.path.join(model_dir, "config.json"), "w") as f:
             json.dump(config, f)
-        self.descriptor.save(model_dir)
         print("Saving done!")
 
     @classmethod

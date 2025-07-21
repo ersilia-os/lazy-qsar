@@ -36,9 +36,14 @@ class InputUtils(object):
                 raise ValueError("h5_file should be a .h5 file.")
             if h5_idxs is None:
                 with h5py.File(h5_file, "r") as f:
-                    if "values" not in f:
-                        raise ValueError("h5_file must contain 'values' dataset.")
-                    h5_idxs = [i for i in range(f["values"].shape[0])]
+                    keys = f.keys()
+                    if "values" in keys:
+                        values_key = "values"
+                    elif "Values" in keys:
+                        values_key = "Values"
+                    else:
+                        raise Exception("HDF5 does not contain a values key")
+                    h5_idxs = [i for i in range(f[values_key].shape[0])]
             else:
                 if y is not None:
                     if len(h5_idxs) != len(y):
@@ -58,7 +63,14 @@ class InputUtils(object):
 
     def is_load_full_h5_file(self, h5_file):
         with h5py.File(h5_file, "r") as f:
-            dataset = f["values"]
+            keys = f.keys()
+            if "values" in keys:
+                values_key = "values"
+            elif "Values" in keys:
+                values_key = "Values"
+            else:
+                raise Exception("HDF5 does not contain a values key")
+            dataset = f[values_key]
             if isinstance(dataset, h5py.Dataset):
                 size_bytes = dataset.size * dataset.dtype.itemsize
                 size_gb = size_bytes / (1024**3)
@@ -76,13 +88,25 @@ class InputUtils(object):
         if h5_file is not None:
             if h5_idxs is None:
                 with h5py.File(h5_file, "r") as f:
-                    if "values" not in f:
-                        raise ValueError("h5_file must contain 'values' dataset.")
-                    h5_idxs = [i for i in range(f["values"].shape[0])]
+                    keys = f.keys()
+                    if "values" in keys:
+                        values_key = "values"
+                    elif "Values" in keys:
+                        values_key = "Values"
+                    else:
+                        raise Exception("HDF5 does not contain a values key")
+                    h5_idxs = [i for i in range(f[values_key].shape[0])]
             if not force_on_disk and self.is_load_full_h5_file(h5_file):
                 print("Loading full h5 file into memory...")
                 with h5py.File(h5_file, "r") as f:
-                    X = f["values"][:]
+                    keys = f.keys()
+                    if "values" in keys:
+                        values_key = "values"
+                    elif "Values" in keys:
+                        values_key = "Values"
+                    else:
+                        raise Exception("HDF5 does not contain a values key")
+                    X = f[values_key][:]
                     X = X[h5_idxs, :]
                     h5_file = None
                     h5_idxs = None
@@ -133,9 +157,14 @@ class BinaryClassifierSamplingUtils(object):
     def chunk_h5_file(self, h5_file, h5_idxs, chunk_size):
         iu = InputUtils()
         with h5py.File(h5_file, "r") as f:
-            if "values" not in f:
-                raise ValueError("h5_file must contain 'values' dataset.")
-            values = f["values"]
+            keys = f.keys()
+            if "values" in keys:
+                values_key = "values"
+            elif "Values" in keys:
+                values_key = "Values"
+            else:
+                raise Exception("HDF5 does not contain a values key")
+            values = f[values_key]
             for i in range(0, len(h5_idxs), chunk_size):
                 idxs_chunk = h5_idxs[i : i + chunk_size]
                 yield iu.h5_data_reader(values, idxs_chunk)
@@ -416,6 +445,13 @@ class BinaryClassifierSamplingUtils(object):
         auc_estimate_timeout = 60
         if h5_file:
             with h5py.File(h5_file, "r") as f:
+                keys = f.keys()
+                if "values" in keys:
+                    values_key = "values"
+                elif "Values" in keys:
+                    values_key = "Values"
+                else:
+                    raise Exception("HDF5 does not contain a values key")
                 auc_estimates = []
                 t0 = time.time()
                 for i in tqdm(range(idxs_matrix.shape[0])):
@@ -428,7 +464,7 @@ class BinaryClassifierSamplingUtils(object):
                     else:
                         idxs_y = idxs_matrix[i, :]
                         idxs_x = [h5_idxs[idx] for idx in idxs_y]
-                        X_in = iu.h5_data_reader(f["values"], idxs_x)
+                        X_in = iu.h5_data_reader(f[values_key], idxs_x)
                         y_in = [y[idx] for idx in idxs_y]
                         if self.estimate_auc:
                             auc_est = self.quick_auc_estimator.estimate(X_in, y_in)

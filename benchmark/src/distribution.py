@@ -1,32 +1,22 @@
 import numpy as np
+import sys
 import pandas as pd
 import os
 import matplotlib.pyplot as plt
 
 FIGUREPATH = "../figures"
 DATAPATH = "../data"
+PREDSPATH = "../predictions"
+
+root = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(root)
+
+from defaults import ADMET_CLF_TASKS
 
 # Compare METHODS
 
-descs = ["morgan", "mordred"]
-models = ["xgboost", "xgboost_pca", "zsrandomforest", "randomforest"]
-assays = [
-    "bioavailability_ma",
-    "hia_hou",
-    "pgp_broccatelli",
-    "bbb_martins",
-    "cyp2c9_veith",
-    "cyp2d6_veith",
-    "cyp3a4_veith",
-    "cyp2c9_substrate_carbonmangels",
-    "cyp2d6_substrate_carbonmangels",
-    "cyp3a4_substrate_carbonmangels",
-    "herg",
-    "ames",
-    "dili",
-]
-
-seed = 1
+descs = ["chemeleon", "morgan"]
+models = ["logistic_regression", "random_forest", "tune_tables"]
 
 for model in models:
     fig, axes = plt.subplots(1, 2, figsize=(16, 6), sharey=True)
@@ -35,15 +25,15 @@ for model in models:
         ax = axes[j]
         predictions = {}
 
-        for assay in assays:
+        for assay in ADMET_CLF_TASKS:
             try:
                 file_path = os.path.join(
-                    DATAPATH, f"tdc_preds_{model}_{desc}", f"{assay}_test_{seed}.csv"
+                    PREDSPATH, f"tdc_preds_{model}_{desc}", f"{assay}_test_pred.csv"
                 )
                 df = pd.read_csv(file_path)
                 predictions[assay] = df["pred"].tolist()
             except FileNotFoundError:
-                print(f"Missing: {assay} for {model}-{desc} (seed {seed})")
+                print(f"Missing: {assay} for {model}-{desc}")
                 continue
 
         if not predictions:

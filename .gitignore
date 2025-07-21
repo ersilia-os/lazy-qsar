@@ -1,5 +1,6 @@
 benchmark/data/admet_group.zip
 benchmark/data/admet_group/
+tests/test_model/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

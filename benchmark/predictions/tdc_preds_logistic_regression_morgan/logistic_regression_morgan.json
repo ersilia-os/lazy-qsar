@@ -1,0 +1,15 @@
+{
+  "bioavailability_ma": 0.6471566345194547,
+  "hia_hou": 0.9419753086419753,
+  "pgp_broccatelli": 0.8880965075979739,
+  "bbb_martins": 0.8834818636647904,
+  "cyp2c9_veith": 0.7160098303501743,
+  "cyp2d6_veith": 0.595679614729541,
+  "cyp3a4_veith": 0.8152447843380872,
+  "cyp2c9_substrate_carbonmangels": 0.38446336298932887,
+  "cyp2d6_substrate_carbonmangels": 0.7051858669821983,
+  "cyp3a4_substrate_carbonmangels": 0.6596971066907775,
+  "herg": 0.8007363770250369,
+  "ames": 0.8042432787013649,
+  "dili": 0.7352173913043478
+}
