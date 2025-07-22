@@ -23,6 +23,7 @@ from flaml.default import RandomForestClassifier as ZeroShotRandomForestClassifi
 from ..utils.samplers import BinaryClassifierSamplingUtils as SamplingUtils
 from ..utils.io import InputUtils
 from ..utils.deciders import BinaryClassifierPCADecider
+from ..utils.deciders import BinaryClassifierMaxSamplesDecider
 from ..utils.optimizers import PCADimensionsOptimizerForBinaryClassification
 
 
@@ -419,7 +420,7 @@ class LazyRandomForestBinaryClassifier(object):
         min_positive_proportion: float = 0.01,
         max_positive_proportion: float = 0.5,
         min_samples: int = 30,
-        max_samples: int = 10000,
+        max_samples: int = None,
         min_positive_samples: int = 10,
         max_num_partitions: int = 100,
         min_seen_across_partitions: int = 1,
@@ -460,6 +461,18 @@ class LazyRandomForestBinaryClassifier(object):
         X, h5_file, h5_idxs = iu.preprocessing(
             X=X, h5_file=h5_file, h5_idxs=h5_idxs, force_on_disk=self.force_on_disk
         )
+        if self.max_samples is None:
+            self.max_samples = BinaryClassifierMaxSamplesDecider(
+                X=X,
+                y=y,
+                min_samples=self.min_samples,
+                min_positive_proportion=self.min_positive_proportion,
+            ).decide()
+            print("Decided to use max samples:", self.max_samples)
+        if self.min_seen_across_partitions is None:
+            theoretical_min = su.get_theoretical_min_seen(y, self.max_samples)
+            min_seen_across_partitions = max(1, theoretical_min)
+            self.min_seen_across_partitions = min(min_seen_across_partitions, 3)
         reducers = []
         models = []
         pca_decisions = []
