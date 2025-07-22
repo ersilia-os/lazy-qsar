@@ -12,11 +12,11 @@ from sklearn.decomposition import PCA
 from sklearn.feature_selection import VarianceThreshold
 from sklearn.metrics import r2_score
 from sklearn.linear_model import RidgeCV
-from .utils import RegressorSamplingUtils as SamplingUtils
-from .utils import InputUtils
-from .utils import KFolder
-from .utils import RegressorPCADecider
-from .utils import RegressorMaxSamplesDecider
+from ..utils.samplers import RegressorSamplingUtils as SamplingUtils
+from ..utils.io import InputUtils
+from ..utils.samplers import KFolder
+from ..utils.deciders import RegressorPCADecider
+from ..utils.deciders import RegressorMaxSamplesDecider
 
 import optuna
 from sklearn.pipeline import Pipeline

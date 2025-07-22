@@ -13,15 +13,17 @@ from tqdm import tqdm
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.decomposition import PCA
-from sklearn.feature_selection import SelectKBest, f_classif
 from sklearn.feature_selection import VarianceThreshold
 from sklearn.metrics import roc_curve, auc, roc_auc_score
 from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LogisticRegression
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
 from flaml.default import RandomForestClassifier as ZeroShotRandomForestClassifier
-from .utils import BinaryClassifierSamplingUtils as SamplingUtils
-from .utils import InputUtils
-from .optimizers import PCADimensionsOptimizerForBinaryClassification
+from ..utils.samplers import BinaryClassifierSamplingUtils as SamplingUtils
+from ..utils.io import InputUtils
+from ..utils.deciders import BinaryClassifierPCADecider
+from ..utils.optimizers import PCADimensionsOptimizerForBinaryClassification
 
 
 NUM_CPU = max(1, int(multiprocessing.cpu_count() / 2))
@@ -228,10 +230,11 @@ class BaseRandomForestBinaryClassifier(BaseEstimator, ClassifierMixin):
                             num_trials = min(5, self.num_trials),
                             timeout = min(60, self.timeout),
                             max_positive_proportion = self.max_positive_proportion
-                        ).get_best_params(X, y)["best_params"]
+                        ).suggest(X, y)["best_params"]
         print("Working on the PCA")
         n_components = best_params["n_components"]
-        reducer = PCA(n_components=n_components)
+        reducer = Pipeline([("scaler", StandardScaler()),
+                            ("pca", PCA(n_components=n_components))])
         reducer.fit(X)
         self.reducer_ = reducer
         X = reducer.transform(X)
@@ -349,7 +352,7 @@ class BaseRandomForestBinaryClassifier(BaseEstimator, ClassifierMixin):
             os.makedirs(model_dir)
 
         model_path = os.path.join(model_dir, "model.joblib")
-        joblib.dump(self.reducer_, os.path.join(model_dir, "reducer.joblib"))
+        joblib.dump(self.reducer_, os.path.join(model_dir, "base_reducer.joblib"))
         joblib.dump(self.model_, model_path)
         joblib.dump(self.platt_reg_, os.path.join(model_dir, "platt_reg.joblib"))
 
@@ -369,7 +372,10 @@ class BaseRandomForestBinaryClassifier(BaseEstimator, ClassifierMixin):
     def load_model(cls, model_dir: str):
         if not os.path.exists(model_dir):
             raise FileNotFoundError(f"Model directory {model_dir} does not exist.")
-
+        reducer_path = os.path.join(model_dir, "base_reducer.joblib")
+        if not os.path.exists(reducer_path):
+            raise FileNotFoundError(f"Reducer file {reducer_path} not found.")
+        reducer = joblib.load(reducer_path)
         model_path = os.path.join(model_dir, "model.joblib")
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"Model file {model_path} not found.")
@@ -387,10 +393,12 @@ class BaseRandomForestBinaryClassifier(BaseEstimator, ClassifierMixin):
             metadata = json.load(f)
 
         obj = cls(
+            pca=metadata["pca"],
             random_state=metadata["random_state"],
             num_splits=metadata["num_splits"],
             test_size=metadata["test_size"],
         )
+        obj.reducer_ = reducer
         obj.model_ = model
         obj.platt_reg_ = platt_reg
         obj.mean_score_ = metadata.get("mean_score_", None)
@@ -437,28 +445,9 @@ class LazyRandomForestBinaryClassifier(object):
         self.indices = None
 
     def _fit_feature_reducer(self, X, y):
-        method = self.reducer_method
-        max_dim = self.max_reducer_dim
-        if X.shape[1] <= max_dim:
-            return []
         reducer_0 = VarianceThreshold(threshold=0)
         reducer_0.fit(X)
-        X = reducer_0.transform(X)
-        if X.shape[1] <= max_dim:
-            return [reducer_0]
-        if method == "pca":
-            max_dim = min(max_dim, X.shape[0])
-            reducer_1 = PCA(n_components=max_dim)
-            reducer_1.fit(X)
-            return [reducer_0, reducer_1]
-        elif method == "best":
-            reducer_1 = SelectKBest(f_classif, k=max_dim)
-            reducer_1.fit(X, y)
-            return [reducer_0, reducer_1]
-        elif method is None:
-            return [reducer_0]
-        else:
-            raise Exception("Wrong feature reduction method. Use 'pca' or 'best'.")
+        return [reducer_0]
 
     def fit(self, X=None, y=None, h5_file=None, h5_idxs=None):
         t0 = time.time()
@@ -472,6 +461,7 @@ class LazyRandomForestBinaryClassifier(object):
         )
         reducers = []
         models = []
+        pca_decisions = []
         for idxs in su.get_partition_indices(
             X=X,
             h5_file=h5_file,
@@ -487,15 +477,8 @@ class LazyRandomForestBinaryClassifier(object):
         ):
             if h5_file is not None:
                 with h5py.File(h5_file, "r") as f:
-                    keys = f.keys()
-                    if "values" in keys:
-                        values_key = "values"
-                    elif "Values" in keys:
-                        values_key = "Values"
-                    else:
-                        raise Exception("HDF5 does not contain a values key")
                     X_sampled = iu.h5_data_reader(
-                        f[values_key], [h5_idxs[i] for i in idxs]
+                        f["values"], [h5_idxs[i] for i in idxs]
                     )
             else:
                 X_sampled = X[idxs]
@@ -506,7 +489,20 @@ class LazyRandomForestBinaryClassifier(object):
             print(
                 f"Fitting model on {len(idxs)} samples, positive samples: {np.sum(y_sampled)}, negative samples: {len(y_sampled) - np.sum(y_sampled)}, number of features {X_sampled.shape[1]}"
             )
+            if self.pca is None:
+                pca = BinaryClassifierPCADecider(
+                    X_sampled,
+                    y_sampled,
+                    max_positive_proportion=self.max_positive_proportion,
+                ).decide()
+                print("PCA decision:", pca)
+                pca_decisions += [pca]
+                if len(pca_decisions) > 3:
+                    self.pca = max(set(pca_decisions), key=pca_decisions.count)
+            else:
+                pca = self.pca
             model = BaseRandomForestBinaryClassifier(
+                pca=self.pca,
                 num_splits=self.base_num_splits,
                 test_size=self.base_test_size,
                 num_trials=self.base_num_trials,
@@ -537,6 +533,7 @@ class LazyRandomForestBinaryClassifier(object):
             raise Exception("No models fitted yet.")
         y_hat = []
         for reducer, model in zip(self.reducers, self.models):
+            print(reducer, model)
             if h5_file is None:
                 n = X.shape[0]
                 y_hat_ = []
@@ -585,8 +582,7 @@ class LazyRandomForestBinaryClassifier(object):
             partition_idx += 1
         metadata = {
             "num_partitions": len(self.models),
-            "reducer_method": self.reducer_method,
-            "max_reducer_dim": self.max_reducer_dim,
+            "pca": self.pca,
             "random_state": self.random_state,
             "base_test_size": self.base_test_size,
             "base_num_splits": self.base_num_splits,
@@ -606,8 +602,7 @@ class LazyRandomForestBinaryClassifier(object):
             raise Exception("Metadata file not found.")
         with open(metadata_path, "r") as f:
             metadata = json.load(f)
-        obj.reducer_method = metadata.get("reducer_method", None)
-        obj.max_reducer_dim = metadata.get("max_reducer_dim", None)
+        obj.pca = metadata.get("pca", None)
         obj.random_state = metadata.get("random_state", None)
         obj.base_test_size = metadata.get("base_test_size", None)
         obj.base_num_splits = metadata.get("base_num_splits", None)

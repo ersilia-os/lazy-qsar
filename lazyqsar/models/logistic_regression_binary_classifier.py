@@ -12,16 +12,14 @@ from sklearn.decomposition import PCA
 from sklearn.feature_selection import VarianceThreshold
 from sklearn.metrics import roc_auc_score
 from sklearn.linear_model import LogisticRegression, LogisticRegressionCV
-from .utils import BinaryClassifierSamplingUtils as SamplingUtils
-from .utils import InputUtils
-from .utils import StratifiedKFolder
-from .utils import BinaryClassifierPCADecider
-from .utils import BinaryClassifierMaxSamplesDecider
-
-import optuna
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
-from sklearn.model_selection import cross_val_score
+from ..utils.samplers import BinaryClassifierSamplingUtils as SamplingUtils
+from ..utils.io import InputUtils
+from ..utils.deciders import StratifiedKFolder
+from ..utils.deciders import BinaryClassifierPCADecider
+from ..utils.deciders import BinaryClassifierMaxSamplesDecider
+from ..utils.optimizers import PCADimensionsOptimizerForBinaryClassification
 
 
 NUM_CPU = max(1, int(multiprocessing.cpu_count() / 2))
@@ -47,108 +45,16 @@ class BaseLogisticRegressionBinaryClassifier(BaseEstimator, ClassifierMixin):
         self.max_positive_proportion = max_positive_proportion
         self.mean_score_ = None
 
-    def _objective(self, trial, X, y):
-        n_components = trial.suggest_float("n_components", 0.80, 0.99, step=0.01)
-
-        num_splits = max(self.num_splits, int(1 / self.test_size))
-
-        cv = StratifiedKFolder(
-            n_splits=num_splits,
-            max_positive_proportion=self.max_positive_proportion,
-            random_state=self.random_state,
-        )
-
-        pipe = Pipeline(
-            [
-                ("scaler", StandardScaler()),
-                ("pca", PCA(n_components=n_components)),
-                (
-                    "clf",
-                    LogisticRegressionCV(
-                        class_weight="balanced",
-                        refit=False,
-                        n_jobs=NUM_CPU,
-                        cv=cv,
-                        random_state=self.random_state,
-                        scoring="roc_auc",
-                    ),
-                ),
-            ]
-        )
-
-        scores = []
-        for _ in range(3):
-            scores += [
-                cross_val_score(
-                    pipe, X, y, cv=cv, scoring="roc_auc", n_jobs=NUM_CPU
-                ).mean()
-            ]
-
-        return np.mean(scores)
-
-    def _suggest_best_params(self, X, y, test_size):
-        sampler = optuna.samplers.TPESampler(seed=self.random_state)
-        study = optuna.create_study(
-            direction="maximize",
-            study_name=None,
-            sampler=sampler,
-        )
-
-        n_components = 0.99
-        hyperparams = {
-            "n_components": n_components,
-        }
-
-        study.enqueue_trial(hyperparams)
-
-        print("Fitting...")
-        best_score = -np.inf
-        trials_without_improvement = 0
-        improvement_threshold = 0.01
-        patience = max(5, self.num_trials // 5)
-        early_stopping = False
-        baseline_score_for_patience = best_score
-
-        def objective_with_custom_early_stop(trial):
-            nonlocal \
-                best_score, \
-                trials_without_improvement, \
-                early_stopping, \
-                baseline_score_for_patience
-            if early_stopping:
-                print("Skipping trial due to early stopping criteria.")
-                raise optuna.exceptions.TrialPruned()
-            score = self._objective(trial, X, y)
-            if score > best_score:
-                best_score = score
-            if score > baseline_score_for_patience + improvement_threshold:
-                trials_without_improvement = 0
-                baseline_score_for_patience = score
-            else:
-                trials_without_improvement += 1
-            if trials_without_improvement >= patience:
-                early_stopping = True
-                print(
-                    f"Early stopping: No significant improvement in the last {patience} trials."
-                )
-                raise optuna.exceptions.TrialPruned()
-            return score
-
-        study.optimize(
-            objective_with_custom_early_stop,
-            n_trials=self.num_trials,
-            timeout=self.timeout,
-        )
-
-        results = {
-            "best_params": study.best_params,
-            "best_value": study.best_value,
-        }
-
-        return results
-
     def _fit_pca(self, X, y):
-        results = self._suggest_best_params(X, y, self.test_size)
+        print("Optimizing PCA dimensions...")
+        results = PCADimensionsOptimizerForBinaryClassification(
+            num_splits=self.num_splits,
+            test_size=self.test_size,
+            random_state=self.random_state,
+            num_trials=self.num_trials,
+            timeout=self.timeout,
+            max_positive_proportion=self.max_positive_proportion,
+        ).suggest(X, y)
         n_components = results["best_params"]["n_components"]
         hyperparams = results["best_params"]
         score = results["best_value"]

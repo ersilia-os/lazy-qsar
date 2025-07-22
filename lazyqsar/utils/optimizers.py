@@ -7,7 +7,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import cross_val_score
 import optuna
 
-from .utils import StratifiedKFolder
+from .samplers import StratifiedKFolder
 
 
 NUM_CPU = max(1, int(multiprocessing.cpu_count() / 2))
@@ -28,7 +28,7 @@ class PCADimensionsOptimizerForBinaryClassification(object):
         self.random_state = random_state
         self.num_trials = num_trials
         self.timeout = timeout
-        
+
     def _objective(self, trial, X, y):
         n_components = trial.suggest_float("n_components", 0.80, 0.99, step=0.01)
 
@@ -128,5 +128,5 @@ class PCADimensionsOptimizerForBinaryClassification(object):
         }
         return results
 
-    def get_best_params(self, X, y):
-        return self._suggest_best_params(X, y)["best_params"]
+    def suggest(self, X, y):
+        return self._suggest_best_params(X, y)
