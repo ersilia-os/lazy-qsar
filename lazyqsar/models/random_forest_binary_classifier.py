@@ -39,6 +39,7 @@ class BaseRandomForestBinaryClassifier(BaseEstimator, ClassifierMixin):
         num_trials: int = 50,
         timeout: int = 600,
         random_state: int = 42,
+        max_positive_proportion: float = 0.5
     ):
         self.pca = pca
         self.random_state = random_state
@@ -46,6 +47,7 @@ class BaseRandomForestBinaryClassifier(BaseEstimator, ClassifierMixin):
         self.test_size = test_size
         self.num_trials = num_trials
         self.timeout = timeout
+        self.max_positive_proportion = max_positive_proportion
         self.mean_score_ = None
 
     def _suggest_param_search(self, hyperparams, n_samples, n_features, test_size):
