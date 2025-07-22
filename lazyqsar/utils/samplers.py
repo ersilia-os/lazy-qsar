@@ -398,7 +398,6 @@ class BinaryClassifierSamplingUtils(object):
 
 
 class KFolder(object):
-
     def __init__(self, n_splits=5, shuffle=True, random_state=None):
         self.n_splits = n_splits
         self.shuffle = shuffle

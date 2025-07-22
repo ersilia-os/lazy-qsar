@@ -1,56 +1,26 @@
 ADMET_CLF_TASKS = {
-    "bioavailability_ma": {
-        "name": "Bioavailability_Ma",
-        "metric": "roc-auc"
-    },
-    "hia_hou": {
-        "name": "HIA_Hou",
-        "metric": "roc-auc"
-    },
-    "pgp_broccatelli": {
-        "name": "Pgp_Broccatelli",
-        "metric": "roc-auc"
-    },
-    "bbb_martins": {
-        "name": "BBB_Martins",
-        "metric": "roc-auc"
-    },
-    "cyp2c9_veith": {
-        "name": "CYP2C9_Veith",
-        "metric": "pr-auc"
-    },
-    "cyp2d6_veith": {
-        "name": "CYP2D6_Veith",
-        "metric": "pr-auc"
-    },
-    "cyp3a4_veith": {
-        "name": "CYP3A4_Veith",
-        "metric": "pr-auc"
-    },
+    "bioavailability_ma": {"name": "Bioavailability_Ma", "metric": "roc-auc"},
+    "hia_hou": {"name": "HIA_Hou", "metric": "roc-auc"},
+    "pgp_broccatelli": {"name": "Pgp_Broccatelli", "metric": "roc-auc"},
+    "bbb_martins": {"name": "BBB_Martins", "metric": "roc-auc"},
+    "cyp2c9_veith": {"name": "CYP2C9_Veith", "metric": "pr-auc"},
+    "cyp2d6_veith": {"name": "CYP2D6_Veith", "metric": "pr-auc"},
+    "cyp3a4_veith": {"name": "CYP3A4_Veith", "metric": "pr-auc"},
     "cyp2c9_substrate_carbonmangels": {
         "name": "CYP2C9_Substrate_CarbonMangels",
-        "metric": "pr-auc"
+        "metric": "pr-auc",
     },
     "cyp2d6_substrate_carbonmangels": {
         "name": "CYP2D6_Substrate_CarbonMangels",
-        "metric": "pr-auc"
+        "metric": "pr-auc",
     },
     "cyp3a4_substrate_carbonmangels": {
         "name": "CYP3A4_Substrate_CarbonMangels",
-        "metric": "roc-auc"
+        "metric": "roc-auc",
     },
-    "herg": {
-        "name": "hERG",
-        "metric": "roc-auc"
-    },
-    "ames": {
-        "name": "AMES",
-        "metric": "roc-auc"
-    },
-    "dili": {
-        "name": "DILI",
-        "metric": "roc-auc"
-    }
+    "herg": {"name": "hERG", "metric": "roc-auc"},
+    "ames": {"name": "AMES", "metric": "roc-auc"},
+    "dili": {"name": "DILI", "metric": "roc-auc"},
 }
 
 clf_datasets = [

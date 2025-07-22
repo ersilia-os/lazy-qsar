@@ -2,7 +2,6 @@ import os
 import sys
 import json
 import pandas as pd
-from sklearn.metrics import roc_curve, auc
 from lazyqsar.qsar import LazyBinaryQSAR
 
 from sklearn.metrics import roc_auc_score, average_precision_score
@@ -33,9 +32,8 @@ for a in ADMET_CLF_TASKS.keys():
     save_path = os.path.join(PREDSPATH, f"tdc_preds_{model_type}_{desc}")
     if not os.path.exists(save_path):
         os.makedirs(save_path)
-    test.to_csv(
-        os.path.join(save_path, "{}_test_pred.csv".format(a)), index=False
-    )
+    test.to_csv(os.path.join(save_path, "{}_test_pred.csv".format(a)), index=False)
+
 
 def evaluate_task(y_true, y_pred, metric):
     if metric == "roc-auc":
@@ -45,21 +43,22 @@ def evaluate_task(y_true, y_pred, metric):
     else:
         raise ValueError(f"Unknown metric: {metric}")
 
+
 predictions = {}
-for k,v in ADMET_CLF_TASKS.items():
-        try:
-            test = pd.read_csv(
-                os.path.join(
-                    PREDSPATH,
-                    f"tdc_preds_{model_type}_{desc}",
-                    f"{k}_test_pred.csv",
-                )
+for k, v in ADMET_CLF_TASKS.items():
+    try:
+        test = pd.read_csv(
+            os.path.join(
+                PREDSPATH,
+                f"tdc_preds_{model_type}_{desc}",
+                f"{k}_test_pred.csv",
             )
-        except FileNotFoundError:
-            print(f"Skipping {k} as the file does not exist.")
-            continue
-        perf = evaluate_task(test["Y"], test["pred"], v["metric"])
-        predictions[k]=perf
+        )
+    except FileNotFoundError:
+        print(f"Skipping {k} as the file does not exist.")
+        continue
+    perf = evaluate_task(test["Y"], test["pred"], v["metric"])
+    predictions[k] = perf
 
 print(predictions)
 

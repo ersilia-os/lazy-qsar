@@ -15,11 +15,11 @@ binary_models_dict = {
     "logistic_regression": LazyLogisticRegressionBinaryClassifier,
 }
 
-binary_models_dict = dict((k, v) for k, v in binary_models_dict.items() if v is not None)
+binary_models_dict = dict(
+    (k, v) for k, v in binary_models_dict.items() if v is not None
+)
 
-regression_models_dict = {
-    "linear_model": None
-}
+regression_models_dict = {"linear_model": None}
 
 
 class LazyBinaryClassifier(object):
@@ -37,7 +37,7 @@ class LazyBinaryClassifier(object):
         self.model.fit(X=X, y=y, h5_file=h5_file, h5_idxs=h5_idxs)
 
     def predict_proba(self, X=None, h5_file=None, h5_idxs=None):
-        return self.model.predict(X=X,h5_file=h5_file, h5_idxs=h5_idxs)
+        return self.model.predict(X=X, h5_file=h5_file, h5_idxs=h5_idxs)
 
     def save_model(self, model_dir: str):
         print(f"LazyQSAR Saving model to {model_dir}")

@@ -5,7 +5,7 @@ import sys
 from sklearn.metrics import roc_curve, auc
 import pandas as pd
 
-model_type= sys.argv[1]
+model_type = sys.argv[1]
 desc = sys.argv[2]
 
 train = pd.read_csv("../benchmark/data/bioavailability_ma_train.csv")
@@ -17,11 +17,10 @@ y_test = test["Y"].tolist()
 
 print(len(smiles_train))
 
+
 def fit():
     st = time.perf_counter()
-    model = lazyqsar.LazyBinaryQSAR(
-        descriptor_type=desc, model_type=model_type
-    )
+    model = lazyqsar.LazyBinaryQSAR(descriptor_type=desc, model_type=model_type)
     model.fit(smiles_train, y_train)
     model_path = os.path.abspath("test_model")
     model.save_model(model_path)

@@ -5,7 +5,7 @@ import sys
 from sklearn.metrics import roc_curve, auc
 import pandas as pd
 
-model_type= sys.argv[1]
+model_type = sys.argv[1]
 
 train = pd.read_csv("../benchmark/data/bioavailability_ma_train.csv")
 y_train = train["Y"].tolist()
@@ -16,11 +16,10 @@ y_test = test["Y"].tolist()
 X_train = "../benchmark/data/ersilia_preds/bioavailability_ma_train_eos9o72.h5"
 X_test = "../benchmark/data/ersilia_preds/bioavailability_ma_test_eos9o72.h5"
 
+
 def fit():
     st = time.perf_counter()
-    model = lazyqsar.LazyBinaryClassifier(
-        model_type=model_type
-    )
+    model = lazyqsar.LazyBinaryClassifier(model_type=model_type)
     model.fit(h5_file=X_train, y=y_train)
     model_path = os.path.abspath("test_model")
     model.save_model(model_path)

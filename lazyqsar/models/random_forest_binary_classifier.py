@@ -221,20 +221,21 @@ class BaseRandomForestBinaryClassifier(BaseEstimator, ClassifierMixin):
         }
 
         return results
-    
+
     def _fit_pca(self, X, y):
         best_params = PCADimensionsOptimizerForBinaryClassification(
-                            num_splits = min(self.num_splits, 3),
-                            test_size = self.test_size,
-                            random_state = self.random_state,
-                            num_trials = min(5, self.num_trials),
-                            timeout = min(60, self.timeout),
-                            max_positive_proportion = self.max_positive_proportion
-                        ).suggest(X, y)["best_params"]
+            num_splits=min(self.num_splits, 3),
+            test_size=self.test_size,
+            random_state=self.random_state,
+            num_trials=min(5, self.num_trials),
+            timeout=min(60, self.timeout),
+            max_positive_proportion=self.max_positive_proportion,
+        ).suggest(X, y)["best_params"]
         print("Working on the PCA")
         n_components = best_params["n_components"]
-        reducer = Pipeline([("scaler", StandardScaler()),
-                            ("pca", PCA(n_components=n_components))])
+        reducer = Pipeline(
+            [("scaler", StandardScaler()), ("pca", PCA(n_components=n_components))]
+        )
         reducer.fit(X)
         self.reducer_ = reducer
         X = reducer.transform(X)
@@ -319,7 +320,7 @@ class BaseRandomForestBinaryClassifier(BaseEstimator, ClassifierMixin):
         self.model_ = RandomForestClassifier(**hyperparams)
         self.model_.fit(X, y)
         return self
-    
+
     def fit(self, X, y):
         if self.pca:
             return self._fit_pca(X, y)

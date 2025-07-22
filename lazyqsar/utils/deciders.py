@@ -15,6 +15,7 @@ from .evaluators import QuickAUCEstimator
 
 NUM_CPU = max(1, int(multiprocessing.cpu_count() / 2))
 
+
 class BinaryClassifierPCADecider(object):
     def __init__(self, X, y, max_positive_proportion=0.5):
         self.X = X
@@ -32,9 +33,7 @@ class BinaryClassifierPCADecider(object):
             random_state=42,
         )
         pca_scores = []
-        for n_components in tqdm(
-            [0.8, 0.9, 0.99], desc="Evaluating PCA components"
-        ):
+        for n_components in tqdm([0.8, 0.9, 0.99], desc="Evaluating PCA components"):
             current_time = time.time()
             if current_time - start_time > self.timeout:
                 return True
@@ -50,7 +49,9 @@ class BinaryClassifierPCADecider(object):
                 X_train_pca = pca.fit_transform(X_train)
                 X_test_pca = pca.transform(X_test)
                 cv = StratifiedKFold()
-                model = LogisticRegressionCV(cv=cv, class_weight="balanced", n_jobs=NUM_CPU)
+                model = LogisticRegressionCV(
+                    cv=cv, class_weight="balanced", n_jobs=NUM_CPU
+                )
                 model.fit(X_train_pca, y_train)
                 y_pred = model.predict_proba(X_test_pca)[:, 1]
                 auc_score = roc_auc_score(self.y[test_idxs], y_pred)

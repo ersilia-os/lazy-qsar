@@ -8,7 +8,7 @@ import json
 root = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(root)
 
-from defaults import ADMET_CLF_TASKS, benchmark
+from defaults import benchmark
 
 FIGUREPATH = "../figures"
 DATAPATH = "../data"
@@ -29,11 +29,11 @@ for desc in descs:
             )
             with open(file_path, "r") as f:
                 data = json.load(f)
-                for k,v in data.items():
+                for k, v in data.items():
                     if k not in combined_data:
                         combined_data[k] = {}
                     combined_data[k][f"{model}_performance"] = v
-            available_models+=[model]
+            available_models += [model]
         except:
             continue
     # Convert to DataFrame
@@ -94,7 +94,7 @@ for model in models:
             )
             with open(file_path, "r") as f:
                 data = json.load(f)
-                for k,v in data.items():
+                for k, v in data.items():
                     if k not in combined_data:
                         combined_data[k] = {}
                     combined_data[k][f"{desc}_performance"] = v

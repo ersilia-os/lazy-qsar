@@ -14,14 +14,15 @@ NUM_CPU = max(1, int(multiprocessing.cpu_count() / 2))
 
 
 class PCADimensionsOptimizerForBinaryClassification(object):
-
-    def __init__(self,
-                 num_splits: int = 3,
-                 test_size: float = 0.25,
-                 random_state: int = 42,
-                 num_trials: int = 5,
-                 timeout: int = 600,
-                 max_positive_proportion: float = 0.5):
+    def __init__(
+        self,
+        num_splits: int = 3,
+        test_size: float = 0.25,
+        random_state: int = 42,
+        num_trials: int = 5,
+        timeout: int = 600,
+        max_positive_proportion: float = 0.5,
+    ):
         self.test_size = test_size
         self.num_splits = num_splits
         self.max_positive_proportion = max_positive_proportion
