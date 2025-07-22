@@ -6,6 +6,7 @@ import numpy as np
 from tqdm import tqdm
 import time
 from sklearn.model_selection import KFold, StratifiedKFold
+from scipy.stats import binom
 from .io import InputUtils
 from .evaluators import QuickAUCEstimator
 
