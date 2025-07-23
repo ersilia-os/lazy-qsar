@@ -131,4 +131,10 @@ class PCADimensionsOptimizerForBinaryClassification(object):
         return results
 
     def suggest(self, X, y):
+        if self.num_trials == 0:
+            print("No trials specified, returning default parameters.")
+            return {
+                "best_params": {"n_components": 0.90},
+                "best_value": None,
+            }
         return self._suggest_best_params(X, y)

@@ -165,6 +165,11 @@ class BaseRandomForestBinaryClassifier(BaseEstimator, ClassifierMixin):
             }
         hyperparams["class_weight"] = "balanced_subsample"
         print("Suggested zero-shot hyperparameters:", hyperparams)
+        if self.num_trials == 0:
+            return {
+                "best_params": hyperparams,
+                "best_value": None
+            }
         n_samples, n_features = X.shape
         hyperparam_search = self._suggest_param_search(
             hyperparams, n_samples, n_features, test_size
@@ -293,6 +298,8 @@ class BaseRandomForestBinaryClassifier(BaseEstimator, ClassifierMixin):
             print(
                 "Logistic regression for calibration... (interpret probabilities with caution!)"
             )
+            probs_cal = self.model_.predict_proba(X)[:, 1]
+            y_cal = y
             self.platt_reg_ = LogisticRegression(C=1e-6, solver="lbfgs", max_iter=1000)
             self.platt_reg_.fit(np.array(probs_cal).reshape(-1, 1), y_cal)
             print("Logistic regression fit done.")
@@ -347,6 +354,8 @@ class BaseRandomForestBinaryClassifier(BaseEstimator, ClassifierMixin):
             print(
                 "Logistic regression for calibration... (interpret probabilities with caution!)"
             )
+            probs_cal = self.model_.predict_proba(X)[:, 1]
+            y_cal = y
             self.platt_reg_ = LogisticRegression(C=1e-6, solver="lbfgs", max_iter=1000)
             self.platt_reg_.fit(np.array(probs_cal).reshape(-1, 1), y_cal)
             print("Logistic regression fit done.")

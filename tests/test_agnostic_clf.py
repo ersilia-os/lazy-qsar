@@ -19,7 +19,7 @@ X_test = "../benchmark/data/ersilia_preds/bioavailability_ma_test_eos9o72.h5"
 
 def fit():
     st = time.perf_counter()
-    model = lazyqsar.LazyBinaryClassifier(model_type=model_type)
+    model = lazyqsar.LazyBinaryClassifier(model_type=model_type, mode="quick")
     model.fit(h5_file=X_train, y=y_train)
     model_path = os.path.abspath("test_model")
     model.save_model(model_path)
