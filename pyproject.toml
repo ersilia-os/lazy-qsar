@@ -40,6 +40,7 @@ tune_tables = [
   "tunetables_light @ git+https://github.com/ersilia-os/TuneTablesLight.git@main"
 ]
 descriptors = [
+  "numpy==1.26.4",
   "rdkit==2023.9.5",
   "chemprop<=2.2.0"
 ]

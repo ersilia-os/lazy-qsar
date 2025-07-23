@@ -39,7 +39,7 @@ class BaseRandomForestBinaryClassifier(BaseEstimator, ClassifierMixin):
         num_trials: int = 50,
         timeout: int = 600,
         random_state: int = 42,
-        max_positive_proportion: float = 0.5
+        max_positive_proportion: float = 0.5,
     ):
         self.pca = pca
         self.random_state = random_state
@@ -237,7 +237,11 @@ class BaseRandomForestBinaryClassifier(BaseEstimator, ClassifierMixin):
         print("Working on the PCA")
         n_components = best_params["n_components"]
         reducer = Pipeline(
-            [("scaler_0", StandardScaler()), ("reducer", PCA(n_components=n_components)), ("scaler_1", StandardScaler())]
+            [
+                ("scaler_0", StandardScaler()),
+                ("reducer", PCA(n_components=n_components)),
+                ("scaler_1", StandardScaler()),
+            ]
         )
         reducer.fit(X)
         self.reducer_ = reducer
@@ -254,32 +258,44 @@ class BaseRandomForestBinaryClassifier(BaseEstimator, ClassifierMixin):
         scores = []
         y_cal = []
         probs_cal = []
-        for r in range(self.num_splits):
-            train_x, valid_x, train_y, valid_y = train_test_split(
-                X,
-                y,
-                test_size=self.test_size,
-                random_state=self.random_state + r,
-                stratify=y,
-            )
-            model_cv = RandomForestClassifier(**hyperparams)
-            model_cv.fit(train_x, train_y)
-            valid_y_hat = model_cv.predict_proba(valid_x)[:, 1]
-            fpr, tpr, _ = roc_curve(valid_y, valid_y_hat)
-            auroc = auc(fpr, tpr)
-            scores.append(auroc)
-            print(f"Internal AUROC CV-{r}: {auroc}")
-            y_cal += list(valid_y)
-            probs_cal += list(valid_y_hat)
-        print("Logistic regression for calibration...")
-        self.platt_reg_ = LogisticRegression(solver="lbfgs", max_iter=1000)
-        self.platt_reg_.fit(np.array(probs_cal).reshape(-1, 1), y_cal)
-        print("Logistic regression fit done.")
-        self.mean_score_ = np.mean(scores)
-        self.std_score_ = np.std(scores)
-        print(f"Average AUROC: {self.mean_score_}")
+        if self.num_splits > 0:
+            for r in range(self.num_splits):
+                train_x, valid_x, train_y, valid_y = train_test_split(
+                    X,
+                    y,
+                    test_size=self.test_size,
+                    random_state=self.random_state + r,
+                    stratify=y,
+                )
+                model_cv = RandomForestClassifier(**hyperparams)
+                model_cv.fit(train_x, train_y)
+                valid_y_hat = model_cv.predict_proba(valid_x)[:, 1]
+                fpr, tpr, _ = roc_curve(valid_y, valid_y_hat)
+                auroc = auc(fpr, tpr)
+                scores.append(auroc)
+                print(f"Internal AUROC CV-{r}: {auroc}")
+                y_cal += list(valid_y)
+                probs_cal += list(valid_y_hat)
+            print("Logistic regression for calibration...")
+            self.platt_reg_ = LogisticRegression(solver="lbfgs", max_iter=1000)
+            self.platt_reg_.fit(np.array(probs_cal).reshape(-1, 1), y_cal)
+            print("Logistic regression fit done.")
+            self.mean_score_ = np.mean(scores)
+            self.std_score_ = np.std(scores)
+            print(f"Average AUROC: {self.mean_score_}")
+        else:
+            print("Skipping cross-validation since the cross-validation splits are 0")
+            self.mean_score_ = None
+            self.std_score_ = None
         self.model_ = RandomForestClassifier(**hyperparams)
         self.model_.fit(X, y)
+        if self.num_splits == 0:
+            print(
+                "Logistic regression for calibration... (interpret probabilities with caution!)"
+            )
+            self.platt_reg_ = LogisticRegression(C=1e-6, solver="lbfgs", max_iter=1000)
+            self.platt_reg_.fit(np.array(probs_cal).reshape(-1, 1), y_cal)
+            print("Logistic regression fit done.")
         return self
 
     def _fit_no_pca(self, X, y):
@@ -296,32 +312,44 @@ class BaseRandomForestBinaryClassifier(BaseEstimator, ClassifierMixin):
         scores = []
         y_cal = []
         probs_cal = []
-        for r in range(self.num_splits):
-            train_x, valid_x, train_y, valid_y = train_test_split(
-                X,
-                y,
-                test_size=self.test_size,
-                random_state=self.random_state + r,
-                stratify=y,
-            )
-            model_cv = RandomForestClassifier(**hyperparams)
-            model_cv.fit(train_x, train_y)
-            valid_y_hat = model_cv.predict_proba(valid_x)[:, 1]
-            fpr, tpr, _ = roc_curve(valid_y, valid_y_hat)
-            auroc = auc(fpr, tpr)
-            scores.append(auroc)
-            print(f"Internal AUROC CV-{r}: {auroc}")
-            y_cal += list(valid_y)
-            probs_cal += list(valid_y_hat)
-        print("Logistic regression for calibration...")
-        self.platt_reg_ = LogisticRegression(solver="lbfgs", max_iter=1000)
-        self.platt_reg_.fit(np.array(probs_cal).reshape(-1, 1), y_cal)
-        print("Calibration based on logistic regression fit done.")
-        self.mean_score_ = np.mean(scores)
-        self.std_score_ = np.std(scores)
-        print(f"Average AUROC: {self.mean_score_}")
+        if self.num_splits > 0:
+            for r in range(self.num_splits):
+                train_x, valid_x, train_y, valid_y = train_test_split(
+                    X,
+                    y,
+                    test_size=self.test_size,
+                    random_state=self.random_state + r,
+                    stratify=y,
+                )
+                model_cv = RandomForestClassifier(**hyperparams)
+                model_cv.fit(train_x, train_y)
+                valid_y_hat = model_cv.predict_proba(valid_x)[:, 1]
+                fpr, tpr, _ = roc_curve(valid_y, valid_y_hat)
+                auroc = auc(fpr, tpr)
+                scores.append(auroc)
+                print(f"Internal AUROC CV-{r}: {auroc}")
+                y_cal += list(valid_y)
+                probs_cal += list(valid_y_hat)
+            print("Logistic regression for calibration...")
+            self.platt_reg_ = LogisticRegression(solver="lbfgs", max_iter=1000)
+            self.platt_reg_.fit(np.array(probs_cal).reshape(-1, 1), y_cal)
+            print("Calibration based on logistic regression fit done.")
+            self.mean_score_ = np.mean(scores)
+            self.std_score_ = np.std(scores)
+            print(f"Average AUROC: {self.mean_score_}")
+        else:
+            print("Skipping cross-validation since the cross-validation splits are 0")
+            self.mean_score_ = None
+            self.std_score_ = None
         self.model_ = RandomForestClassifier(**hyperparams)
         self.model_.fit(X, y)
+        if self.num_splits == 0:
+            print(
+                "Logistic regression for calibration... (interpret probabilities with caution!)"
+            )
+            self.platt_reg_ = LogisticRegression(C=1e-6, solver="lbfgs", max_iter=1000)
+            self.platt_reg_.fit(np.array(probs_cal).reshape(-1, 1), y_cal)
+            print("Logistic regression fit done.")
         return self
 
     def fit(self, X, y):
@@ -338,7 +366,8 @@ class BaseRandomForestBinaryClassifier(BaseEstimator, ClassifierMixin):
         else:
             pass
         y_hat = self.model_.predict_proba(X)[:, 1]
-        y_hat = self.platt_reg_.predict_proba(y_hat.reshape(-1, 1))[:, 1]
+        if self.platt_reg_ is not None:
+            y_hat = self.platt_reg_.predict_proba(y_hat.reshape(-1, 1))[:, 1]
         return np.vstack((1 - y_hat, y_hat)).T
 
     def predict(self, X):

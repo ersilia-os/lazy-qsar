@@ -13,11 +13,11 @@ from .samplers import StratifiedKFolder
 from .evaluators import QuickAUCEstimator
 
 
-
 NUM_CPU = max(1, int(multiprocessing.cpu_count() / 2))
 
 import logging
-logging.getLogger('joblib').setLevel(logging.CRITICAL)
+
+logging.getLogger("joblib").setLevel(logging.CRITICAL)
 
 
 class BinaryClassifierPCADecider(object):
@@ -39,7 +39,9 @@ class BinaryClassifierPCADecider(object):
             random_state=42,
         )
         pca_scores = []
-        for n_components in tqdm(self.components_to_evaluate, desc="Evaluating PCA components"):
+        for n_components in tqdm(
+            self.components_to_evaluate, desc="Evaluating PCA components"
+        ):
             current_time = time.time()
             if current_time - start_time > self.timeout:
                 return True
