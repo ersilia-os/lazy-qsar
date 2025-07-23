@@ -9,6 +9,8 @@ from .models import (
     LazyLogisticRegressionBinaryClassifier,
 )
 
+from .config.presets import preset_params
+
 
 descriptors_dict = {"chemeleon": ChemeleonDescriptor, "morgan": MorganFingerprint}
 
@@ -23,11 +25,36 @@ models_dict = dict((k, v) for k, v in models_dict.items() if v is not None)
 
 
 class LazyBinaryQSAR(object):
+
     def __init__(
-        self, descriptor_type="chemeleon", model_type="random_forest", **kwargs
+        self, descriptor_type: str = "chemeleon", model_type: str = "random_forest", mode: str = "default", **kwargs
     ):
+        """
+        Initialize a LazyBinaryQSAR
+
+        This class serves as a wrapper for various binary classification models for chemistry,
+        allowing for easy switching between different algorithms and configurations.
+        Args:
+            descriptor_type (str): The type of descriptor to use. Options are 'chemeleon' (default) or 'morgan'.
+            model_type (str): The type of model to use. Options are 'random_forest' (default), 'logistic_regression' or 'tune_tables'.
+            mode (str): The preset mode to use for the model parameters. Options are 'quick' or 'default'.
+            **kwargs: Additional keyword arguments to pass to the model constructor.
+
+        Usage:
+        >>> from lazyqsar.qsar import LazyBinaryQSAR
+        >>> qsar = LazyBinaryQSAR(descriptor_type="chemeleon", model_type="random_forest", mode="default")
+        >>> qsar.fit(smiles_list, y)
+        >>> predictions = qsar.predict_proba(smiles_list)
+        """
         self.descriptor_type = descriptor_type
         self.model_type = model_type
+        self.mode = mode
+
+        if mode not in preset_params:
+            raise ValueError(f"Unsupported mode: {mode}. Please choose from {list(preset_params.keys())}.")
+        
+        presets = preset_params[mode]
+        combined_kwargs = {**presets, **kwargs}
 
         if descriptor_type not in descriptors_dict:
             raise ValueError(f"Unsupported descriptor type: {descriptor_type}")
@@ -36,26 +63,38 @@ class LazyBinaryQSAR(object):
         if model_type not in models_dict:
             raise ValueError(f"Unsupported model type: {model_type}")
         else:
-            self.model = models_dict[model_type](**kwargs)
+            self.model = models_dict[model_type](**combined_kwargs)
 
-    def fit(self, X, y):
+    def fit(self, smiles_list, y):
         y = np.array(y, dtype=int)
         print(f"Fitting inputs to feature descriptors using {self.descriptor_type}")
-        self.descriptor.fit(X)
+        self.descriptor.fit(smiles_list)
         print(
             f"Transforming inputs to feature descriptors using {self.descriptor_type}"
         )
-        descriptors = np.array(self.descriptor.transform(X), dtype=np.float32)
+        descriptors = self.descriptor.transform(smiles_list)
         print(f"Performing predictions on input feature of shape: {descriptors.shape}")
         self.model.fit(X=descriptors, y=y)
 
-    def predict_proba(self, X):
+    def predict_proba(self, smiles_list):
         print(
             f"Transforming inputs to feature descriptors using {self.descriptor_type}"
         )
-        descriptors = np.array(self.descriptor.transform(X))
+        descriptors = self.descriptor.transform(smiles_list)
         print(f"Performing predictions on input feature of shape: {descriptors.shape}")
-        return self.model.predict(descriptors)
+        y_hat_1 = np.array(self.model.predict(descriptors))
+        y_hat_0 = 1 - y_hat_1
+        return np.array([y_hat_0, y_hat_1]).T
+    
+    def predict(self, smiles_list, threshold=0.5):
+        y_hat = self.predict_proba(smiles_list)[:, 1]
+        y_bin = []
+        for y in y_hat:
+            if y >= threshold:
+                y_bin.append(1)
+            else:
+                y_bin.append(0)
+        return np.array(y_bin, dtype=int)
 
     def save_model(self, model_dir: str):
         print(f"LazyQSAR Saving model to {model_dir}")

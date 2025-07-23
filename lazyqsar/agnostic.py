@@ -8,6 +8,8 @@ from .models import (
     LazyLogisticRegressionBinaryClassifier,
 )
 
+from .config.presets import preset_params
+
 
 binary_models_dict = {
     "tune_tables": LazyTuneTablesBinaryClassifier,
@@ -23,21 +25,57 @@ regression_models_dict = {"linear_model": None}
 
 
 class LazyBinaryClassifier(object):
-    def __init__(self, model_type="logistic_regression", **kwargs):
+    def __init__(self, model_type: str = "random_forest", mode: str = "default", **kwargs):
+        """
+        Initialize a LazyBinaryClassifier
+
+        This class serves as a wrapper for various binary classification models,
+        allowing for easy switching between different algorithms and configurations.
+        Args:
+            model_type (str): The type of model to use. Options are 'random_forest' (default), 'logistic_regression' or 'tune_tables'.
+            mode (str): The preset mode to use for the model parameters. Options are 'quick' or 'default'.
+            **kwargs: Additional keyword arguments to pass to the model constructor.
+
+        Usage:
+        >>> from lazyqsar.models import LazyBinaryClassifier
+        >>> classifier = LazyBinaryClassifier(model_type="random_forest", mode="default")
+        >>> classifier.fit(X=X, y=y)
+        >>> predictions = classifier.predict_proba(X=X)
+        """
+
         self.model_type = model_type
+        self.mode = mode
+
+        if mode not in preset_params:
+            raise ValueError(f"Unsupported mode: {mode}. Please choose from {list(preset_params.keys())}.")
+
+        presets = preset_params[mode]
+        combined_kwargs = {**presets, **kwargs}
 
         if model_type not in binary_models_dict:
             print(binary_models_dict)
             raise ValueError(f"Unsupported model type: {model_type}")
         else:
-            self.model = binary_models_dict[model_type](**kwargs)
+            self.model = binary_models_dict[model_type](**combined_kwargs)
 
     def fit(self, X=None, y=None, h5_file=None, h5_idxs=None):
         y = np.array(y, dtype=int)
         self.model.fit(X=X, y=y, h5_file=h5_file, h5_idxs=h5_idxs)
 
     def predict_proba(self, X=None, h5_file=None, h5_idxs=None):
-        return self.model.predict(X=X, h5_file=h5_file, h5_idxs=h5_idxs)
+        y_hat_1 = np.array(self.model.predict(X=X, h5_file=h5_file, h5_idxs=h5_idxs))
+        y_hat_0 = 1 - y_hat_1
+        return np.array([y_hat_0, y_hat_1]).T
+    
+    def predict(self, X=None, h5_file=None, h5_idxs=None, threshold=0.5):
+        y_hat = self.predict_proba(X=X, h5_file=h5_file, h5_idxs=h5_idxs)[:, 1]
+        y_bin = []
+        for y in y_hat:
+            if y >= threshold:
+                y_bin.append(1)
+            else:
+                y_bin.append(0)
+        return np.array(y_bin, dtype=int)
 
     def save_model(self, model_dir: str):
         print(f"LazyQSAR Saving model to {model_dir}")

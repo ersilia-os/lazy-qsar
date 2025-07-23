@@ -33,7 +33,7 @@ def predict():
     st = time.perf_counter()
     model_path = os.path.abspath("test_model")
     model = lazyqsar.LazyBinaryQSAR.load_model(model_path)
-    y_hat = model.predict_proba(smiles_test)
+    y_hat = model.predict_proba(smiles_test)[:,1]
     fpr, tpr, _ = roc_curve(y_test, y_hat)
     print("AUROC", auc(fpr, tpr))
     et = time.perf_counter()

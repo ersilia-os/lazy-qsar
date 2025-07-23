@@ -33,6 +33,7 @@ class BinaryClassifierPCADecider(object):
         start_time = time.time()
         print("Deciding whether to use PCA for the binary classifier.")
         cv = StratifiedKFolder(
+            test_size=0.25,
             n_splits=5,
             max_positive_proportion=self.max_positive_proportion,
             shuffle=True,

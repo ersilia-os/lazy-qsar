@@ -69,12 +69,13 @@ class BaseLogisticRegressionBinaryClassifier(BaseEstimator, ClassifierMixin):
         scores = []
         num_splits = self.num_splits
         test_size = self.test_size
-        if num_splits is None:
+        if num_splits is None or num_splits == 0:
             num_splits = 3
         if test_size is None:
             test_size = 0.25
         num_splits = max(num_splits, int(1 / test_size))
         cv = StratifiedKFolder(
+            test_size=test_size,
             n_splits=num_splits,
             shuffle=True,
             random_state=self.random_state,
@@ -152,7 +153,8 @@ class BaseLogisticRegressionBinaryClassifier(BaseEstimator, ClassifierMixin):
         if test_size is None:
             test_size = 0.25
         num_splits = max(num_splits, int(1 / test_size))
-        cv = cv = StratifiedKFolder(
+        cv = StratifiedKFolder(
+            test_size=test_size,
             n_splits=num_splits,
             shuffle=True,
             random_state=self.random_state,

@@ -16,7 +16,7 @@ from sklearn.decomposition import PCA
 from sklearn.feature_selection import VarianceThreshold
 from sklearn.metrics import roc_curve, auc, roc_auc_score
 from sklearn.model_selection import train_test_split
-from sklearn.linear_model import LogisticRegression
+from sklearn.linear_model import LogisticRegression, LogisticRegressionCV
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from flaml.default import RandomForestClassifier as ZeroShotRandomForestClassifier
@@ -331,7 +331,7 @@ class BaseRandomForestBinaryClassifier(BaseEstimator, ClassifierMixin):
                 y_cal += list(valid_y)
                 probs_cal += list(valid_y_hat)
             print("Logistic regression for calibration...")
-            self.platt_reg_ = LogisticRegression(solver="lbfgs", max_iter=1000)
+            self.platt_reg_ = LogisticRegressionCV(solver="lbfgs", max_iter=1000, n_jobs=NUM_CPU)
             self.platt_reg_.fit(np.array(probs_cal).reshape(-1, 1), y_cal)
             print("Calibration based on logistic regression fit done.")
             self.mean_score_ = np.mean(scores)

@@ -36,6 +36,7 @@ class PCADimensionsOptimizerForBinaryClassification(object):
         num_splits = max(self.num_splits, int(1 / self.test_size))
 
         cv = StratifiedKFolder(
+            test_size=self.test_size,
             n_splits=num_splits,
             max_positive_proportion=self.max_positive_proportion,
             random_state=self.random_state,

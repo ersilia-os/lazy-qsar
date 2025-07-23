@@ -15,7 +15,8 @@ logger = logging.getLogger(__name__)
 class ChemeleonDescriptor(object):
 
     def __init__(self):
-        """CheMeleon descriptor based on the CheMeleon model.
+        """CheMeleon descriptor based on the CheMeleon foundational model.
+        CheMeleon is based on ChemProp's MPNN model and provides a 2048-dimensional fingerprint (continuous).
         
         Usage:
         >>> from lazyqsar.descriptors import ChemeleonDescriptor

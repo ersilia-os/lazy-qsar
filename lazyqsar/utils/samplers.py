@@ -417,8 +417,9 @@ class KFolder(object):
 
 class StratifiedKFolder(object):
     def __init__(
-        self, n_splits=5, max_positive_proportion=0.5, shuffle=True, random_state=None
+        self, test_size=0.25, n_splits=5, max_positive_proportion=0.5, shuffle=True, random_state=None
     ):
+        self.test_size = test_size
         self.n_splits = n_splits
         self.shuffle = shuffle
         self.random_state = random_state
@@ -428,9 +429,11 @@ class StratifiedKFolder(object):
         return self.n_splits
 
     def split(self, X, y, groups=None):
+        num_splits = max(3, int(1 / self.test_size))
         splitter = StratifiedKFold(
-            n_splits=self.n_splits, shuffle=self.shuffle, random_state=self.random_state
+            n_splits=num_splits, shuffle=self.shuffle, random_state=self.random_state
         )
+        done_folds = 0
         for train_idxs, test_idxs in splitter.split(X, y):
             train_idxs_pos = [i for i in train_idxs if y[i] == 1]
             train_idxs_neg = [i for i in train_idxs if y[i] == 0]
@@ -441,4 +444,7 @@ class StratifiedKFolder(object):
                     additional_neg_idxs = random.choices(train_idxs_neg, k=n_missing)
                     train_idxs = list(train_idxs) + additional_neg_idxs
                     random.shuffle(train_idxs)
+            done_folds += 1
+            if done_folds >= self.n_splits:
+                break
             yield train_idxs, test_idxs
