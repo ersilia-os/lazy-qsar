@@ -92,11 +92,11 @@ class BinaryClassifierPCADecider(object):
 
         print(f"Best PCA score: {pca_score:.4f}, No PCA score: {no_pca_score:.4f}")
 
+        if abs(pca_score - no_pca_score) < 0.02:
+            return True
+
         if pca_score > no_pca_score:
-            if pca_score - no_pca_score > 0.02:
-                return True
-            else:
-                return False
+            return True
         else:
             return False
 
