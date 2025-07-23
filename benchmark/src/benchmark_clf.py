@@ -27,7 +27,7 @@ for a in ADMET_CLF_TASKS.keys():
     print(a, len(train), len(test))
     model = LazyBinaryQSAR(model_type=model_type, descriptor_type=desc)
     model.fit(smiles_train, y_train)
-    y_pred_test = model.predict_proba(smiles_test)
+    y_pred_test = model.predict_proba(smiles_test)[:,1]
     test["pred"] = y_pred_test
     save_path = os.path.join(PREDSPATH, f"tdc_preds_{model_type}_{desc}")
     if not os.path.exists(save_path):
