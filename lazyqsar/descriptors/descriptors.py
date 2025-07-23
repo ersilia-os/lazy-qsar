@@ -6,15 +6,30 @@ from rdkit import Chem
 from rdkit.Chem import rdFingerprintGenerator
 from .chemeleon_descriptor import CheMeleonFingerprint
 
+import logging
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 
 class ChemeleonDescriptor(object):
+
     def __init__(self):
+        """CheMeleon descriptor based on the CheMeleon model.
+        
+        Usage:
+        >>> from lazyqsar.descriptors import ChemeleonDescriptor
+        >>> chemeleon = ChemeleonDescriptor()
+        >>> X = chemeleon.transform(smiles_list)
+        """
+
         self.chemeleon_fingerprint = CheMeleonFingerprint()
         self.n_dim = 2048
+        self.features = None
 
     def fit(self, smiles):
         self.features = ["dim_{0}".format(i) for i in range(self.n_dim)]
-        print("No fitting is necessary for Chemeleon descriptor")
+        logger.warning("No fitting is necessary for Chemeleon descriptor")
         return None
 
     def transform(self, smiles):
@@ -50,7 +65,7 @@ class ChemeleonDescriptor(object):
             metadata = json.load(f)
             rdkit_version = metadata.get("rdkit_version")
             if rdkit_version:
-                print(f"Loaded RDKit version: {rdkit_version}")
+                logger.debug(f"Loaded RDKit version: {rdkit_version}")
             current_rdkit_version = Chem.rdBase.rdkitVersion
             if current_rdkit_version != rdkit_version:
                 raise ValueError(
@@ -62,11 +77,23 @@ class ChemeleonDescriptor(object):
 
 class MorganFingerprint(object):
     def __init__(self):
+        """Morgan fingerprint descriptor based on RDKit's Morgan algorithm.
+        Default parameters (cannot be modified):
+        - n_dim: 2048
+        - radius: 3
+
+        Usage:
+        >>> from lazyqsar.descriptors import MorganFingerprint
+        >>> morgan = MorganFingerprint()
+        >>> X = morgan.transform(smiles_list)
+        """
+
         self.n_dim = 2048
         self.radius = 3
         self.mfpgen = rdFingerprintGenerator.GetMorganGenerator(
             radius=self.radius, fpSize=self.n_dim
         )
+        self.features = None
 
     def _clip_sparse(self, vect, nbits):
         l = [0] * nbits
@@ -85,7 +112,7 @@ class MorganFingerprint(object):
 
     def fit(self, smiles):
         self.features = ["dim_{0}".format(i) for i in range(self.n_dim)]
-        print("No fitting is necessary for Morgan descriptor")
+        logger.warning("No fitting is necessary for Morgan descriptor")
         return None
 
     def _mol_from_smiles(self, smiles):
