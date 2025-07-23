@@ -237,7 +237,7 @@ class BaseRandomForestBinaryClassifier(BaseEstimator, ClassifierMixin):
         print("Working on the PCA")
         n_components = best_params["n_components"]
         reducer = Pipeline(
-            [("scaler", StandardScaler()), ("pca", PCA(n_components=n_components))]
+            [("scaler_0", StandardScaler()), ("reducer", PCA(n_components=n_components)), ("scaler_1", StandardScaler())]
         )
         reducer.fit(X)
         self.reducer_ = reducer
@@ -316,7 +316,7 @@ class BaseRandomForestBinaryClassifier(BaseEstimator, ClassifierMixin):
         print("Logistic regression for calibration...")
         self.platt_reg_ = LogisticRegression(solver="lbfgs", max_iter=1000)
         self.platt_reg_.fit(np.array(probs_cal).reshape(-1, 1), y_cal)
-        print("Logistic regression fit done.")
+        print("Calibration based on logistic regression fit done.")
         self.mean_score_ = np.mean(scores)
         self.std_score_ = np.std(scores)
         print(f"Average AUROC: {self.mean_score_}")

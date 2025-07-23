@@ -82,8 +82,9 @@ class BaseLogisticRegressionBinaryClassifier(BaseEstimator, ClassifierMixin):
         )
         pipe = Pipeline(
             [
-                ("scaler", StandardScaler()),
-                ("pca", PCA(n_components=n_components)),
+                ("scaler_0", StandardScaler()),
+                ("reducer", PCA(n_components=n_components)),
+                ("scaler_1", StandardScaler()),
                 (
                     "clf",
                     LogisticRegressionCV(
@@ -121,8 +122,9 @@ class BaseLogisticRegressionBinaryClassifier(BaseEstimator, ClassifierMixin):
         intercept_scaling = getattr(model_cv, "intercept_scaling", 1)
         pipe = Pipeline(
             [
-                ("scaler", StandardScaler()),
-                ("pca", PCA(n_components=n_components)),
+                ("scaler_0", StandardScaler()),
+                ("reducer", PCA(n_components=n_components)),
+                ("scaler_1", StandardScaler()),
                 (
                     "clf",
                     LogisticRegression(
