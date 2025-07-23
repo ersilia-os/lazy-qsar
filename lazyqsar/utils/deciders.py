@@ -13,7 +13,11 @@ from .samplers import StratifiedKFolder
 from .evaluators import QuickAUCEstimator
 
 
+
 NUM_CPU = max(1, int(multiprocessing.cpu_count() / 2))
+
+import logging
+logging.getLogger('joblib').setLevel(logging.CRITICAL)
 
 
 class BinaryClassifierPCADecider(object):
@@ -22,6 +26,8 @@ class BinaryClassifierPCADecider(object):
         self.y = y
         self.max_positive_proportion = max_positive_proportion
         self.timeout = 600
+        self.components_to_evaluate = [0.9]
+        self.num_evidence_in_folds = 3
 
     def decide(self):
         start_time = time.time()
@@ -33,7 +39,7 @@ class BinaryClassifierPCADecider(object):
             random_state=42,
         )
         pca_scores = []
-        for n_components in tqdm([0.8, 0.9, 0.99], desc="Evaluating PCA components"):
+        for n_components in tqdm(self.components_to_evaluate, desc="Evaluating PCA components"):
             current_time = time.time()
             if current_time - start_time > self.timeout:
                 return True
@@ -48,6 +54,8 @@ class BinaryClassifierPCADecider(object):
                 X_test = scaler.transform(X_test)
                 X_train_pca = pca.fit_transform(X_train)
                 X_test_pca = pca.transform(X_test)
+                X_train_pca = scaler.fit_transform(X_train_pca)
+                X_test_pca = scaler.transform(X_test_pca)
                 cv = StratifiedKFold()
                 model = LogisticRegressionCV(
                     cv=cv, class_weight="balanced", n_jobs=NUM_CPU
@@ -56,6 +64,8 @@ class BinaryClassifierPCADecider(object):
                 y_pred = model.predict_proba(X_test_pca)[:, 1]
                 auc_score = roc_auc_score(self.y[test_idxs], y_pred)
                 scores += [auc_score]
+                if len(scores) > self.num_evidence_in_folds:
+                    break
             pca_scores += [np.mean(scores)]
         pca_score = np.mean(pca_scores)
 
@@ -74,6 +84,8 @@ class BinaryClassifierPCADecider(object):
             y_pred = model.predict_proba(X_test)[:, 1]
             auc_score = roc_auc_score(self.y[test_idxs], y_pred)
             scores += [auc_score]
+            if len(scores) > self.num_evidence_in_folds:
+                break
         no_pca_score = np.mean(scores)
 
         print(f"Best PCA score: {pca_score:.4f}, No PCA score: {no_pca_score:.4f}")
