@@ -36,11 +36,11 @@ class ChemeleonDescriptor(object):
     def transform(self, smiles):
         if self.features is None:
             self.features = ["dim_{0}".format(i) for i in range(self.n_dim)]
-        chunk_size = 1000
+        chunk_size = 100
         R = []
         for i in tqdm(
             range(0, len(smiles), chunk_size),
-            desc="Transforming CheMeleon descriptors in chunks of 1000",
+            desc="Transforming CheMeleon descriptors in chunks of 100",
         ):
             chunk = smiles[i : i + chunk_size]
             X_chunk = np.array(self.chemeleon_fingerprint(chunk), dtype=np.float32)
