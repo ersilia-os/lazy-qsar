@@ -19,7 +19,8 @@ python -m pip install -e .[descriptors]
 
 And to use a light version of [TuneTables](https://github.com/ersilia-os/TuneTablesLight/tree/main) as an estimator, also please install it:
 ```bash
-python -m pip install -e .[tunetables]
+pip install "lazyqsar[tune-tables]"
+pip install "git+https://github.com/ersilia-os/TuneTablesLight.git@main"
 ```
 
 ## Binary Classification
