@@ -35,6 +35,7 @@ dependencies = [
     "flaml==2.3.5"
 ]
 
+[project.optional-dependencies]
 descriptors = [
   "numpy==1.26.4",
   "rdkit==2023.9.5",
