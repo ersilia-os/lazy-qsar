@@ -27,9 +27,6 @@ from ..utils.deciders import BinaryClassifierMaxSamplesDecider
 from ..utils.optimizers import PCADimensionsOptimizerForBinaryClassification
 from ..utils.logging import logger
 from ..utils.progress import track_chunks
-from loguru import logger
-
-
 
 
 NUM_CPU = max(1, int(multiprocessing.cpu_count() / 2))
