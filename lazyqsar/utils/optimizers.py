@@ -6,7 +6,7 @@ from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import cross_val_score
 import optuna
-
+from .logging import logger
 from .samplers import StratifiedKFolder
 
 
@@ -55,6 +55,7 @@ class PCADimensionsOptimizerForBinaryClassification(object):
                         cv=cv,
                         random_state=self.random_state,
                         scoring="roc_auc",
+                        max_iter=1000
                     ),
                 ),
             ]
@@ -85,7 +86,13 @@ class PCADimensionsOptimizerForBinaryClassification(object):
 
         study.enqueue_trial(hyperparams)
 
-        print("Fitting...")
+        logger.debug(
+            f"Starting hyperparameter search "
+            f"sampler=TPESampler(seed={self.random_state}), direction=maximize, "
+            f"trials={self.num_trials}, init:n_components={n_components}, "
+            f"early_stop(threshold={improvement_threshold:.3f}, patience={patience}), "
+            f"data=X{getattr(X, 'shape', None)}, y_len={len(y)}"
+        )
         best_score = -np.inf
         trials_without_improvement = 0
         improvement_threshold = 0.01
@@ -100,7 +107,7 @@ class PCADimensionsOptimizerForBinaryClassification(object):
                 early_stopping, \
                 baseline_score_for_patience
             if early_stopping:
-                print("Skipping trial due to early stopping criteria.")
+                logger.debug("Skipping trial due to early stopping criteria.")
                 raise optuna.exceptions.TrialPruned()
             score = self._objective(trial, X, y)
             if score > best_score:
@@ -112,7 +119,7 @@ class PCADimensionsOptimizerForBinaryClassification(object):
                 trials_without_improvement += 1
             if trials_without_improvement >= patience:
                 early_stopping = True
-                print(
+                logger.debug(
                     f"Early stopping: No significant improvement in the last {patience} trials."
                 )
                 raise optuna.exceptions.TrialPruned()
@@ -132,7 +139,11 @@ class PCADimensionsOptimizerForBinaryClassification(object):
 
     def suggest(self, X, y):
         if self.num_trials == 0:
-            print("No trials specified, returning default parameters.")
+            logger.info(
+                f"[bold cyan]No hyperparameter trials requested[/] (num_trials={self.num_trials}); "
+                f"returning defaults: best_params={{'n_components': 0.90}}, best_value=None, "
+                f"data=X{getattr(X,'shape',None)}, y_len={len(y)}"
+            )
             return {
                 "best_params": {"n_components": 0.90},
                 "best_value": None,

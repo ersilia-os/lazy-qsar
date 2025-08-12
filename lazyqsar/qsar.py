@@ -10,7 +10,7 @@ from .models import (
 )
 
 from .config.presets import preset_params
-
+from .utils.logging import logger
 
 descriptors_dict = {"chemeleon": ChemeleonDescriptor, "morgan": MorganFingerprint}
 
@@ -67,21 +67,21 @@ class LazyBinaryQSAR(object):
 
     def fit(self, smiles_list, y):
         y = np.array(y, dtype=int)
-        print(f"Fitting inputs to feature descriptors using {self.descriptor_type}")
+        logger.debug(f"Fitting inputs to feature descriptors using {self.descriptor_type}")
         self.descriptor.fit(smiles_list)
-        print(
+        logger.array(
             f"Transforming inputs to feature descriptors using {self.descriptor_type}"
         )
         descriptors = self.descriptor.transform(smiles_list)
-        print(f"Performing predictions on input feature of shape: {descriptors.shape}")
+        logger.array(f"Performing predictions on input feature of shape: {descriptors.shape}")
         self.model.fit(X=descriptors, y=y)
 
     def predict_proba(self, smiles_list):
-        print(
+        logger.array(
             f"Transforming inputs to feature descriptors using {self.descriptor_type}"
         )
         descriptors = self.descriptor.transform(smiles_list)
-        print(f"Performing predictions on input feature of shape: {descriptors.shape}")
+        logger.array(f"Performing predictions on input feature of shape: {descriptors.shape}")
         y_hat_1 = np.array(self.model.predict(descriptors))
         y_hat_0 = 1 - y_hat_1
         return np.array([y_hat_0, y_hat_1]).T
@@ -97,7 +97,7 @@ class LazyBinaryQSAR(object):
         return np.array(y_bin, dtype=int)
 
     def save_model(self, model_dir: str):
-        print(f"LazyQSAR Saving model to {model_dir}")
+        logger.debug(f"LazyQSAR Saving model to {model_dir}")
         config = {
             "descriptor_type": self.descriptor_type,
             "model_type": self.model_type,
@@ -110,11 +110,11 @@ class LazyBinaryQSAR(object):
         with open(os.path.join(model_dir, "config.json"), "w") as f:
             json.dump(config, f)
         self.descriptor.save(model_dir)
-        print("Saving done!")
+        logger.info(f"The model is successfully saved at {model_dir}")
 
     @classmethod
     def load_model(cls, model_dir: str):
-        print(f"LazyQSAR Loading model from {model_dir}")
+        logger.debug(f"LazyQSAR Loading model from {model_dir}")
         obj = cls()
         with open(os.path.join(model_dir, "config.json"), "r") as f:
             config = json.load(f)
@@ -124,5 +124,5 @@ class LazyBinaryQSAR(object):
         obj.model_type = model_type
         obj.descriptor = descriptors_dict[descriptor_type].load(model_dir)
         obj.model = models_dict[model_type].load_model(model_dir)
-        print("Loading done!")
+        logger.info(f"Model successfully loaded from {model_dir}")
         return obj

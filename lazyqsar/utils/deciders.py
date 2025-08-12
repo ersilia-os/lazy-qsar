@@ -11,6 +11,8 @@ from sklearn.metrics import roc_auc_score
 from .samplers import BinaryClassifierSamplingUtils
 from .samplers import StratifiedKFolder
 from .evaluators import QuickAUCEstimator
+from .logging import logger
+from .progress import track_chunks
 
 
 NUM_CPU = max(1, int(multiprocessing.cpu_count() / 2))
@@ -22,6 +24,7 @@ logging.getLogger("joblib").setLevel(logging.CRITICAL)
 
 class BinaryClassifierPCADecider(object):
     def __init__(self, X, y, max_positive_proportion=0.5):
+        self.logger = logger
         self.X = X
         self.y = y
         self.max_positive_proportion = max_positive_proportion
@@ -31,7 +34,7 @@ class BinaryClassifierPCADecider(object):
 
     def decide(self):
         start_time = time.time()
-        print("Deciding whether to use PCA for the binary classifier.")
+        self.logger.debug("Deciding whether to use PCA for the binary classifier.")
         cv = StratifiedKFolder(
             test_size=0.25,
             n_splits=5,
@@ -40,7 +43,7 @@ class BinaryClassifierPCADecider(object):
             random_state=42,
         )
         pca_scores = []
-        for n_components in tqdm(
+        for n_components in track_chunks(
             self.components_to_evaluate, desc="Evaluating PCA components"
         ):
             current_time = time.time()
@@ -61,7 +64,7 @@ class BinaryClassifierPCADecider(object):
                 X_test_pca = scaler.transform(X_test_pca)
                 cv = StratifiedKFold()
                 model = LogisticRegressionCV(
-                    cv=cv, class_weight="balanced", n_jobs=NUM_CPU
+                    cv=cv, class_weight="balanced", n_jobs=NUM_CPU, max_iter=1000
                 )
                 model.fit(X_train_pca, y_train)
                 y_pred = model.predict_proba(X_test_pca)[:, 1]
@@ -73,7 +76,7 @@ class BinaryClassifierPCADecider(object):
         pca_score = np.mean(pca_scores)
 
         scores = []
-        for train_idxs, test_idxs in tqdm(
+        for train_idxs, test_idxs in track_chunks(
             cv.split(self.X, self.y), desc="Evaluating without PCA"
         ):
             current_time = time.time()
@@ -82,7 +85,7 @@ class BinaryClassifierPCADecider(object):
             X_train = self.X[train_idxs]
             y_train = self.y[train_idxs]
             X_test = self.X[test_idxs]
-            model = LogisticRegressionCV(cv=cv, class_weight="balanced", n_jobs=NUM_CPU)
+            model = LogisticRegressionCV(cv=cv, class_weight="balanced", n_jobs=NUM_CPU, max_iter=1000)
             model.fit(X_train, y_train)
             y_pred = model.predict_proba(X_test)[:, 1]
             auc_score = roc_auc_score(self.y[test_idxs], y_pred)
@@ -91,7 +94,7 @@ class BinaryClassifierPCADecider(object):
                 break
         no_pca_score = np.mean(scores)
 
-        print(f"Best PCA score: {pca_score:.4f}, No PCA score: {no_pca_score:.4f}")
+        self.logger.info(f"Best PCA score: {pca_score:.4f}, No PCA score: {no_pca_score:.4f}")
 
         if abs(pca_score - no_pca_score) < 0.02:
             return True
@@ -113,6 +116,7 @@ class BinaryClassifierMaxSamplesDecider(object):
         absolute_min=10000,
         absolute_max=100000,
     ):
+        self.logger = logger
         self.X = X
         self.y = y
         self.min_positive_proportion = min_positive_proportion
@@ -137,7 +141,7 @@ class BinaryClassifierMaxSamplesDecider(object):
         return result
 
     def decide(self):
-        print(
+        self.logger.debug(
             "Quickly deciding the max number of samples to use for the binary classifier."
         )
         n_min, n_max = self._get_min_and_max_range()

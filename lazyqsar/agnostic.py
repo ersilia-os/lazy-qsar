@@ -9,7 +9,7 @@ from .models import (
 )
 
 from .config.presets import preset_params
-
+from .utils.logging import logger
 
 binary_models_dict = {
     "tune_tables": LazyTuneTablesBinaryClassifier,
@@ -53,7 +53,6 @@ class LazyBinaryClassifier(object):
         combined_kwargs = {**presets, **kwargs}
 
         if model_type not in binary_models_dict:
-            print(binary_models_dict)
             raise ValueError(f"Unsupported model type: {model_type}")
         else:
             self.model = binary_models_dict[model_type](**combined_kwargs)
@@ -78,7 +77,7 @@ class LazyBinaryClassifier(object):
         return np.array(y_bin, dtype=int)
 
     def save_model(self, model_dir: str):
-        print(f"LazyQSAR Saving model to {model_dir}")
+        logger.debug(f"LazyQSAR Saving model to {model_dir}")
         config = {
             "model_type": self.model_type,
         }
@@ -88,18 +87,18 @@ class LazyBinaryClassifier(object):
         metadata["model_type"] = self.model_type
         with open(os.path.join(model_dir, "config.json"), "w") as f:
             json.dump(config, f)
-        print("Saving done!")
+        logger.info(f"The model is successfully saved at {model_dir}")
 
     @classmethod
     def load_model(cls, model_dir: str):
-        print(f"LazyQSAR Loading model from {model_dir}")
+        logger.debug(f"LazyQSAR Loading model from {model_dir}")
         obj = cls()
         with open(os.path.join(model_dir, "config.json"), "r") as f:
             config = json.load(f)
         model_type = config["model_type"]
         obj.model_type = model_type
         obj.model = binary_models_dict[model_type].load_model(model_dir)
-        print("Loading done!")
+        logger.info(f"Model successfully loaded from {model_dir}")
         return obj
 
 
@@ -124,7 +123,7 @@ class LazyRegressor(object):
         return self.model.predict(X)
 
     def save_model(self, model_dir: str):
-        print(f"LazyQSAR Saving model to {model_dir}")
+        logger.debug(f"LazyQSAR Saving model to {model_dir}")
         config = {
             "model_type": self.model_type,
         }
@@ -134,16 +133,16 @@ class LazyRegressor(object):
         metadata["model_type"] = self.model_type
         with open(os.path.join(model_dir, "config.json"), "w") as f:
             json.dump(config, f)
-        print("Saving done!")
+        logger.info(f"The model is successfully saved at {model_dir}")
 
     @classmethod
     def load_model(cls, model_dir: str):
-        print(f"LazyQSAR Loading model from {model_dir}")
+        logger.debug(f"LazyQSAR Loading model from {model_dir}")
         obj = cls()
         with open(os.path.join(model_dir, "config.json"), "r") as f:
             config = json.load(f)
         model_type = config["model_type"]
         obj.model_type = model_type
         obj.model = regression_models_dict[model_type].load_model(model_dir)
-        print("Loading done!")
+        logger.info(f"Model successfully loaded from {model_dir}")
         return obj

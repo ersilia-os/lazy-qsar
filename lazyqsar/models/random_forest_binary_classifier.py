@@ -9,7 +9,7 @@ import shutil
 import sklearn
 import h5py
 import multiprocessing
-from tqdm import tqdm
+import logging
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.decomposition import PCA
@@ -25,6 +25,11 @@ from ..utils.io import InputUtils
 from ..utils.deciders import BinaryClassifierPCADecider
 from ..utils.deciders import BinaryClassifierMaxSamplesDecider
 from ..utils.optimizers import PCADimensionsOptimizerForBinaryClassification
+from ..utils.logging import logger
+from ..utils.progress import track_chunks
+from loguru import logger
+
+
 
 
 NUM_CPU = max(1, int(multiprocessing.cpu_count() / 2))
@@ -164,7 +169,7 @@ class BaseRandomForestBinaryClassifier(BaseEstimator, ClassifierMixin):
                 "criterion": "gini",
             }
         hyperparams["class_weight"] = "balanced_subsample"
-        print("Suggested zero-shot hyperparameters:", hyperparams)
+        logger.info(f"Suggested zero-shot hyperparameters: {hyperparams}")
         if self.num_trials == 0:
             return {
                 "best_params": hyperparams,
@@ -184,14 +189,20 @@ class BaseRandomForestBinaryClassifier(BaseEstimator, ClassifierMixin):
 
         study.enqueue_trial(hyperparams)
 
-        print("Fitting...")
+
         best_score = -np.inf
         trials_without_improvement = 0
         improvement_threshold = 0.01
         patience = max(5, self.num_trials // 5)
         early_stopping = False
         baseline_score_for_patience = best_score
-
+        logger.debug(
+            f"[bold cyan]Starting hyperparameter search[/] "
+            f"sampler=TPESampler(seed={self.random_state}), direction=maximize, "
+            f"trials={self.num_trials}, "
+            f"early_stop(threshold={improvement_threshold:.3f}, patience={patience}), "
+            f"data=X{getattr(X, 'shape', None)}, y_len={len(y)}"
+        )
         def objective_with_custom_early_stop(trial):
             nonlocal \
                 best_score, \
@@ -199,7 +210,7 @@ class BaseRandomForestBinaryClassifier(BaseEstimator, ClassifierMixin):
                 early_stopping, \
                 baseline_score_for_patience
             if early_stopping:
-                print("Skipping trial due to early stopping criteria.")
+                logger.debug("Skipping trial due to early stopping criteria.")
                 raise optuna.exceptions.TrialPruned()
             score = self._objective(trial, X, y, hyperparam_search)
             if score > best_score:
@@ -211,7 +222,7 @@ class BaseRandomForestBinaryClassifier(BaseEstimator, ClassifierMixin):
                 trials_without_improvement += 1
             if trials_without_improvement >= patience:
                 early_stopping = True
-                print(
+                logger.debug(
                     f"Early stopping: No significant improvement in the last {patience} trials."
                 )
                 raise optuna.exceptions.TrialPruned()
@@ -239,7 +250,7 @@ class BaseRandomForestBinaryClassifier(BaseEstimator, ClassifierMixin):
             timeout=min(60, self.timeout),
             max_positive_proportion=self.max_positive_proportion,
         ).suggest(X, y)["best_params"]
-        print("Working on the PCA")
+        logger.debug("Working on the PCA to get best hyperparameter and associated metrics")
         n_components = best_params["n_components"]
         reducer = Pipeline(
             [
@@ -257,7 +268,7 @@ class BaseRandomForestBinaryClassifier(BaseEstimator, ClassifierMixin):
         hyperparams["n_jobs"] = NUM_CPU
         hyperparams["random_state"] = self.random_state
         hyperparams["class_weight"] = "balanced_subsample"
-        print(
+        logger.info(
             f"Best hyperparameters: {hyperparams}, Inner hyperparameter AUROC: {score}"
         )
         scores = []
@@ -278,31 +289,31 @@ class BaseRandomForestBinaryClassifier(BaseEstimator, ClassifierMixin):
                 fpr, tpr, _ = roc_curve(valid_y, valid_y_hat)
                 auroc = auc(fpr, tpr)
                 scores.append(auroc)
-                print(f"Internal AUROC CV-{r}: {auroc}")
+                logger.info(f"Internal AUROC CV-{r}: {auroc}")
                 y_cal += list(valid_y)
                 probs_cal += list(valid_y_hat)
-            print("Logistic regression for calibration...")
+            logger.debug("Fitting logistic regression for calibration...")
             self.platt_reg_ = LogisticRegression(solver="lbfgs", max_iter=1000)
             self.platt_reg_.fit(np.array(probs_cal).reshape(-1, 1), y_cal)
-            print("Logistic regression fit done.")
+            logger.info("Logistic regression fit done.")
             self.mean_score_ = np.mean(scores)
             self.std_score_ = np.std(scores)
-            print(f"Average AUROC: {self.mean_score_}")
+            logger.info(f"Average AUROC: {self.mean_score_}")
         else:
-            print("Skipping cross-validation since the cross-validation splits are 0")
+            logger.debug("Skipping cross-validation since the cross-validation splits are 0")
             self.mean_score_ = None
             self.std_score_ = None
         self.model_ = RandomForestClassifier(**hyperparams)
         self.model_.fit(X, y)
         if self.num_splits == 0:
-            print(
+            logger.debug(
                 "Logistic regression for calibration... (interpret probabilities with caution!)"
             )
             probs_cal = self.model_.predict_proba(X)[:, 1]
             y_cal = y
             self.platt_reg_ = LogisticRegression(C=1e-6, solver="lbfgs", max_iter=1000)
             self.platt_reg_.fit(np.array(probs_cal).reshape(-1, 1), y_cal)
-            print("Logistic regression fit done.")
+            logger.info("Logistic regression fit done.")
         return self
 
     def _fit_no_pca(self, X, y):
@@ -313,7 +324,7 @@ class BaseRandomForestBinaryClassifier(BaseEstimator, ClassifierMixin):
         hyperparams["n_jobs"] = NUM_CPU
         hyperparams["random_state"] = self.random_state
         hyperparams["class_weight"] = "balanced_subsample"
-        print(
+        logger.info(
             f"Best hyperparameters: {hyperparams}, Inner hyperparameter AUROC: {score}"
         )
         scores = []
@@ -334,31 +345,31 @@ class BaseRandomForestBinaryClassifier(BaseEstimator, ClassifierMixin):
                 fpr, tpr, _ = roc_curve(valid_y, valid_y_hat)
                 auroc = auc(fpr, tpr)
                 scores.append(auroc)
-                print(f"Internal AUROC CV-{r}: {auroc}")
+                logger.info(f"Internal AUROC CV-{r}: {auroc}")
                 y_cal += list(valid_y)
                 probs_cal += list(valid_y_hat)
-            print("Logistic regression for calibration...")
+            logger.debug("Fitting Logistic regression for calibration...")
             self.platt_reg_ = LogisticRegressionCV(solver="lbfgs", max_iter=1000, n_jobs=NUM_CPU)
             self.platt_reg_.fit(np.array(probs_cal).reshape(-1, 1), y_cal)
-            print("Calibration based on logistic regression fit done.")
+            logger.info("Calibration based on logistic regression fit done.")
             self.mean_score_ = np.mean(scores)
             self.std_score_ = np.std(scores)
-            print(f"Average AUROC: {self.mean_score_}")
+            logger.info(f"Average AUROC based on the PCA: {self.mean_score_}")
         else:
-            print("Skipping cross-validation since the cross-validation splits are 0")
+            logger.debug("Skipping cross-validation since the cross-validation splits are 0")
             self.mean_score_ = None
             self.std_score_ = None
         self.model_ = RandomForestClassifier(**hyperparams)
         self.model_.fit(X, y)
         if self.num_splits == 0:
-            print(
+            logger.debug(
                 "Logistic regression for calibration... (interpret probabilities with caution!)"
             )
             probs_cal = self.model_.predict_proba(X)[:, 1]
             y_cal = y
             self.platt_reg_ = LogisticRegression(C=1e-6, solver="lbfgs", max_iter=1000)
             self.platt_reg_.fit(np.array(probs_cal).reshape(-1, 1), y_cal)
-            print("Logistic regression fit done.")
+            logger.info("Logistic regression fit done.")
         return self
 
     def fit(self, X, y):
@@ -508,7 +519,7 @@ class LazyRandomForestBinaryClassifier(object):
                 min_samples=self.min_samples,
                 min_positive_proportion=self.min_positive_proportion,
             ).decide()
-            print("Decided to use max samples:", self.max_samples)
+            logger.debug(f"Decided to use max samples: {self.max_samples}")
         if self.min_seen_across_partitions is None:
             theoretical_min = su.get_theoretical_min_seen(y, self.max_samples)
             min_seen_across_partitions = max(1, theoretical_min)
@@ -540,7 +551,7 @@ class LazyRandomForestBinaryClassifier(object):
             reducer_ = self._fit_feature_reducer(X_sampled, y_sampled)
             for red in reducer_:
                 X_sampled = red.transform(X_sampled)
-            print(
+            logger.debug(
                 f"Fitting model on {len(idxs)} samples, positive samples: {np.sum(y_sampled)}, negative samples: {len(y_sampled) - np.sum(y_sampled)}, number of features {X_sampled.shape[1]}"
             )
             if self.pca is None:
@@ -549,7 +560,7 @@ class LazyRandomForestBinaryClassifier(object):
                     y_sampled,
                     max_positive_proportion=self.max_positive_proportion,
                 ).decide()
-                print("PCA decision:", pca)
+                logger.debug(f"[bold cyan]PCA decision[/]: {pca}")
                 pca_decisions += [pca]
                 if len(pca_decisions) > 3:
                     self.pca = max(set(pca_decisions), key=pca_decisions.count)
@@ -564,14 +575,14 @@ class LazyRandomForestBinaryClassifier(object):
                 random_state=self.random_state,
             )
             model.fit(X_sampled, y_sampled)
-            print("Model fitted.")
+            logger.info("The model successfully fitted.")
             reducers += [reducer_]
             models += [model]
         self.reducers = reducers
         self.models = models
         t1 = time.time()
         self.fit_time = t1 - t0
-        print(f"Fitting completed in {self.fit_time:.2f} seconds.")
+        logger.info(f"Fitting completed in {self.fit_time:.2f} seconds.")
         return self
 
     def predict(self, X=None, h5_file=None, h5_idxs=None, chunk_size=1000):
@@ -587,11 +598,10 @@ class LazyRandomForestBinaryClassifier(object):
             raise Exception("No models fitted yet.")
         y_hat = []
         for reducer, model in zip(self.reducers, self.models):
-            print(reducer, model)
             if h5_file is None:
                 n = X.shape[0]
                 y_hat_ = []
-                for X_chunk in tqdm(
+                for X_chunk in track_chunks(
                     su.chunk_matrix(X, chunk_size), desc="Predicting chunks..."
                 ):
                     for red in reducer:
@@ -600,7 +610,7 @@ class LazyRandomForestBinaryClassifier(object):
             else:
                 n = len(h5_idxs)
                 y_hat_ = []
-                for X_chunk in tqdm(
+                for X_chunk in track_chunks(
                     su.chunk_h5_file(h5_file, h5_idxs, chunk_size),
                     desc="Predicting chunks...",
                 ):
@@ -617,9 +627,9 @@ class LazyRandomForestBinaryClassifier(object):
 
     def save_model(self, model_dir: str):
         if os.path.exists(model_dir):
-            print(f"Model directory already exists: {model_dir}, deleting it...")
+            logger.debug(f"Model directory already exists: {model_dir}, deleting it...")
             shutil.rmtree(model_dir)
-        print(f"Creating model directory: {model_dir}")
+        logger.debug(f"Creating model directory: {model_dir}")
         os.makedirs(model_dir, exist_ok=True)
         if self.models is None:
             raise Exception("No models fitted yet.")
@@ -629,9 +639,9 @@ class LazyRandomForestBinaryClassifier(object):
             partition_dir = os.path.join(model_dir, f"partition_{suffix}")
             os.makedirs(partition_dir, exist_ok=True)
             reducer_path = os.path.join(partition_dir, "reducer.joblib")
-            print(f"Saving reducer to {reducer_path}")
+            logger.debug(f"Saving reducer to {reducer_path}")
             joblib.dump(reducer, reducer_path)
-            print(f"Saving model to {partition_dir}")
+            logger.debug(f"Saving model to {partition_dir}")
             model.save_model(partition_dir)
             partition_idx += 1
         metadata = {
@@ -672,9 +682,9 @@ class LazyRandomForestBinaryClassifier(object):
             suffix = str(i).zfill(3)
             partition_dir = os.path.join(model_dir, f"partition_{suffix}")
             reducer_path = os.path.join(partition_dir, "reducer.joblib")
-            print(f"Loading reducer from {reducer_path}")
+            logger.debug(f"Loading reducer from {reducer_path}")
             reducer = joblib.load(reducer_path)
-            print(f"Loading model from {partition_dir}")
+            logger.debug(f"Loading model from {partition_dir}")
             model = BaseRandomForestBinaryClassifier.load_model(partition_dir)
             obj.reducers += [reducer]
             obj.models += [model]

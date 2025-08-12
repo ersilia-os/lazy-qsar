@@ -3,12 +3,13 @@ import collections
 import random
 import h5py
 import numpy as np
-from tqdm import tqdm
 import time
 from sklearn.model_selection import KFold, StratifiedKFold
 from scipy.stats import binom
 from .io import InputUtils
 from .evaluators import QuickAUCEstimator
+from .logging import logger
+from .progress import track_chunks
 
 
 class BinaryClassifierSamplingUtils(object):
@@ -47,7 +48,7 @@ class BinaryClassifierSamplingUtils(object):
         prob_stay_unseen_per_round = 1 - (m / n)
         if prob_stay_unseen_per_round <= 0:
             return 1
-        print(
+        logger.info(
             f"Probability of not seeing a sample in one round: {prob_stay_unseen_per_round}"
         )
         rounds = math.log(prob_not_seen) / math.log(prob_stay_unseen_per_round)
@@ -150,10 +151,10 @@ class BinaryClassifierSamplingUtils(object):
         n_pos_original = int(n_pos)
         n_tot_original = int(n_tot)
         n_neg_original = n_tot_original - n_pos_original
-        print(
+        logger.info(
             f"Original positive samples: {n_pos_original}, total samples: {n_tot_original}"
         )
-        print("Maximum samples:", max_samples)
+        logger.info(f"Maximum samples: {max_samples}")
         if n_tot <= max_samples:
             pos_prop = n_pos / n_tot
             if pos_prop < min_positive_proportion:
@@ -246,13 +247,13 @@ class BinaryClassifierSamplingUtils(object):
         n_tot = len(y)
         n_pos = len(pos_idxs)
         n_neg = len(neg_idxs)
-        print(
+        logger.debug(
             f"Total samples: {n_tot}, positive samples: {n_pos}, negative samples: {n_neg}"
         )
-        print(
+        logger.debug(
             f"Maximum samples per partition: {max_samples}, minimum samples per partition: {min_samples}"
         )
-        print(f"Positive proportion: {n_pos / n_tot:.2f}")
+        logger.info(f"Positive proportion: {n_pos / n_tot:.2f}")
         n_pos_samples, n_tot_samples = self._get_number_of_positives_and_total(
             n_pos=n_pos,
             n_tot=n_tot,
@@ -264,7 +265,7 @@ class BinaryClassifierSamplingUtils(object):
             force_max_positive_proportion_at_partition=force_max_positive_proportion_at_partition,
         )
         n_neg_samples = n_tot_samples - n_pos_samples
-        print(
+        logger.debug(
             f"Sampling {n_pos_samples} positive and {n_neg_samples} negative samples from {n_tot_samples} total samples."
         )
         effective_sampling_rounds = 1000
@@ -273,7 +274,7 @@ class BinaryClassifierSamplingUtils(object):
         patience = 0
         current_size = 0
         max_patience = 10
-        for i in tqdm(range(effective_sampling_rounds)):
+        for i in track_chunks(range(effective_sampling_rounds), desc="Computing sample partition indices"):
             pos_idxs_sampled = self.random_sample(pos_idxs, n_pos_samples, all_idxs)
             neg_idxs_sampled = self.random_sample(neg_idxs, n_neg_samples, all_idxs)
             sampled_idxs = pos_idxs_sampled + neg_idxs_sampled
@@ -300,13 +301,13 @@ class BinaryClassifierSamplingUtils(object):
                 if v < min_seen_across_partitions * 3:
                     is_done = False
             if is_done:
-                print(
+                logger.info(
                     f"All indices seen at least {min_seen_across_partitions} times. Stopping sampling."
                 )
                 break
         idxs_matrix = np.array(idxs_list_of_lists, dtype=int)
         idxs_matrix = np.unique(idxs_list_of_lists, axis=0)
-        print(f"Unique sampled indices matrix shape: {idxs_matrix.shape}")
+        logger.info(f"Unique sampled indices matrix shape: {idxs_matrix.shape}")
         auc_estimate_timeout = 60
         if h5_file:
             with h5py.File(h5_file, "r") as f:
@@ -319,7 +320,7 @@ class BinaryClassifierSamplingUtils(object):
                     raise Exception("HDF5 does not contain a values key")
                 auc_estimates = []
                 t0 = time.time()
-                for i in tqdm(range(idxs_matrix.shape[0])):
+                for i in track_chunks(range(idxs_matrix.shape[0]), desc="Computing sample partition indices"):
                     t1 = time.time()
                     if t1 - t0 > auc_estimate_timeout:
                         if len(auc_estimates) > 0:
@@ -339,7 +340,7 @@ class BinaryClassifierSamplingUtils(object):
         else:
             auc_estimates = []
             t0 = time.time()
-            for i in tqdm(range(idxs_matrix.shape[0])):
+            for i in track_chunks(range(idxs_matrix.shape[0]), desc="Computing sample partition indices"):
                 t1 = time.time()
                 if t1 - t0 > 60:
                     if len(auc_estimates) > auc_estimate_timeout:
@@ -376,14 +377,14 @@ class BinaryClassifierSamplingUtils(object):
             idxs_matrix_[i, :] = idxs_matrix[row_idx, :]
         idxs_matrix = idxs_matrix_[:]
         idxs_matrix = self.remove_redundancy_of_sampled_matrix(idxs_matrix)
-        print(f"Indices matrix shape after redundancy removal: {idxs_matrix.shape}")
+        logger.info(f"Indices matrix shape after redundancy removal: {idxs_matrix.shape}")
         self.idxs_matrix_report(idxs_matrix, y)
         for i in range(idxs_matrix.shape[0]):
             idxs = [int(x) for x in idxs_matrix[i, :]]
             yield idxs
 
     def idxs_matrix_report(self, idxs_matrix, y):
-        print(
+        logger.info(
             f"Original positive negative balance: positive {np.sum(y)}, negative {len(y) - np.sum(y)}"
         )
         n = idxs_matrix.shape[0]
@@ -395,7 +396,7 @@ class BinaryClassifierSamplingUtils(object):
             neg = len(idxs) - pos
             n_pos += pos
             n_neg += neg
-        print(f"Avg positive samples: {n_pos / n}, avg negative samples: {n_neg / n}")
+        logger.info(f"Avg positive samples: {n_pos / n}, avg negative samples: {n_neg / n}")
 
 
 class KFolder(object):

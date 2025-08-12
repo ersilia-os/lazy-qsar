@@ -5,12 +5,7 @@ from tqdm import tqdm
 from rdkit import Chem
 from rdkit.Chem import rdFingerprintGenerator
 from .chemeleon_descriptor import CheMeleonFingerprint
-
-import logging
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
+from ..utils.logging import logger
 
 class ChemeleonDescriptor(object):
 

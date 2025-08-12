@@ -2,7 +2,7 @@ import os
 import h5py
 import numpy as np
 import psutil
-
+from .logging import logger
 
 class InputUtils(object):
     def __init__(self):
@@ -65,7 +65,7 @@ class InputUtils(object):
                 size_gb = size_bytes / (1024**3)
         mem = psutil.virtual_memory()
         available_gb = mem.available / (1024**3)
-        print(
+        logger.info(
             f"Available memory: {available_gb:.2f} GB, H5 file size: {size_gb:.2f} GB"
         )
         if available_gb > size_gb * 1.5:
@@ -86,7 +86,7 @@ class InputUtils(object):
                         raise Exception("HDF5 does not contain a values key")
                     h5_idxs = [i for i in range(f[values_key].shape[0])]
             if not force_on_disk and self.is_load_full_h5_file(h5_file):
-                print("Loading full h5 file into memory...")
+                logger.debug("Loading full h5 file into memory...")
                 with h5py.File(h5_file, "r") as f:
                     keys = f.keys()
                     if "values" in keys:

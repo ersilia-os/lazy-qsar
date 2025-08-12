@@ -20,7 +20,7 @@ from ..utils.deciders import StratifiedKFolder
 from ..utils.deciders import BinaryClassifierPCADecider
 from ..utils.deciders import BinaryClassifierMaxSamplesDecider
 from ..utils.optimizers import PCADimensionsOptimizerForBinaryClassification
-
+from ..utils.logging import logger
 
 NUM_CPU = max(1, int(multiprocessing.cpu_count() / 2))
 
@@ -46,7 +46,7 @@ class BaseLogisticRegressionBinaryClassifier(BaseEstimator, ClassifierMixin):
         self.mean_score_ = None
 
     def _fit_pca(self, X, y):
-        print("Optimizing PCA dimensions...")
+        logger.debug("Optimizing PCA dimensions...")
         results = PCADimensionsOptimizerForBinaryClassification(
             num_splits=self.num_splits,
             test_size=self.test_size,
@@ -61,11 +61,11 @@ class BaseLogisticRegressionBinaryClassifier(BaseEstimator, ClassifierMixin):
         hyperparams["n_jobs"] = NUM_CPU
         hyperparams["random_state"] = self.random_state
         hyperparams["class_weight"] = "balanced"
-        print(
+        logger.debug(
             f"Best hyperparameters: {hyperparams}, Inner hyperparameter AUROC: {score}"
         )
 
-        print("Fitting on data with shape:", X.shape)
+        logger.debug("Fitting on data with shape:", X.shape)
         scores = []
         num_splits = self.num_splits
         test_size = self.test_size
@@ -95,6 +95,7 @@ class BaseLogisticRegressionBinaryClassifier(BaseEstimator, ClassifierMixin):
                         cv=cv,
                         random_state=self.random_state,
                         scoring="roc_auc",
+                        max_iter=1000
                     ),
                 ),
             ]
@@ -110,10 +111,10 @@ class BaseLogisticRegressionBinaryClassifier(BaseEstimator, ClassifierMixin):
                 scores = list(scores_dict.values())[0].mean(axis=1)
         else:
             scores = []
-        print("Logistic regression fit done.")
+        logger.debug("Logistic regression fit done.")
         self.mean_score_ = np.mean(scores)
         self.std_score_ = np.std(scores)
-        print(f"Average AUROC: {self.mean_score_}")
+        logger.debug(f"Average AUROC: {self.mean_score_}")
 
         best_C = model_cv.C_[0]
         solver = model_cv.solver
@@ -167,6 +168,7 @@ class BaseLogisticRegressionBinaryClassifier(BaseEstimator, ClassifierMixin):
             cv=cv,
             random_state=self.random_state,
             scoring="roc_auc",
+            max_iter=1000
         )
         model_cv.fit(X, y)
         if hasattr(model_cv, "scores_"):
@@ -177,10 +179,10 @@ class BaseLogisticRegressionBinaryClassifier(BaseEstimator, ClassifierMixin):
                 scores = list(scores_dict.values())[0].mean(axis=1)
         else:
             scores = []
-        print("Logistic regression fit done.")
+        logger.debug("Logistic regression fit done.")
         self.mean_score_ = np.mean(scores)
         self.std_score_ = np.std(scores)
-        print(f"Average AUROC: {self.mean_score_}")
+        logger.debug(f"Average AUROC: {self.mean_score_}")
 
         best_C = model_cv.C_[0]
         solver = model_cv.solver
@@ -331,7 +333,7 @@ class LazyLogisticRegressionBinaryClassifier(object):
                 min_samples=self.min_samples,
                 min_positive_proportion=self.min_positive_proportion,
             ).decide()
-            print("Decided to use max samples:", self.max_samples)
+            logger.debug(f"Decided to use max samples: {self.max_samples}")
         if self.min_seen_across_partitions is None:
             theoretical_min = su.get_theoretical_min_seen(y, self.max_samples)
             min_seen_across_partitions = max(1, theoretical_min)
@@ -371,7 +373,7 @@ class LazyLogisticRegressionBinaryClassifier(object):
             reducer_ = self._fit_feature_reducer(X_sampled, y_sampled)
             for red in reducer_:
                 X_sampled = red.transform(X_sampled)
-            print(
+            logger.debug(
                 f"Fitting model on {len(idxs)} samples, positive samples: {np.sum(y_sampled)}, negative samples: {len(y_sampled) - np.sum(y_sampled)}, number of features {X_sampled.shape[1]}"
             )
             if self.pca is None:
@@ -380,7 +382,7 @@ class LazyLogisticRegressionBinaryClassifier(object):
                     y_sampled,
                     max_positive_proportion=self.max_positive_proportion,
                 ).decide()
-                print("PCA decision:", pca)
+                logger.debug("PCA decision:", pca)
                 pca_decisions += [pca]
                 if len(pca_decisions) > 3:
                     self.pca = max(set(pca_decisions), key=pca_decisions.count)
@@ -395,14 +397,14 @@ class LazyLogisticRegressionBinaryClassifier(object):
                 max_positive_proportion=self.max_positive_proportion,
             )
             model.fit(X_sampled, y_sampled)
-            print("Model fitted.")
+            logger.info("Model has successfull been fitted!")
             reducers += [reducer_]
             models += [model]
         self.reducers = reducers
         self.models = models
         t1 = time.time()
         self.fit_time = t1 - t0
-        print(f"Fitting completed in {self.fit_time:.2f} seconds.")
+        logger.info(f"Fitting completed in {self.fit_time:.2f} seconds.")
         return self
 
     def predict(self, X=None, h5_file=None, h5_idxs=None, chunk_size=1000):
@@ -447,9 +449,9 @@ class LazyLogisticRegressionBinaryClassifier(object):
 
     def save_model(self, model_dir: str):
         if os.path.exists(model_dir):
-            print(f"Model directory already exists: {model_dir}, deleting it...")
+            logger.debug(f"Model directory already exists: {model_dir}, deleting it...")
             shutil.rmtree(model_dir)
-        print(f"Creating model directory: {model_dir}")
+        logger.debug(f"Creating model directory: {model_dir}")
         os.makedirs(model_dir, exist_ok=True)
         if self.models is None:
             raise Exception("No models fitted yet.")
@@ -459,9 +461,9 @@ class LazyLogisticRegressionBinaryClassifier(object):
             partition_dir = os.path.join(model_dir, f"partition_{suffix}")
             os.makedirs(partition_dir, exist_ok=True)
             reducer_path = os.path.join(partition_dir, "reducer.joblib")
-            print(f"Saving reducer to {reducer_path}")
+            logger.debug(f"Saving reducer to {reducer_path}")
             joblib.dump(reducer, reducer_path)
-            print(f"Saving model to {partition_dir}")
+            logger.debug(f"Saving model to {partition_dir}")
             model.save_model(partition_dir)
             partition_idx += 1
         metadata = {
@@ -500,9 +502,9 @@ class LazyLogisticRegressionBinaryClassifier(object):
             suffix = str(i).zfill(3)
             partition_dir = os.path.join(model_dir, f"partition_{suffix}")
             reducer_path = os.path.join(partition_dir, "reducer.joblib")
-            print(f"Loading reducer from {reducer_path}")
+            logger.debug(f"Loading reducer from {reducer_path}")
             reducer = joblib.load(reducer_path)
-            print(f"Loading model from {partition_dir}")
+            logger.debug(f"Loading model from {partition_dir}")
             model = BaseLogisticRegressionBinaryClassifier.load_model(partition_dir)
             obj.reducers += [reducer]
             obj.models += [model]
