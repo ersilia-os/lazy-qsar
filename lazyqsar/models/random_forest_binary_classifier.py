@@ -516,7 +516,7 @@ class LazyRandomForestBinaryClassifier(object):
                 min_samples=self.min_samples,
                 min_positive_proportion=self.min_positive_proportion,
             ).decide()
-            logger.debug(f"Decided to use max samples: {self.max_samples}")
+            logger.info(f"Decided to use max samples of size {self.max_samples}")
         if self.min_seen_across_partitions is None:
             theoretical_min = su.get_theoretical_min_seen(y, self.max_samples)
             min_seen_across_partitions = max(1, theoretical_min)
@@ -557,7 +557,7 @@ class LazyRandomForestBinaryClassifier(object):
                     y_sampled,
                     max_positive_proportion=self.max_positive_proportion,
                 ).decide()
-                logger.debug(f"[bold cyan]PCA decision[/]: {pca}")
+                logger.info(f"[bold cyan]Can PCA be used[/]: {pca}")
                 pca_decisions += [pca]
                 if len(pca_decisions) > 3:
                     self.pca = max(set(pca_decisions), key=pca_decisions.count)

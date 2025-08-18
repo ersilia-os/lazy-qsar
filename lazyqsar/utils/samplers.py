@@ -247,13 +247,16 @@ class BinaryClassifierSamplingUtils(object):
         n_tot = len(y)
         n_pos = len(pos_idxs)
         n_neg = len(neg_idxs)
-        logger.debug(
-            f"Total samples: {n_tot}, positive samples: {n_pos}, negative samples: {n_neg}"
+        logger.info(
+            "Dataset summary:\n"
+            f"  • Total samples: {n_tot}\n"
+            f"  • Positive samples: {n_pos}\n"
+            f"  • Negative samples: {n_neg}\n"
+            f"  • Max samples per partition: {max_samples}\n"
+            f"  • Min samples per partition: {min_samples}\n"
+            f"  • Positive proportion: {n_pos / n_tot:.2f}"
         )
-        logger.debug(
-            f"Maximum samples per partition: {max_samples}, minimum samples per partition: {min_samples}"
-        )
-        logger.info(f"Positive proportion: {n_pos / n_tot:.2f}")
+
         n_pos_samples, n_tot_samples = self._get_number_of_positives_and_total(
             n_pos=n_pos,
             n_tot=n_tot,
