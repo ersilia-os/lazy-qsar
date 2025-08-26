@@ -81,7 +81,7 @@ class LazyBinaryQSAR(object):
             f"Transforming inputs to feature descriptors using {self.descriptor_type}"
         )
         descriptors = self.descriptor.transform(smiles_list)
-        logger.array(f"Performing predictions on input feature of shape: {descriptors.shape}")
+        logger.info(f"Performing predictions on input feature of shape: {descriptors.shape}")
         y_hat_1 = np.array(self.model.predict(descriptors))
         y_hat_0 = 1 - y_hat_1
         return np.array([y_hat_0, y_hat_1]).T
