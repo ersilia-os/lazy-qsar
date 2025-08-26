@@ -69,15 +69,15 @@ class LazyBinaryQSAR(object):
         y = np.array(y, dtype=int)
         logger.debug(f"Fitting inputs to feature descriptors using {self.descriptor_type}")
         self.descriptor.fit(smiles_list)
-        logger.array(
+        logger.debug(
             f"Transforming inputs to feature descriptors using {self.descriptor_type}"
         )
         descriptors = self.descriptor.transform(smiles_list)
-        logger.array(f"Performing predictions on input feature of shape: {descriptors.shape}")
+        logger.debug(f"Performing predictions on input feature of shape: {descriptors.shape}")
         self.model.fit(X=descriptors, y=y)
 
     def predict_proba(self, smiles_list):
-        logger.array(
+        logger.debug(
             f"Transforming inputs to feature descriptors using {self.descriptor_type}"
         )
         descriptors = self.descriptor.transform(smiles_list)
