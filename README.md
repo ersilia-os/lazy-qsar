@@ -17,12 +17,6 @@ To use the default Lazy QSAR descriptors, please install them:
 python -m pip install -e .[descriptors]
 ```
 
-And to use a light version of [TuneTables](https://github.com/ersilia-os/TuneTablesLight/tree/main) as an estimator, also please install it:
-```bash
-pip install "lazyqsar[tune-tables]"
-pip install "git+https://github.com/ersilia-os/TuneTablesLight.git@main"
-```
-
 ## Binary Classification
 
 LazyQSAR's binary classifier can run either with default descriptors or with custom descriptors passed by the user.
