@@ -363,6 +363,8 @@ class FeatureSelectorForBinaryClassification(object):
         return obj
     
 
+from .. import ONNX_TARGET_OPSET, ONNX_IR_VERSION
+
 def convert_to_onnx(model_dir: str):
     """
     Converts a feature selector model to ONNX format and saves it to the specified directory.
@@ -389,16 +391,24 @@ def convert_to_onnx(model_dir: str):
     feature_selector = FeatureSelectorForBinaryClassification.load(model_dir)
     if feature_selector.selector is None:
         logger.info("No feature selection was performed. Skipping ONNX conversion.")
-        return
+        return None
     
     selector = feature_selector.selector
     initial_type = [("input", FloatTensorType([None, selector.scores_.shape[0]]))]
-    onnx_model = skl2onnx.convert_sklearn(selector, initial_types=initial_type)
+    onnx_model = skl2onnx.convert_sklearn(
+        selector,
+        initial_types=initial_type,
+        target_opset=ONNX_TARGET_OPSET
+    )
     
     onnx_model.graph.name = "FeatureSelector"
+    onnx_model.ir_version = ONNX_IR_VERSION
+    onnx_model.graph.output[0].name = "output"
+    onnx_model.graph.input[0].name = "input"
 
     onnx_path = os.path.join(model_dir, "feature_selector.onnx")
     with open(onnx_path, "wb") as f:
         f.write(onnx_model.SerializeToString())
 
     logger.info(f"Feature selector converted to ONNX and saved at {onnx_path}.")
+    return onnx_path

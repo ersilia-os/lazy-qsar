@@ -203,6 +203,8 @@ class Preprocessor(object):
         obj.scaler = joblib.load(scaler_path)
         return obj
 
+from .. import ONNX_TARGET_OPSET, ONNX_IR_VERSION
+
 
 def convert_to_onnx(model_dir: str):
     """
@@ -216,7 +218,8 @@ def convert_to_onnx(model_dir: str):
     
     Returns
     -------
-    None
+    str
+        Path to the saved ONNX file.
     
     Raises
     ------
@@ -227,14 +230,33 @@ def convert_to_onnx(model_dir: str):
     """
     preprocessor = Preprocessor.load(model_dir)
     pipe = Pipeline([
-        ("varthr", preprocessor.var_thr),
-        ("imputer", preprocessor.imputer),
-        ("scaler", preprocessor.scaler),
+        ("varthr_preprocessor", preprocessor.var_thr),
+        ("imputer_preprocessor", preprocessor.imputer),
+        ("scaler_preprocessor", preprocessor.scaler),
     ])
-    initial_type = [("float_input", FloatTensorType([None, preprocessor.input_dim]))]
-    onnx_model = convert_sklearn(pipe, initial_types=initial_type)
+    initial_type = [("input_preprocessor", FloatTensorType([None, preprocessor.input_dim]))]
+    onnx_model = convert_sklearn(
+        pipe,
+        initial_types=initial_type,
+        target_opset={'': ONNX_TARGET_OPSET, 'ai.onnx.ml': ONNX_TARGET_OPSET},
+    )
     
+    onnx_model.ir_version = ONNX_IR_VERSION
     onnx_model.graph.name = "Preprocessor"
+    onnx_model.graph.output[0].name = "output_preprocessor"
+    onnx_model.graph.input[0].name = "input_preprocessor"
+    
+    for i, node in enumerate(onnx_model.graph.node):
+        if "preprocessor" not in node.name:
+            if node.name:
+                node.name = node.name + "_preprocessor"
+            else:
+                node.name = "node_{0}_preprocessor".format(i)
 
-    with open(os.path.join(model_dir, "preprocessor.onnx"), "wb") as f:
+    onnx_path = os.path.join(model_dir, "preprocessor.onnx")
+    logger.info(f"Saving the preprocessor ONNX model to {onnx_path}")
+
+    with open(onnx_path, "wb") as f:
         f.write(onnx_model.SerializeToString())
+
+    return onnx_path

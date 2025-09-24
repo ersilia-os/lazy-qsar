@@ -38,8 +38,8 @@ import numpy as np
 X = X_train
 y = np.array(y_train)
 
-from lazyqsar.latent_variables.binary_classification.sparse import get_reducer_parameters
-from lazyqsar.latent_variables.binary_classification.sparse import SparseDimReducerBinaryClassification
+from lazyqsar.latent_variables.old.sparse import get_reducer_parameters
+from lazyqsar.latent_variables.old.sparse import SparseDimReducerBinaryClassification
 red_params = get_reducer_parameters(X, y)
 
 reducer = SparseDimReducerBinaryClassification(

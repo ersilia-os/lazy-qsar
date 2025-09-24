@@ -29,6 +29,16 @@ from ..utils.samplers import BinaryClassifierSamplingUtils as SamplingUtils
 
 from ..utils.logging import logger
 
+from ..preprocess.preprocess import convert_to_onnx as convert_preprocess_to_onnx
+from ..feature_selection.feature_selection_for_binary_classification import convert_to_onnx as convert_fs_to_onnx
+from ..latent_variables.latent_variables_for_binary_classification import convert_to_onnx as convert_latent_to_onnx
+from ..heads.head_for_binary_classification import convert_to_onnx as convert_head_to_onnx
+
+import onnx
+from onnx import compose
+from onnx import helper
+
+
 NUM_CPU = max(1, int(multiprocessing.cpu_count() / 2))
 
 
@@ -309,7 +319,6 @@ class LazyDefaultBinaryClassifier(object):
             raise Exception("Metadata file not found.")
         with open(metadata_path, "r") as f:
             metadata = json.load(f)
-        obj.reduce = metadata.get("reduce", None)
         obj.random_state = metadata.get("random_state", None)
         obj.base_test_size = metadata.get("base_test_size", None)
         obj.base_num_splits = metadata.get("base_num_splits", None)
@@ -326,3 +335,80 @@ class LazyDefaultBinaryClassifier(object):
             model = BaseDefaultBinaryClassifier.load(partition_dir)
             obj.models += [model]
         return obj
+    
+
+def _onnx_logger(model):
+    logger.info("**** ONNX Model Details ****")
+    logger.info(f"ONNX model: {model.graph.name} (ir_version: {model.ir_version}, opset_import: {[opset.version for opset in model.opset_import]})")
+    for node in model.graph.node:
+        logger.info(f"  Node: {node.name} (op_type: {node.op_type}, inputs: {node.input}, outputs: {node.output})")
+        for input_tensor in model.graph.input:
+            dims = [d.dim_value if (d.HasField("dim_value")) else "?" for d in input_tensor.type.tensor_type.shape.dim]
+            logger.info(f"    Input: {input_tensor.name}, shape: {dims}")
+        for output_tensor in model.graph.output:
+            dims = [d.dim_value if (d.HasField("dim_value")) else "?" for d in output_tensor.type.tensor_type.shape.dim]
+            logger.info(f"    Output: {output_tensor.name}, shape: {dims}")
+    logger.info("****************************")
+
+
+def _check_graph_outputs(model):
+    g = model.graph
+    produced = set()
+    for node in g.node:
+        produced.update(node.output)
+    declared_outputs = [out.name for out in g.output]
+    logger.info(f"Model: {g.name}")
+    for out in declared_outputs:
+        if out in produced:
+            logger.info(f"✅ Graph output '{out}' is produced by a node.")
+            return True
+        else:
+            logger.info(f"❌ Graph output '{out}' is NOT produced by any node!")
+            return False
+
+def _fix_graph_outputs_with_identity(model):
+    if _check_graph_outputs(model):
+        return model
+    g = model.graph
+    suffix = g.name.lower()
+    if g.output:
+        out_name = g.output[0].name
+        last_node_out = g.node[-1].output[0]
+        if out_name != last_node_out:
+            identity_node = helper.make_node(
+                "Identity",
+                inputs=[last_node_out],
+                outputs=[out_name],
+                name=f"OutputFixer_{suffix}"
+            )
+            g.node.append(identity_node)
+    return model
+
+
+def convert_partition_to_onnx(partition_dir: str):
+    model_dir = partition_dir
+    preprocess_onnx_file = convert_preprocess_to_onnx(model_dir)
+    fs_onnx_file = convert_fs_to_onnx(model_dir)
+    latent_onnx_file = convert_latent_to_onnx(model_dir)
+    head_onnx_file = convert_head_to_onnx(model_dir)
+    onnx_graphs = []
+    for onnx_file in [preprocess_onnx_file, fs_onnx_file, latent_onnx_file, head_onnx_file]:
+        if onnx_file is None:
+            continue
+        onnx_graphs += [onnx.load(onnx_file)]
+
+    onnx_graphs = [_fix_graph_outputs_with_identity(m) for m in onnx_graphs]
+
+    for onnx_model in onnx_graphs:
+        _onnx_logger(onnx_model)
+
+    model = onnx_graphs[0]
+    for next_model in onnx_graphs[1:]:
+        logger.debug(next_model.graph.name)
+        src_output = model.graph.output[0].name
+        dst_input = next_model.graph.input[0].name
+        model = compose.merge_models(model, next_model, io_map=[(src_output, dst_input)])
+
+    final_onnx_path = os.path.join(partition_dir, "lazy_model.onnx")
+    onnx.save(model, final_onnx_path)
+    return final_onnx_path

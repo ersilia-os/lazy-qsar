@@ -11,3 +11,7 @@ convert_to_onnx("test_dev_2/partition_000")
 
 from lazyqsar.heads.head_for_binary_classification import convert_to_onnx
 convert_to_onnx("test_dev_2/partition_000")
+
+from lazyqsar.models.default_binary_classifier import convert_partition_to_onnx
+
+convert_partition_to_onnx("test_dev_2/partition_000")

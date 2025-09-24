@@ -34,7 +34,8 @@ dependencies = [
     "psutil==7.0.0",
     "flaml==2.3.5",
     "rich==14.1.0",
-    "loguru"
+    "skl2onnx==1.19.1",
+    "loguru==0.7.3"
 ]
 
 [project.optional-dependencies]

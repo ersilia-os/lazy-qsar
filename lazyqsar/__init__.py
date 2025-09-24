@@ -8,3 +8,8 @@ except Exception as e:
     logger.warning(e)
     pass
 from .agnostic import LazyBinaryClassifier
+
+
+# Default variables
+ONNX_TARGET_OPSET = 16
+ONNX_IR_VERSION = 10

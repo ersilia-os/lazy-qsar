@@ -11,13 +11,15 @@ from sklearn.linear_model import SGDClassifier
 from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import StratifiedShuffleSplit
 
+import onnx
+
 from ..utils.logging import logger
 
 
 MIN_FEATURES = 4
 MAX_FEATURES = 1024
 
-NUM_TRIALS = 1
+NUM_TRIALS = 1 # TODO increase to 20 or 50 later
 
 
 def decide_if_latent_variables(X, y):
@@ -152,7 +154,7 @@ def find_latent_params(X, y):
     - The function performs stratified shuffle split cross-validation to ensure balanced class distribution 
       in training and testing sets.
     """
-    do_latent = True
+    do_latent = False
     #do_latent = decide_if_latent_variables(X, y) # TODO uncomment
     if not do_latent:
         logger.info("Skipping latent variable generation.")
@@ -412,6 +414,8 @@ class PCALayer(nn.Module):
         return torch.matmul(x, self.components.T)
 
 
+from .. import ONNX_TARGET_OPSET, ONNX_IR_VERSION
+
 def convert_to_onnx(model_dir: str):
     """
     Converts a latent variable reducer model to ONNX format and saves it to the specified directory.
@@ -441,17 +445,26 @@ def convert_to_onnx(model_dir: str):
     latent_reducer = LatentVariablesForBinaryClassification.load(model_dir)
     if latent_reducer.reducer is None:
         logger.info("No latent reducer to convert to ONNX.")
-        return
+        return None
     reducer = latent_reducer.reducer
     logger.info("Converting latent reducer to ONNX via PyTorch")
     pca_layer = PCALayer(reducer.components_, reducer.mean_)
     dummy_input = torch.randn(1, reducer.mean_.shape[0], dtype=torch.float32)
+    onnx_path = os.path.join(model_dir, "latent_reducer.onnx")
     torch.onnx.export(
         pca_layer,
         dummy_input,
-        os.path.join(model_dir, "latent_reducer.onnx"),
+        onnx_path,
         input_names=["input"],
         output_names=["output"],
         dynamic_axes={"input": {0: "batch_size"}, "output": {0: "batch_size"}},
+        opset_version=ONNX_TARGET_OPSET,
     )
-    logger.info(f"Latent reducer ONNX model saved to {os.path.join(model_dir, 'latent_reducer.onnx')}")
+    # Set IR version using onnx package
+    model = onnx.load(onnx_path)
+    model.graph.name = "LatentReducer"
+    model.ir_version = ONNX_IR_VERSION
+    onnx.save(model, onnx_path)
+    logger.info(f"Set ONNX IR version to {ONNX_IR_VERSION} for {onnx_path}")
+    logger.info(f"Latent reducer ONNX model saved to {onnx_path}")
+    return onnx_path

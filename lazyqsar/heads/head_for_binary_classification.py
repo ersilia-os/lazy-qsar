@@ -8,7 +8,8 @@ import torch.optim as optim
 from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import roc_auc_score
-import onnx
+
+from ..utils.logging import logger
 
 
 NUM_TRIALS = 1  # TODO: increase
@@ -230,6 +231,9 @@ class HeadForBinaryClassification(BaseEstimator, ClassifierMixin):
         return obj
     
 
+from .. import ONNX_TARGET_OPSET, ONNX_IR_VERSION
+import onnx
+
 def convert_to_onnx(model_dir: str):
     """
     Convert a binary classification model to ONNX format.
@@ -241,6 +245,11 @@ def convert_to_onnx(model_dir: str):
     ----------
     model_dir : str
         The directory where the model is stored and where the ONNX file will be saved.
+
+    Returns
+    -------
+    str
+        The path to the saved ONNX model file.
     
     Notes
     -----
@@ -257,7 +266,16 @@ def convert_to_onnx(model_dir: str):
     model.eval()
     dummy_input = torch.randn(1, head.input_dim)
     onnx_path = os.path.join(model_dir, "head.onnx")
-    torch.onnx.export(model, dummy_input, onnx_path, 
-                      input_names=['input'], output_names=['output'],
-                      dynamic_axes={'input': {0: 'batch_size'}, 'output': {0: 'batch_size'}})
-    print(f"ONNX model saved to {onnx_path}")
+    torch.onnx.export(
+        model, dummy_input, onnx_path,
+        input_names=['input_head'], 
+        output_names=['output_head'],
+        dynamic_axes={'input_head': {0: 'batch_size'}, 'output_head': {0: 'batch_size'}},
+        opset_version=ONNX_TARGET_OPSET,
+    )
+    onnx_model = onnx.load(onnx_path)
+    onnx_model.graph.name = "Head"
+    onnx_model.ir_version = ONNX_IR_VERSION
+    onnx.save(onnx_model, onnx_path)
+    logger.info(f"ONNX model saved to {onnx_path} with updated IR version {ONNX_IR_VERSION}")
+    return onnx_path
