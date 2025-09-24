@@ -4,6 +4,7 @@ import numpy as np
 import psutil
 from .logging import logger
 
+
 class InputUtils(object):
     def __init__(self):
         pass

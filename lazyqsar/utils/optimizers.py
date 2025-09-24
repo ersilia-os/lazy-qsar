@@ -1,10 +1,11 @@
 import numpy as np
 import multiprocessing
-from sklearn.linear_model import LogisticRegressionCV
+from sklearn.linear_model import SGDClassifier
 from sklearn.pipeline import Pipeline
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import cross_val_score
+from sklearn.feature_selection import SelectKBest, f_classif
 import optuna
 from .logging import logger
 from .samplers import StratifiedKFolder
@@ -48,14 +49,16 @@ class PCADimensionsOptimizerForBinaryClassification(object):
                 ("pca", PCA(n_components=n_components)),
                 (
                     "clf",
-                    LogisticRegressionCV(
+                        SGDClassifier(
+                        loss="log_loss",
+                        alpha=1e-4,
                         class_weight="balanced",
-                        refit=False,
-                        n_jobs=NUM_CPU,
-                        cv=cv,
-                        random_state=self.random_state,
-                        scoring="roc_auc",
-                        max_iter=1000
+                        max_iter=1000,
+                        tol=1e-3,
+                        early_stopping=True,
+                        validation_fraction=0.2,
+                        n_iter_no_change=5,
+                        random_state=42
                     ),
                 ),
             ]
@@ -86,6 +89,13 @@ class PCADimensionsOptimizerForBinaryClassification(object):
 
         study.enqueue_trial(hyperparams)
 
+        best_score = -np.inf
+        trials_without_improvement = 0
+        improvement_threshold = 0.01
+        patience = max(5, self.num_trials // 5)
+        early_stopping = False
+        baseline_score_for_patience = best_score
+
         logger.debug(
             f"Starting hyperparameter search "
             f"sampler=TPESampler(seed={self.random_state}), direction=maximize, "
@@ -93,12 +103,6 @@ class PCADimensionsOptimizerForBinaryClassification(object):
             f"early_stop(threshold={improvement_threshold:.3f}, patience={patience}), "
             f"data=X{getattr(X, 'shape', None)}, y_len={len(y)}"
         )
-        best_score = -np.inf
-        trials_without_improvement = 0
-        improvement_threshold = 0.01
-        patience = max(5, self.num_trials // 5)
-        early_stopping = False
-        baseline_score_for_patience = best_score
 
         def objective_with_custom_early_stop(trial):
             nonlocal \
@@ -149,3 +153,4 @@ class PCADimensionsOptimizerForBinaryClassification(object):
                 "best_value": None,
             }
         return self._suggest_best_params(X, y)
+

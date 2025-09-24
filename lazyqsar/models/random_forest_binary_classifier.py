@@ -9,7 +9,6 @@ import shutil
 import sklearn
 import h5py
 import multiprocessing
-import logging
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.decomposition import PCA
@@ -185,7 +184,6 @@ class BaseRandomForestBinaryClassifier(BaseEstimator, ClassifierMixin):
         )
 
         study.enqueue_trial(hyperparams)
-
 
         best_score = -np.inf
         trials_without_improvement = 0

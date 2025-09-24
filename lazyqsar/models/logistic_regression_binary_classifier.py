@@ -65,7 +65,7 @@ class BaseLogisticRegressionBinaryClassifier(BaseEstimator, ClassifierMixin):
             f"Best hyperparameters: {hyperparams}, Inner hyperparameter AUROC: {score}"
         )
 
-        logger.debug("Fitting on data with shape:", X.shape)
+        logger.debug("Fitting on data with shape: {0}".format(X.shape))
         scores = []
         num_splits = self.num_splits
         test_size = self.test_size
@@ -382,7 +382,7 @@ class LazyLogisticRegressionBinaryClassifier(object):
                     y_sampled,
                     max_positive_proportion=self.max_positive_proportion,
                 ).decide()
-                logger.debug("PCA decision:", pca)
+                logger.debug("PCA decision: {0}".format(pca))
                 pca_decisions += [pca]
                 if len(pca_decisions) > 3:
                     self.pca = max(set(pca_decisions), key=pca_decisions.count)

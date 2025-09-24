@@ -4,7 +4,7 @@ import multiprocessing
 import time
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
-from sklearn.linear_model import LogisticRegressionCV
+from sklearn.linear_model import SGDClassifier
 from sklearn.model_selection import StratifiedKFold
 from sklearn.metrics import roc_auc_score
 
@@ -32,9 +32,20 @@ class BinaryClassifierPCADecider(object):
         self.components_to_evaluate = [0.9]
         self.num_evidence_in_folds = 3
 
+    def _is_sparse(self):
+        tot = self.X.shape[0] * self.X.shape[1]
+        num_zeros = np.sum(self.X == 0)
+        sparsity = num_zeros / tot
+        if sparsity > 0.5:
+            return True
+        return False
+
     def decide(self):
+        if self._is_sparse():
+            self.logger.info("Data is sparse, a reducer must be used")
+            return True
         start_time = time.time()
-        self.logger.debug("Deciding whether to use PCA for the binary classifier.")
+        self.logger.debug("Deciding whether to use reducer for the binary classifier.")
         cv = StratifiedKFolder(
             test_size=0.25,
             n_splits=5,
@@ -44,7 +55,7 @@ class BinaryClassifierPCADecider(object):
         )
         pca_scores = []
         for n_components in track_chunks(
-            self.components_to_evaluate, desc="Evaluating PCA components"
+            self.components_to_evaluate, desc="Evaluating reducer components"
         ):
             current_time = time.time()
             if current_time - start_time > self.timeout:
@@ -63,8 +74,16 @@ class BinaryClassifierPCADecider(object):
                 X_train_pca = scaler.fit_transform(X_train_pca)
                 X_test_pca = scaler.transform(X_test_pca)
                 cv = StratifiedKFold()
-                model = LogisticRegressionCV(
-                    cv=cv, class_weight="balanced", n_jobs=NUM_CPU, max_iter=1000
+                model = SGDClassifier(
+                    loss="log_loss",
+                    alpha=1e-4,
+                    class_weight="balanced",
+                    max_iter=1000,
+                    tol=1e-3,
+                    early_stopping=True,
+                    validation_fraction=0.2,
+                    n_iter_no_change=5,
+                    random_state=42
                 )
                 model.fit(X_train_pca, y_train)
                 y_pred = model.predict_proba(X_test_pca)[:, 1]
@@ -77,7 +96,7 @@ class BinaryClassifierPCADecider(object):
 
         scores = []
         for train_idxs, test_idxs in track_chunks(
-            cv.split(self.X, self.y), desc="Evaluating without PCA"
+            cv.split(self.X, self.y), desc="Evaluating without reducer"
         ):
             current_time = time.time()
             if current_time - start_time > self.timeout:
@@ -85,7 +104,17 @@ class BinaryClassifierPCADecider(object):
             X_train = self.X[train_idxs]
             y_train = self.y[train_idxs]
             X_test = self.X[test_idxs]
-            model = LogisticRegressionCV(cv=cv, class_weight="balanced", n_jobs=NUM_CPU, max_iter=1000)
+            model = SGDClassifier(
+                loss="log_loss",
+                alpha=1e-4,
+                class_weight="balanced",
+                max_iter=1000,
+                tol=1e-3,
+                early_stopping=True,
+                validation_fraction=0.2,
+                n_iter_no_change=5,
+                random_state=42
+            )
             model.fit(X_train, y_train)
             y_pred = model.predict_proba(X_test)[:, 1]
             auc_score = roc_auc_score(self.y[test_idxs], y_pred)
@@ -94,7 +123,7 @@ class BinaryClassifierPCADecider(object):
                 break
         no_pca_score = np.mean(scores)
 
-        self.logger.info(f"Best PCA score: {pca_score:.4f}, No PCA score: {no_pca_score:.4f}")
+        self.logger.info(f"Best reducer score: {pca_score:.4f}, No reducer score: {no_pca_score:.4f}")
 
         if abs(pca_score - no_pca_score) < 0.02:
             return True
