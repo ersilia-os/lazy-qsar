@@ -455,15 +455,20 @@ def convert_to_onnx(model_dir: str):
         pca_layer,
         dummy_input,
         onnx_path,
-        input_names=["input"],
-        output_names=["output"],
-        dynamic_axes={"input": {0: "batch_size"}, "output": {0: "batch_size"}},
+        input_names=["input_latent"],
+        output_names=["output_latent"],
+        dynamic_axes={"input_latent": {0: "batch_size"}, "output_latent": {0: "batch_size"}},
         opset_version=ONNX_TARGET_OPSET,
     )
-    # Set IR version using onnx package
+    
     model = onnx.load(onnx_path)
     model.graph.name = "LatentReducer"
     model.ir_version = ONNX_IR_VERSION
+
+    for node in model.graph.node:
+        if node.name:
+            node.name = f"{node.name}_latent"
+
     onnx.save(model, onnx_path)
     logger.info(f"Set ONNX IR version to {ONNX_IR_VERSION} for {onnx_path}")
     logger.info(f"Latent reducer ONNX model saved to {onnx_path}")

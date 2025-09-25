@@ -39,8 +39,6 @@ from onnx import compose
 from onnx import helper
 
 
-NUM_CPU = max(1, int(multiprocessing.cpu_count() / 2))
-
 
 class BaseDefaultBinaryClassifier(BaseEstimator, ClassifierMixin):
 

@@ -4,5 +4,5 @@
     "base_test_size": 0.25,
     "base_num_splits": 3,
     "base_num_trials": 5,
-    "fit_time": 6.674358606338501
+    "fit_time": 7.096766948699951
 }
