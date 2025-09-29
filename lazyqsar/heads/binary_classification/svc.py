@@ -111,3 +111,83 @@ class Head(BaseEstimator, ClassifierMixin):
         head.score = metadata["score"]
         head.input_dim = metadata["input_dim"]
         return head
+    
+
+import os
+import numpy as np
+import onnx
+from onnx import helper, numpy_helper, TensorProto
+
+from ...default import ONNX_TARGET_OPSET, ONNX_IR_VERSION
+
+def convert_to_onnx(name: str, model_dir: str):
+    """
+    Build an ONNX graph implementing:
+        p = sigmoid( a * (w^T x + b) + c )
+    where (w, b) come from LinearSVC and (a, c) from the Platt calibrator (LogisticRegression).
+    The final graph is:  Gemm(X, W2, b2) -> Sigmoid -> Reshape([-1])  (1D probs)
+
+    Saves: {model_dir}/{name}.onnx
+    Returns the path.
+    """
+    # ---- Load trained head ----
+    head = Head.load(name, model_dir)
+    svc = head.model
+    cal = head.calibrator
+    input_dim = int(head.input_dim)
+
+    # ---- Extract parameters and collapse them ----
+    # Linear SVC decision: z = w^T x + b
+    w = np.asarray(svc.coef_, dtype=np.float32).reshape(1, input_dim)     # (1, F)
+    b = np.asarray(svc.intercept_, dtype=np.float32).reshape(1,)          # (1,)
+
+    # Platt: p = sigmoid(a * z + c), a,c from logistic regression on z
+    a = float(np.asarray(cal.coef_, dtype=np.float32).reshape(1,1)[0, 0]) # scalar
+    c = float(np.asarray(cal.intercept_, dtype=np.float32).reshape(1,)[0])# scalar
+
+    # Collapse to a single affine: p = sigmoid( (a*w)^T x + (a*b + c) )
+    W2 = (a * w).T.astype(np.float32)         # (F, 1) for Gemm B
+    b2 = np.array([a * b[0] + c], dtype=np.float32)  # (1,)
+
+    # ---- Build ONNX graph ----
+    X = helper.make_tensor_value_info(f"input_{name}", TensorProto.FLOAT, ["batch_size", input_dim])
+    Y = helper.make_tensor_value_info(f"output_{name}", TensorProto.FLOAT, ["batch_size"])  # 1D output
+
+    W_init = numpy_helper.from_array(W2, name=f"W2_{name}")     # (F,1)
+    b_init = numpy_helper.from_array(b2, name=f"b2_{name}")     # (1,)
+    shape1d_init = numpy_helper.from_array(np.array([-1], dtype=np.int64), name=f"shape_out_{name}")
+
+    # Gemm: Y2D = X @ W2 + b2   -> shape (N,1)
+    gemm = helper.make_node(
+        f"Gemm_{name}", inputs=[f"input_{name}", f"W2_{name}", f"b2_{name}"], outputs=[f"affine_out_{name}"],
+        name=f"{name}_LinearSVC_Gemm", alpha=1.0, beta=1.0, transA=0, transB=0
+    )
+    sigm = helper.make_node(
+        f"Sigmoid_{name}", inputs=[f"affine_out_{name}"], outputs=[f"probs_2d_{name}"], name=f"{name}_Sigmoid"
+    )
+    # Flatten to 1D: (N,1) -> (N,)
+    reshape = helper.make_node(
+        f"Reshape_{name}", inputs=[f"probs_2d_{name}", f"shape_out_{name}"], outputs=[f"output_{name}"], name=f"{name}_Reshape1D"
+    )
+
+    graph = helper.make_graph(
+        nodes=[gemm, sigm, reshape],
+        name=f"{name}",
+        inputs=[X],
+        outputs=[Y],
+        initializer=[W_init, b_init, shape1d_init],
+    )
+
+    # Model container (set opset + IR version if you have global constants defined)
+    opset_version = ONNX_TARGET_OPSET
+    model = helper.make_model(graph, producer_name=f"{name}", opset_imports=[
+        helper.make_operatorsetid("", opset_version)
+    ])
+    ir_version = ONNX_IR_VERSION
+    model.ir_version = ir_version
+
+    # Sanity check and save
+    onnx.checker.check_model(model)
+    onnx_path = os.path.join(model_dir, f"{name}.onnx")
+    onnx.save(model, onnx_path)
+    return onnx_path
