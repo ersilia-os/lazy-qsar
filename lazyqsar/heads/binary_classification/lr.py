@@ -16,6 +16,11 @@ from sklearn.model_selection import StratifiedKFold
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score
 
+import onnx
+from onnx import helper, numpy_helper, TensorProto
+
+from ... import ONNX_TARGET_OPSET, ONNX_IR_VERSION
+
 N_TRIALS = 10 # TODO increase for better tuning
 
 
@@ -130,3 +135,109 @@ class Head(BaseEstimator, ClassifierMixin):
         head.input_dim = metadata["input_dim"]
         return head
     
+
+def convert_to_onnx(name: str, model_dir: str) -> str:
+    """
+    Convert the LogisticRegression head + probability calibrator (LogisticRegression on p)
+    into a single ONNX graph that outputs a 1D vector of calibrated probabilities: [batch_size].
+    Saves to {model_dir}/{name}.onnx and returns the path.
+    """
+    # ---- Load trained artifacts ----
+    head = Head.load(name, model_dir)
+    base = head.model            # sklearn.linear_model.LogisticRegression
+    cal  = head.calibrator       # sklearn.linear_model.LogisticRegression (trained on p)
+    input_dim = int(head.input_dim)
+
+    # ---- Extract parameters ----
+    # Base LR: p1 = sigmoid(w^T x + b)
+    w = np.asarray(base.coef_, dtype=np.float32).reshape(1, input_dim)   # (1, F)
+    b = np.asarray(base.intercept_, dtype=np.float32).reshape(1,)        # (1,)
+    # Calibrator LR on probability p1: p2 = sigmoid(a * p1 + c)
+    a = float(np.asarray(cal.coef_, dtype=np.float32).reshape(1, 1)[0, 0])  # scalar
+    c = float(np.asarray(cal.intercept_, dtype=np.float32).reshape(1,)[0])  # scalar
+
+    # Prepare ONNX initializers
+    # For Gemm: Y = X @ W^T + b  -> use B = W2 with shape (F,1)
+    W2 = w.T.astype(np.float32)                         # (F, 1)
+    b2 = np.array([b[0]], dtype=np.float32)            # (1,)
+    a_arr = np.array([a], dtype=np.float32)            # (1,) for broadcast Mul
+    c_arr = np.array([c], dtype=np.float32)            # (1,) for broadcast Add
+    flat_shape = np.array([-1], dtype=np.int64)        # Reshape to 1D
+
+    W_init = numpy_helper.from_array(W2, name=f"{name}_W")
+    b_init = numpy_helper.from_array(b2, name=f"{name}_b")
+    a_init = numpy_helper.from_array(a_arr, name=f"{name}_a")
+    c_init = numpy_helper.from_array(c_arr, name=f"{name}_c")
+    shape_init = numpy_helper.from_array(flat_shape, name=f"{name}_shape1d")
+
+    # ---- I/O value infos ----
+    X = helper.make_tensor_value_info(f"input_{name}", TensorProto.FLOAT, ["batch_size", input_dim])
+    Y = helper.make_tensor_value_info(f"output_{name}", TensorProto.FLOAT, ["batch_size"])  # 1D probs
+
+    # ---- Graph nodes ----
+    # Base LR: Gemm(X, W, b) -> Sigmoid -> p1 (N,1)
+    gemm = helper.make_node(
+        f"Gemm_{name}",
+        inputs=[f"input_{name}", f"{name}_W", f"{name}_b"],
+        outputs=[f"{name}_z1"],
+        name=f"{name}_Gemm",
+        alpha=1.0, beta=1.0, transA=0, transB=0
+    )
+    sig1 = helper.make_node(
+        f"Sigmoid_{name}",
+        inputs=[f"{name}_z1"],
+        outputs=[f"{name}_p1"],
+        name=f"{name}_Sigmoid1",
+    )
+
+    # Calibrator on probability: Mul(p1, a) -> Add(..., c) -> Sigmoid -> p2 (N,1)
+    mul = helper.make_node(
+        f"Mul_{name}",
+        inputs=[f"{name}_p1", f"{name}_a"],
+        outputs=[f"{name}_s1"],
+        name=f"{name}_Calib_Mul",
+    )
+    add = helper.make_node(
+        f"Add_{name}",
+        inputs=[f"{name}_s1", f"{name}_c"],
+        outputs=[f"{name}_z2"],
+        name=f"{name}_Calib_Add",
+    )
+    sig2 = helper.make_node(
+        f"Sigmoid_{name}",
+        inputs=[f"{name}_z2"],
+        outputs=[f"{name}_p2"],
+        name=f"{name}_Sigmoid2",
+    )
+
+    # Flatten to 1D: (N,1) -> (N,)
+    reshape = helper.make_node(
+        f"Reshape_{name}",
+        inputs=[f"{name}_p2", f"{name}_shape1d"],
+        outputs=["output_head"],
+        name=f"{name}_Reshape1D",
+    )
+
+    graph = helper.make_graph(
+        nodes=[gemm, sig1, mul, add, sig2, reshape],
+        name=f"{name}",
+        inputs=[X],
+        outputs=[Y],
+        initializer=[W_init, b_init, a_init, c_init, shape_init],
+    )
+
+    # ---- Model container ----
+    opset_version = ONNX_TARGET_OPSET
+    model = helper.make_model(
+        graph,
+        producer_name=f"{name}",
+        opset_imports=[helper.make_operatorsetid("", opset_version)],
+    )
+    ir_version = ONNX_IR_VERSION
+    model.ir_version = ir_version
+
+    # ---- Validate & save ----
+    onnx.checker.check_model(model)
+    onnx_path = os.path.join(model_dir, f"{name}.onnx")
+    onnx.save(model, onnx_path)
+    return onnx_path

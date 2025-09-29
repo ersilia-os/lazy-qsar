@@ -9,6 +9,11 @@ from sklearn.model_selection import StratifiedKFold
 from sklearn.metrics import roc_auc_score
 from sklearn.base import BaseEstimator, ClassifierMixin
 
+import onnx
+from onnx import helper, numpy_helper, TensorProto
+
+from ... import ONNX_TARGET_OPSET, ONNX_IR_VERSION
+
 from ...utils.logging import logger
 
 N_TRIALS = 10 # TODO increase for better tuning
@@ -112,13 +117,6 @@ class Head(BaseEstimator, ClassifierMixin):
         head.input_dim = metadata["input_dim"]
         return head
     
-
-import os
-import numpy as np
-import onnx
-from onnx import helper, numpy_helper, TensorProto
-
-from ...default import ONNX_TARGET_OPSET, ONNX_IR_VERSION
 
 def convert_to_onnx(name: str, model_dir: str):
     """
