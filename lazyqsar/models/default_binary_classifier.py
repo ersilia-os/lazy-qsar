@@ -1,5 +1,4 @@
 import json
-import multiprocessing
 import os
 import random
 import shutil
@@ -358,28 +357,28 @@ def _check_graph_outputs(model):
     logger.info(f"Model: {g.name}")
     for out in declared_outputs:
         if out in produced:
-            logger.info(f"✅ Graph output '{out}' is produced by a node.")
+            logger.info(f"Graph output '{out}' is produced by a node.")
             return True
         else:
-            logger.info(f"❌ Graph output '{out}' is NOT produced by any node!")
+            logger.info(f"Graph output '{out}' is not produced by any node")
             return False
 
 def _fix_graph_outputs_with_identity(model):
-    if _check_graph_outputs(model):
-        return model
     g = model.graph
-    suffix = g.name.lower()
-    if g.output:
-        out_name = g.output[0].name
-        last_node_out = g.node[-1].output[0]
-        if out_name != last_node_out:
-            identity_node = helper.make_node(
-                "Identity",
-                inputs=[last_node_out],
-                outputs=[out_name],
-                name=f"OutputFixer_{suffix}"
-            )
-            g.node.append(identity_node)
+    name = g.name.lower()
+    if not _check_graph_outputs(model):
+        if g.output:
+            out_name = g.output[0].name
+            last_node_out = g.node[-1].output[0]
+            if out_name != last_node_out:
+                identity_node = helper.make_node(
+                    "Identity",
+                    inputs=[last_node_out],
+                    outputs=[out_name],
+                    name=f"OutputFixer_{name}"
+                )
+                g.node.append(identity_node)
+    model = compose.add_prefix(model, f"{name}_")
     return model
 
 

@@ -12,12 +12,13 @@ import skl2onnx
 from skl2onnx.common.data_types import FloatTensorType
 
 from ..utils.logging import logger
+from .. import ONNX_TARGET_OPSET, ONNX_IR_VERSION
 
 
 MIN_FEATURES = 4
 MAX_FEATURES = 2048
 
-NUM_TRIALS = 50
+NUM_TRIALS = 1
 
 
 def decide_if_feature_selection(X, y):
@@ -363,7 +364,6 @@ class FeatureSelectorForBinaryClassification(object):
         return obj
     
 
-from .. import ONNX_TARGET_OPSET, ONNX_IR_VERSION
 
 def convert_to_onnx(model_dir: str):
     """
@@ -394,7 +394,7 @@ def convert_to_onnx(model_dir: str):
         return None
     
     selector = feature_selector.selector
-    initial_type = [("input", FloatTensorType([None, selector.scores_.shape[0]]))]
+    initial_type = [("input_selector", FloatTensorType([None, selector.scores_.shape[0]]))]
     onnx_model = skl2onnx.convert_sklearn(
         selector,
         initial_types=initial_type,
@@ -403,8 +403,12 @@ def convert_to_onnx(model_dir: str):
     
     onnx_model.graph.name = "FeatureSelector"
     onnx_model.ir_version = ONNX_IR_VERSION
-    onnx_model.graph.output[0].name = "output"
-    onnx_model.graph.input[0].name = "input"
+    onnx_model.graph.input[0].name = "input_selector"
+    onnx_model.graph.output[0].name = "output_selector"
+
+    for node in onnx_model.graph.node:
+        if "_selector" not in node.name:
+            node.name = f"{node.name}_selector"
 
     onnx_path = os.path.join(model_dir, "feature_selector.onnx")
     with open(onnx_path, "wb") as f:

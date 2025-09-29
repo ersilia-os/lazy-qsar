@@ -14,6 +14,7 @@ from sklearn.model_selection import StratifiedShuffleSplit
 import onnx
 
 from ..utils.logging import logger
+from .. import ONNX_TARGET_OPSET, ONNX_IR_VERSION
 
 
 MIN_FEATURES = 4
@@ -154,7 +155,7 @@ def find_latent_params(X, y):
     - The function performs stratified shuffle split cross-validation to ensure balanced class distribution 
       in training and testing sets.
     """
-    do_latent = False
+    do_latent = True
     #do_latent = decide_if_latent_variables(X, y) # TODO uncomment
     if not do_latent:
         logger.info("Skipping latent variable generation.")
@@ -403,6 +404,7 @@ class LatentVariablesForBinaryClassification(object):
         return obj
 
 
+"""
 class PCALayer(nn.Module):
     def __init__(self, components, mean):
         super().__init__()
@@ -412,9 +414,31 @@ class PCALayer(nn.Module):
     def forward(self, x):
         x = x - self.mean
         return torch.matmul(x, self.components.T)
+"""
+    
 
+class PCALayer(nn.Module):
+    def __init__(self, components, mean):
+        super().__init__()
+        n_features = components.shape[1]
+        n_components = components.shape[0]
 
-from .. import ONNX_TARGET_OPSET, ONNX_IR_VERSION
+        # Linear projection = PCA
+        self.encoder = nn.Linear(n_features, n_components, bias=False)
+        self.encoder.weight.data = torch.tensor(components, dtype=torch.float32)
+
+        # Mean for centering
+        self.register_buffer("mean", torch.tensor(mean, dtype=torch.float32))
+
+        # Freeze weights
+        for p in self.parameters():
+            p.requires_grad = False
+
+    def forward(self, x):
+        x = x - self.mean
+        z = self.encoder(x)
+        return z
+
 
 def convert_to_onnx(model_dir: str):
     """

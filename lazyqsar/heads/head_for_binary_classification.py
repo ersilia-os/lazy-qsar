@@ -11,6 +11,9 @@ from sklearn.metrics import roc_auc_score
 
 from ..utils.logging import logger
 
+from .. import ONNX_TARGET_OPSET, ONNX_IR_VERSION
+import onnx
+
 
 NUM_TRIALS = 1  # TODO: increase
 NUM_EPOCHS = 30
@@ -230,9 +233,6 @@ class HeadForBinaryClassification(BaseEstimator, ClassifierMixin):
 
         return obj
     
-
-from .. import ONNX_TARGET_OPSET, ONNX_IR_VERSION
-import onnx
 
 def convert_to_onnx(model_dir: str):
     """
