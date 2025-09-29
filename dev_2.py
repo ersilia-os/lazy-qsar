@@ -50,6 +50,8 @@ clf = LazyDefaultBinaryClassifier.load("test_dev_2")
 
 y_pred = clf.predict(X=X_test)
 
+print(y_pred)
+
 from sklearn.metrics import roc_auc_score
 print("ROC-AUC: ", roc_auc_score(y_test, y_pred))
 

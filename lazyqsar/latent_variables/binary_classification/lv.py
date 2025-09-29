@@ -10,17 +10,19 @@ from sklearn.decomposition import PCA
 from sklearn.linear_model import SGDClassifier
 from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import StratifiedShuffleSplit
+from sklearn.random_projection import SparseRandomProjection
 
 import onnx
+from onnx import helper
+from onnx import numpy_helper
 
-from ..utils.logging import logger
-from .. import ONNX_TARGET_OPSET, ONNX_IR_VERSION
+from ...utils.logging import logger
+from ... import ONNX_TARGET_OPSET, ONNX_IR_VERSION
 
 
+NUM_TRIALS = 10 # TODO increase to 20 or 50 later
 MIN_FEATURES = 4
-MAX_FEATURES = 1024
-
-NUM_TRIALS = 1 # TODO increase to 20 or 50 later
+MAX_FEATURES = 512
 
 
 def decide_if_latent_variables(X, y):
@@ -129,7 +131,7 @@ def decide_if_latent_variables(X, y):
     return False
 
 
-def find_latent_params(X, y):
+def find_params(X, y):
     """
     Optimize the number of latent components and regularization parameter for binary classification 
     using Principal Component Analysis (PCA) and Stochastic Gradient Descent Classifier (SGDClassifier).
@@ -238,13 +240,13 @@ def find_latent_params(X, y):
     logger.info(f"  Params: {study.best_params}")
     
     results = {
-        "n_components": study.best_params["n_components"]
+        "n_components": min(MAX_FEATURES, study.best_params["n_components"])
     }
 
     return results
 
 
-class LatentVariablesForBinaryClassification(object):
+class LatentVariables(object):
     """
     A class for reducing the dimensionality of data for binary classification tasks 
     using Principal Component Analysis (PCA).
@@ -257,13 +259,13 @@ class LatentVariablesForBinaryClassification(object):
     Methods
     -------
     fit(X, y=None)
-        Fits the PCA reducer to the input data.
+        Fits a reducer to the input data.
     transform(X, y=None)
-        Transforms the input data using the fitted PCA reducer.
+        Transforms the input data using the fitted reducer.
     save(model_dir: str)
-        Saves the PCA reducer and its metadata to the specified directory.
+        Saves the reducer and its metadata to the specified directory.
     load(model_dir: str)
-        Loads the PCA reducer and its metadata from the specified directory.
+        Loads the reducer and its metadata from the specified directory.
     """
 
     def __init__(self, n_components: int=None):
@@ -292,12 +294,13 @@ class LatentVariablesForBinaryClassification(object):
         self : object
             Returns the instance of the latent variable reducer.
         """
+        self.input_dim = X.shape[1]
         if self.n_components is None:
             self.reducer = None
             return self
         logger.info("Fitting latent reducer with {0} components...".format(self.n_components))
         n_components = min(self.n_components, X.shape[1])
-        self.reducer = PCA(n_components=n_components, random_state=42)
+        self.reducer = SparseRandomProjection(n_components=n_components, random_state=42)
         self.reducer.fit(X)
         return self
     
@@ -331,7 +334,7 @@ class LatentVariablesForBinaryClassification(object):
         X = self.reducer.transform(X)
         return X
     
-    def save(self, model_dir: str):
+    def save(self, name: str, model_dir: str):
         """
         Save the latent variable reducer to the specified directory.
 
@@ -354,15 +357,16 @@ class LatentVariablesForBinaryClassification(object):
             os.makedirs(model_dir)
         metadata = {
             "n_components": self.n_components,
+            "input_dim": self.input_dim
         }
-        meta_path = os.path.join(model_dir, "latent_reducer_metadata.json")
+        meta_path = os.path.join(model_dir, f"{name}_metadata.json")
         with open(meta_path, "w") as f:
             json.dump(metadata, f)
-        reducer_path = os.path.join(model_dir, "latent_reducer.joblib")
+        reducer_path = os.path.join(model_dir, f"{name}.joblib")
         joblib.dump(self.reducer, reducer_path)
 
     @classmethod
-    def load(cls, model_dir: str):
+    def load(cls, name: str, model_dir: str):
         """
         Load a latent variable reducer object from a specified directory.
 
@@ -391,109 +395,132 @@ class LatentVariablesForBinaryClassification(object):
         """
         if not os.path.exists(model_dir):
             raise FileNotFoundError(f"The directory {model_dir} does not exist.")
-        meta_path = os.path.join(model_dir, "latent_reducer_metadata.json")
+        meta_path = os.path.join(model_dir, f"{name}_metadata.json")
         if not os.path.exists(meta_path):
             raise FileNotFoundError(f"The metadata file {meta_path} does not exist in the directory {model_dir}.")
         with open(meta_path, "r") as f:
             metadata = json.load(f)
         obj = cls(n_components=metadata["n_components"])
-        reducer_path = os.path.join(model_dir, "latent_reducer.joblib")
+        obj.input_dim = metadata["input_dim"]
+        reducer_path = os.path.join(model_dir, f"{name}.joblib")
         if not os.path.exists(reducer_path):
             raise FileNotFoundError(f"The reducer file {reducer_path} does not exist in the directory {model_dir}.")
         obj.reducer = joblib.load(reducer_path)
         return obj
 
 
-"""
-class PCALayer(nn.Module):
-    def __init__(self, components, mean):
+class DenseProjectionLayer(nn.Module):
+    """Dense wrapper for sklearn SparseRandomProjection so ONNX export succeeds."""
+    def __init__(self, components):
         super().__init__()
-        self.register_buffer("components", torch.tensor(components, dtype=torch.float32))
-        self.register_buffer("mean", torch.tensor(mean, dtype=torch.float32))
-    
-    def forward(self, x):
-        x = x - self.mean
-        return torch.matmul(x, self.components.T)
-"""
-    
-
-class PCALayer(nn.Module):
-    def __init__(self, components, mean):
-        super().__init__()
-        n_features = components.shape[1]
-        n_components = components.shape[0]
-
-        # Linear projection = PCA
+        n_components, n_features = components.shape
         self.encoder = nn.Linear(n_features, n_components, bias=False)
         self.encoder.weight.data = torch.tensor(components, dtype=torch.float32)
-
-        # Mean for centering
-        self.register_buffer("mean", torch.tensor(mean, dtype=torch.float32))
-
-        # Freeze weights
         for p in self.parameters():
             p.requires_grad = False
 
     def forward(self, x):
-        x = x - self.mean
-        z = self.encoder(x)
-        return z
+        return self.encoder(x)
 
 
-def convert_to_onnx(model_dir: str):
+def convert_to_onnx(name: str, model_dir: str):
     """
-    Converts a latent variable reducer model to ONNX format and saves it to the specified directory.
-    This function loads a latent variable reducer model from the given directory, checks if the reducer exists, 
-    and converts it to an ONNX model. The ONNX model is then saved as "latent_reducer.onnx" in the same directory.
-    
-    Parameters
-    ----------
-    model_dir : str
-        The directory where the latent variable reducer model is stored and where the ONNX model will be saved.
-    
+    Converts a latent variable reducer for binary classification into an ONNX model 
+    with sparse storage. The function first exports a dense ONNX model and then patches 
+    it to replace the dense weight matrix with a sparse initializer.
+
+        Path to the directory containing the latent variable reducer model 
+        (`latent_reducer.joblib`).
+
     Returns
     -------
-    None
-        This function does not return any value. It saves the ONNX model to the specified directory.
-    
+    str
+        The file path to the generated sparse ONNX model.
+
+    Raises
+    ------
+    RuntimeError
+        If the latent reducer is not found in the specified directory, or if the 
+        projection matrix initializer cannot be located in the ONNX export.
+
     Notes
     -----
-    - If the latent variable reducer does not exist, the function logs a message and exits without performing any conversion.
-    - The ONNX model is created using PyTorch's `torch.onnx.export` function.
-    - The input and output tensors of the ONNX model are configured to support dynamic batch sizes.
-    
-    Examples
-    --------
-    >>> convert_to_onnx("/path/to/model_directory")
+    - The function assumes that the latent reducer is stored as a `LatentVariablesForBinaryClassification` 
+      object and that its `reducer` attribute contains a trained projection matrix.
+    - The ONNX model is first exported in dense format using PyTorch's `torch.onnx.export` 
+      and then modified to use sparse storage by replacing the dense initializer with a 
+      sparse tensor.
+    - The intermediate dense ONNX file is removed after the sparse ONNX model is created.
     """
-    latent_reducer = LatentVariablesForBinaryClassification.load(model_dir)
+    latent_reducer = LatentVariables.load(name, model_dir)
     if latent_reducer.reducer is None:
-        logger.info("No latent reducer to convert to ONNX.")
+        logger.info("No latent reducer found, skipping ONNX conversion.")
         return None
     reducer = latent_reducer.reducer
-    logger.info("Converting latent reducer to ONNX via PyTorch")
-    pca_layer = PCALayer(reducer.components_, reducer.mean_)
-    dummy_input = torch.randn(1, reducer.mean_.shape[0], dtype=torch.float32)
-    onnx_path = os.path.join(model_dir, "latent_reducer.onnx")
+    input_dim = latent_reducer.input_dim
+    opset_version = ONNX_TARGET_OPSET
+
+    logger.info("Converting latent reducer to ONNX with sparse storage")
+
+    components = reducer.components_.toarray()
+    model = DenseProjectionLayer(components)
+    dummy_input = torch.randn(1, input_dim, dtype=torch.float32)
+
+    dense_path = os.path.join(model_dir, f"{name}_dense.onnx")
     torch.onnx.export(
-        pca_layer,
+        model,
         dummy_input,
-        onnx_path,
+        dense_path,
         input_names=["input_latent"],
         output_names=["output_latent"],
-        dynamic_axes={"input_latent": {0: "batch_size"}, "output_latent": {0: "batch_size"}},
-        opset_version=ONNX_TARGET_OPSET,
+        dynamic_axes={
+            "input_latent": {0: "batch_size"},
+            "output_latent": {0: "batch_size"},
+        },
+        opset_version=opset_version,
     )
-    
-    model = onnx.load(onnx_path)
-    model.graph.name = "LatentReducer"
-    model.ir_version = ONNX_IR_VERSION
 
-    for node in model.graph.node:
+    model_onnx = onnx.load(dense_path)
+
+    dense_init = None
+    dense_array = None
+    for init in model_onnx.graph.initializer:
+        arr = numpy_helper.to_array(init)
+        if arr.ndim == 2:
+            dense_init = init
+            dense_array = arr
+            break
+    if dense_init is None:
+        raise RuntimeError("Could not find 2D projection matrix initializer in ONNX export")
+
+    nz_rows, nz_cols = np.nonzero(dense_array)
+    values = dense_array[nz_rows, nz_cols].astype(np.float32)
+    indices = np.stack([nz_rows, nz_cols], axis=1).astype(np.int64)
+
+    values_proto = numpy_helper.from_array(values)
+    indices_proto = numpy_helper.from_array(indices)
+
+    sparse_init = helper.make_sparse_tensor(
+        values=values_proto,
+        indices=indices_proto,
+        dims=dense_array.shape,
+    )
+
+    sparse_init.values.name = dense_init.name
+
+    model_onnx.graph.sparse_initializer.append(sparse_init)
+    model_onnx.graph.initializer.remove(dense_init)
+
+    model_onnx.ir_version = ONNX_IR_VERSION
+    model_onnx.graph.name = f"{name}"
+    for node in model_onnx.graph.node:
         if node.name:
-            node.name = f"{node.name}_latent"
+            node.name = f"{node.name}_{name}"
 
-    onnx.save(model, onnx_path)
-    logger.info(f"Set ONNX IR version to {ONNX_IR_VERSION} for {onnx_path}")
-    logger.info(f"Latent reducer ONNX model saved to {onnx_path}")
+    onnx_path = os.path.join(model_dir, f"{name}.onnx")
+    onnx.checker.check_model(model_onnx)
+    onnx.save(model_onnx, onnx_path)
+
+    os.remove(dense_path)
+
     return onnx_path

@@ -6,124 +6,228 @@ import time
 
 import h5py
 import numpy as np
-from sklearn.base import BaseEstimator, ClassifierMixin
 from tqdm import tqdm
+from sklearn.base import BaseEstimator, ClassifierMixin
 
-from ..feature_selection.feature_selection_for_binary_classification import (
-    FeatureSelectorForBinaryClassification,
-    find_feature_selector_params,
-)
-from ..heads.head_for_binary_classification import (
-    HeadForBinaryClassification,
-    find_head_params,
-)
-from ..latent_variables.latent_variables_for_binary_classification import (
-    LatentVariablesForBinaryClassification,
-    find_latent_params,
-)
-from ..preprocess.preprocess import Preprocessor, find_preprocessor_params
+from ..preprocess import prep
+from ..feature_selection.binary_classification import fs
+from ..latent_variables.binary_classification import lv
+from ..heads.binary_classification import mlp, lr, svc
+
 from ..utils.deciders import BinaryClassifierMaxSamplesDecider
 from ..utils.io import InputUtils
 from ..utils.samplers import BinaryClassifierSamplingUtils as SamplingUtils
 
 from ..utils.logging import logger
 
-from ..preprocess.preprocess import convert_to_onnx as convert_preprocess_to_onnx
-from ..feature_selection.feature_selection_for_binary_classification import convert_to_onnx as convert_fs_to_onnx
-from ..latent_variables.latent_variables_for_binary_classification import convert_to_onnx as convert_latent_to_onnx
-from ..heads.head_for_binary_classification import convert_to_onnx as convert_head_to_onnx
-
 import onnx
 from onnx import compose
 from onnx import helper
 
 
-
 class BaseDefaultBinaryClassifier(BaseEstimator, ClassifierMixin):
 
-    def __init__(self, preprocessor_params=None, feature_selector_params=None, latent_params=None, head_params=None):
-        self.preprocessor_params = preprocessor_params
-        self.feature_selector_params = feature_selector_params
-        self.latent_params = latent_params
-        self.head_params = head_params
+    def __init__(self, params: dict = None):
+        if params is None:
+            params = {}
+        logger.info("Initializing BaseDefaultBinaryClassifier...")
+        self.prep_params = params.get("prep", None)
+        self.fs_params = params.get("fs", None)
+        self.lv_params = params.get("lv", None)
+        self.lr_params = params.get("lr", None)
+        self.svc_params = params.get("svc", None)
+        self.fs_lr_params = params.get("fs_lr", None)
+        self.fs_svc_params = params.get("fs_svc", None)
+        self.lv_lr_params = params.get("lv_lr", None)
+        self.lv_svc_params = params.get("lv_svc", None)
+        self.lv_mlp_params = params.get("lv_mlp", None)
 
     def find_params(self, X, y):
-        if self.preprocessor_params is None:
+        if self.prep_params is None:
             logger.info("Finding preprocessor parameters...")
-            self.preprocessor_params = find_preprocessor_params(X)
-        X = Preprocessor(**self.preprocessor_params).fit(X).transform(X)
-        if self.feature_selector_params is None:
+            self.prep_params = prep.find_params(X)
+        X = prep.Preprocessor(**self.prep_params).fit(X).transform(X)
+        if self.fs_params is None:
             logger.info("Finding feature selector parameters...")
-            self.feature_selector_params = find_feature_selector_params(X, y)
-        X = FeatureSelectorForBinaryClassification(**self.feature_selector_params).fit(X, y).transform(X)
-        if self.latent_params is None:
+            self.fs_params = fs.find_params(X, y)
+        X_fs = fs.FeatureSelector(**self.fs_params).fit(X, y).transform(X)
+        if self.lv_params is None:
             logger.info("Finding latent variable parameters...")
-            self.latent_params = find_latent_params(X, y)
-        X = LatentVariablesForBinaryClassification(**self.latent_params).fit(X, y).transform(X)
-        if self.head_params is None:
-            logger.info("Finding head parameters...")
-            self.head_params = find_head_params(X, y)
-        logger.info("Found parameters:")
-        logger.info(f"Preprocessor params: {self.preprocessor_params}")
-        logger.info(f"Feature selector params: {self.feature_selector_params}")
-        logger.info(f"Latent params: {self.latent_params}")
-        logger.info(f"Head params: {self.head_params}")
+            self.lv_params = lv.find_params(X, y)
+        X_lv = lv.LatentVariables(**self.lv_params).fit(X, y).transform(X)
+        if self.lr_params is None:
+            logger.info("Finding raw head LR parameters...")
+            self.lr_params = lr.find_params(X, y)
+        if self.svc_params is None:
+            logger.info("Finding raw head SVC parameters...")
+            self.svc_params = svc.find_params(X, y)
+        if self.fs_lr_params is None:
+            logger.info("Finding feature selection with head LR parameters...")
+            self.fs_lr_params = lr.find_params(X_fs, y)
+        if self.fs_svc_params is None:
+            logger.info("Finding feature selection with head SVC parameters...")
+            self.fs_svc_params = svc.find_params(X_fs, y)
+        if self.lv_lr_params is None:
+            logger.info("Finding latent variables with head LR parameters...")
+            self.lv_lr_params = lr.find_params(X_lv, y)
+        if self.lv_svc_params is None:
+            logger.info("Finding latent variables with head SVC parameters...")
+            self.lv_svc_params = svc.find_params(X_lv, y)
+        if self.lv_mlp_params is None:
+            logger.info("Finding latent variables with head MLP parameters...")
+            self.lv_mlp_params = mlp.find_params(X_lv, y)
         return self
     
     def get_params(self):
         return {
-            "preprocessor_params": self.preprocessor_params,
-            "feature_selector_params": self.feature_selector_params,
-            "latent_params": self.latent_params,
-            "head_params": self.head_params,
+            "prep_params": self.prep_params,
+            "fs_params": self.fs_params,
+            "lv_params": self.lv_params,
+            "lr_params": self.lr_params,
+            "svc_params": self.svc_params,
+            "fs_lr_params": self.fs_lr_params,
+            "fs_svc_params": self.fs_svc_params,
+            "lv_lr_params": self.lv_lr_params,
+            "lv_svc_params": self.lv_svc_params,
+            "lv_mlp_params": self.lv_mlp_params,            
         }
     
     def clear_params(self):
-        self.preprocessor_params = None
-        self.feature_selector_params = None
-        self.latent_params = None
-        self.head_params = None
+        self.prep_params = None
+        self.fs_params = None
+        self.lv_params = None
+        self.lr_params = None
+        self.svc_params = None
+        self.fs_lr_params = None
+        self.fs_svc_params = None
+        self.lv_lr_params = None
+        self.lv_svc_params = None
+        self.lv_mlp_params = None
         
     def fit(self, X, y):
-        if self.preprocessor_params is None or self.feature_selector_params is None or self.latent_params is None or self.head_params is None:
+        if self.prep_params is None:
             self.find_params(X, y)
         logger.info("Fitting preprocessor...")
-        self.preprocessor = Preprocessor(**self.preprocessor_params)
-        self.preprocessor.fit(X)
-        X = self.preprocessor.transform(X)
+        self.prep = prep.Preprocessor(**self.prep_params)
+        self.prep.fit(X)
+        X = self.prep.transform(X)
         logger.info("Fitting feature selector...")
-        self.feature_selector = FeatureSelectorForBinaryClassification(**self.feature_selector_params)
-        self.feature_selector.fit(X, y)
-        X = self.feature_selector.transform(X)
+        self.fs = fs.FeatureSelector(**self.fs_params)
+        self.fs.fit(X, y)
+        X_fs = self.fs.transform(X)
         logger.info("Fitting latent variable reducer...")
-        self.latent_reducer = LatentVariablesForBinaryClassification(**self.latent_params)
-        self.latent_reducer.fit(X, y)
-        X = self.latent_reducer.transform(X)
-        self.head = HeadForBinaryClassification(**self.head_params)
-        self.head.fit(X, y)
+        self.lv = lv.LatentVariables(**self.lv_params)
+        self.lv.fit(X, y)
+        X_lv = self.lv.transform(X)
+        logger.info("Fitting heads...")
+        self.lr = lr.Head(**self.lr_params).fit(X, y)
+        self.svc = svc.Head(**self.svc_params).fit(X, y)
+        self.fs_lr = lr.Head(**self.fs_lr_params).fit(X_fs, y)
+        self.fs_svc = svc.Head(**self.fs_svc_params).fit(X_fs, y)
+        self.lv_lr = lr.Head(**self.lv_lr_params).fit(X_lv, y)
+        self.lv_svc = svc.Head(**self.lv_svc_params).fit(X_lv, y)
+        self.lv_mlp = mlp.Head(**self.lv_mlp_params).fit(X_lv, y)
+        logger.info("Fitting completed")
+        self.model_names = ["lr", "svc", "fs_lr", "fs_svc", "lv_lr", "lv_svc", "lv_mlp"]
+        self.model_scores = [
+            self.lr.score,
+            self.svc.score,
+            self.fs_lr.score,
+            self.fs_svc.score,
+            self.lv_lr.score,
+            self.lv_svc.score,
+            self.lv_mlp.score,
+        ]
+        self.weights = np.clip(np.array(self.model_scores) - 0.5, 0, 1)
+        self.weights = self.weights / np.sum(self.weights)
+        logger.info(f"Individual model scores: {self.model_scores}")
+        logger.info(f"Model weights: {self.weights}")
         return self
 
     def predict_proba(self, X):
-        if not hasattr(self, "preprocessor") or self.preprocessor is None:
-            raise ValueError("Model not fitted. Call `fit` first.")
-        X = self.preprocessor.transform(X)
-        X = self.feature_selector.transform(X)
-        X = self.latent_reducer.transform(X)
-        return self.head.predict_proba(X)
+        logger.debug("Predicting probabilities")
+        X = self.prep.transform(X)
+        X_fs = self.fs.transform(X)
+        X_lv = self.lv.transform(X)
+        y_lr = self.lr.predict_proba(X)[:, 1]
+        y_svc = self.svc.predict_proba(X)[:, 1]
+        y_fs_lr = self.fs_lr.predict_proba(X_fs)[:, 1]
+        y_fs_svc = self.fs_svc.predict_proba(X_fs)[:, 1]
+        y_lv_lr = self.lv_lr.predict_proba(X_lv)[:, 1]
+        y_lv_svc = self.lv_svc.predict_proba(X_lv)[:, 1]
+        y_lv_mlp = self.lv_mlp.predict_proba(X_lv)[:, 1]
+        y_hat = np.array([
+            y_lr,
+            y_svc,
+            y_fs_lr,
+            y_fs_svc,
+            y_lv_lr,
+            y_lv_svc,
+            y_lv_mlp]).T
+        y_hat = np.average(y_hat, axis=1, weights=self.weights)
+        return np.vstack([1 - y_hat, y_hat]).T
 
     def save(self, model_dir: str):
-        self.preprocessor.save(model_dir)
-        self.feature_selector.save(model_dir)
-        self.latent_reducer.save(model_dir)
-        self.head.save(model_dir)
+        self.prep.save("prep", model_dir)
+        self.fs.save("fs", model_dir)
+        self.lv.save("lv", model_dir)
+        self.lr.save("lr", model_dir)
+        self.svc.save("svc", model_dir)
+        self.fs_lr.save("fs_lr", model_dir)
+        self.fs_svc.save("fs_svc", model_dir)
+        self.lv_lr.save("lv_lr", model_dir)
+        self.lv_svc.save("lv_svc", model_dir)
+        self.lv_mlp.save("lv_mlp", model_dir)
+        metadata = {
+            "prep_params": self.prep_params,
+            "fs_params": self.fs_params,
+            "lv_params": self.lv_params,
+            "lr_params": self.lr_params,
+            "svc_params": self.svc_params,
+            "fs_lr_params": self.fs_lr_params,
+            "fs_svc_params": self.fs_svc_params,
+            "lv_lr_params": self.lv_lr_params,
+            "lv_svc_params": self.lv_svc_params,
+            "lv_mlp_params": self.lv_mlp_params,
+            "model_names": self.model_names,
+            "model_scores": self.model_scores,
+            "weights": self.weights.tolist()}
+        metadata_path = os.path.join(model_dir, "metadata.json")
+        logger.info("Saving metadata to {0}".format(metadata_path))
+        metadata["prep_params"] = bool(metadata["prep_params"]["is_sparse"])
+        with open(metadata_path, "w") as f:
+            json.dump(metadata, f, indent=4)
 
     @classmethod
     def load(cls, model_dir: str):
-        obj = cls()
-        obj.preprocessor = Preprocessor.load(model_dir)
-        obj.feature_selector = FeatureSelectorForBinaryClassification.load(model_dir)
-        obj.latent_reducer = LatentVariablesForBinaryClassification.load(model_dir)
-        obj.head = HeadForBinaryClassification.load(model_dir)
+        with open(os.path.join(model_dir, "metadata.json"), "r") as f:
+            metadata = json.load(f)
+        params = {
+            "prep": metadata.get("prep_params", None),
+            "fs": metadata.get("fs_params", None),
+            "lv": metadata.get("lv_params", None),
+            "lr": metadata.get("lr_params", None),
+            "svc": metadata.get("svc_params", None),
+            "fs_lr": metadata.get("fs_lr_params", None),
+            "fs_svc": metadata.get("fs_svc_params", None),
+            "lv_lr": metadata.get("lv_lr_params", None),
+            "lv_svc": metadata.get("lv_svc_params", None),
+            "lv_mlp": metadata.get("lv_mlp_params", None),
+        }
+        obj = cls(params)
+        obj.prep = prep.Preprocessor.load("prep", model_dir)
+        obj.fs = fs.FeatureSelector.load("fs", model_dir)
+        obj.lv = lv.LatentVariables.load("lv", model_dir)
+        obj.lr = lr.Head.load("lr", model_dir)
+        obj.svc = svc.Head.load("svc", model_dir)
+        obj.fs_lr = lr.Head.load("fs_lr", model_dir)
+        obj.fs_svc = svc.Head.load("fs_svc", model_dir)
+        obj.lv_lr = lr.Head.load("lv_lr", model_dir)
+        obj.lv_svc = svc.Head.load("lv_svc", model_dir)
+        obj.lv_mlp = mlp.Head.load("lv_mlp", model_dir)
+        obj.scores = metadata.get("model_scores", None)
+        obj.model_names = metadata.get("model_names", None)
+        obj.weights = np.array(metadata.get("weights", None))
         return obj
 
 
@@ -230,10 +334,7 @@ class LazyDefaultBinaryClassifier(object):
                 idxs = [i for i in range(len(params))]
                 params_ = params[random.choice(idxs)]
                 model = BaseDefaultBinaryClassifier(
-                    preprocessor_params=params_["preprocessor_params"],
-                    feature_selection_params=params_["feature_selector_params"],
-                    latent_params=params_["latent_params"],
-                    head_params=params_["head_params"],
+                    params=params_
                 )
                 model.fit(X_sampled, y_sampled)
             logger.info("Model has successfull been fitted!")
@@ -384,19 +485,31 @@ def _fix_graph_outputs_with_identity(model):
 
 def convert_partition_to_onnx(partition_dir: str):
     model_dir = partition_dir
-    preprocess_onnx_file = convert_preprocess_to_onnx(model_dir)
-    fs_onnx_file = convert_fs_to_onnx(model_dir)
-    latent_onnx_file = convert_latent_to_onnx(model_dir)
-    head_onnx_file = convert_head_to_onnx(model_dir)
-    onnx_graphs = []
-    for onnx_file in [preprocess_onnx_file, fs_onnx_file, latent_onnx_file, head_onnx_file]:
-        if onnx_file is None:
-            continue
-        onnx_graphs += [onnx.load(onnx_file)]
+    prep_onnx_file = prep.convert_to_onnx("prep", model_dir)
+    fs_onnx_file = fs.convert_to_onnx("fs", model_dir)
+    lv_onnx_file = lv.convert_to_onnx("lv", model_dir)
+    lr_onnx_file = lr.convert_to_onnx("lr", model_dir)
+    svc_onnx_file = svc.convert_to_onnx("svc", model_dir)
+    fs_lr_onnx_file = lr.convert_to_onnx("fs_lr", model_dir)
+    fs_svc_onnx_file = svc.convert_to_onnx("fs_svc", model_dir)
+    lv_lr_onnx_file = lr.convert_to_onnx("lv_lr", model_dir)
+    lv_svc_onnx_file = svc.convert_to_onnx("lv_svc", model_dir)
+    lv_mlp_onnx_file = mlp.convert_to_onnx("lv_mlp", model_dir)
+    onnx_graphs = {}
+    onnx_graphs["prep"] = onnx.load(prep_onnx_file)
+    onnx_graphs["fs"] = onnx.load(fs_onnx_file)
+    onnx_graphs["lv"] = onnx.load(lv_onnx_file)
+    onnx_graphs["lr"] = onnx.load(lr_onnx_file)
+    onnx_graphs["svc"] = onnx.load(svc_onnx_file)
+    onnx_graphs["fs_lr"] = onnx.load(fs_lr_onnx_file)
+    onnx_graphs["fs_svc"] = onnx.load(fs_svc_onnx_file)
+    onnx_graphs["lv_lr"] = onnx.load(lv_lr_onnx_file)
+    onnx_graphs["lv_svc"] = onnx.load(lv_svc_onnx_file)
+    onnx_graphs["lv_mlp"] = onnx.load(lv_mlp_onnx_file)
+    onnx_graphs = dict((k, _fix_graph_outputs_with_identity(v)) for k, v in onnx_graphs.items())
 
-    onnx_graphs = [_fix_graph_outputs_with_identity(m) for m in onnx_graphs]
-
-    for onnx_model in onnx_graphs:
+    for name, onnx_model in onnx_graphs.items():
+        logger.info(f"Checking ONNX graph outputs for model: {name}")
         _onnx_logger(onnx_model)
 
     model = onnx_graphs[0]

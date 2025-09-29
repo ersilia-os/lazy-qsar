@@ -8,13 +8,15 @@ from sklearn.feature_selection import VarianceThreshold
 from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
+
 from skl2onnx import convert_sklearn
 from skl2onnx.common.data_types import FloatTensorType
+from .. import ONNX_TARGET_OPSET, ONNX_IR_VERSION
 
 from ..utils.logging import logger
 
 
-def find_preprocessor_params(X):
+def find_params(X):
     """
     Checks if the input data is sparse.
 
@@ -57,7 +59,7 @@ class Preprocessor(object):
         Transformer or scaler for normalizing the data.
     """
 
-    def __init__(self, is_sparse):
+    def __init__(self, is_sparse: bool):
         """
         Initializes the Preprocessor object.
         """
@@ -125,7 +127,7 @@ class Preprocessor(object):
         X = self.scaler.transform(X).toarray() if self.is_sparse else self.scaler.transform(X)
         return X
     
-    def save(self, model_dir: str):
+    def save(self, name: str, model_dir: str):
         """
         Saves the fitted preprocessor to the specified directory.
 
@@ -150,18 +152,18 @@ class Preprocessor(object):
             "is_sparse": bool(self.is_sparse),
             "input_dim": int(self.input_dim),
         }
-        meta_path = os.path.join(model_dir, "preprocessor_metadata.json")
+        meta_path = os.path.join(model_dir, f"{name}_metadata.json")
         with open(meta_path, "w") as f:
             json.dump(metadata, f)
-        var_thr_path = os.path.join(model_dir, "var_thr.joblib")
+        var_thr_path = os.path.join(model_dir, f"{name}_var_thr.joblib")
         joblib.dump(self.var_thr, var_thr_path)
-        imputer_path = os.path.join(model_dir, "imputer.joblib")
+        imputer_path = os.path.join(model_dir, f"{name}_imputer.joblib")
         joblib.dump(self.imputer, imputer_path)
-        scaler_path = os.path.join(model_dir, "scaler.joblib")
+        scaler_path = os.path.join(model_dir, f"{name}_scaler.joblib")
         joblib.dump(self.scaler, scaler_path)
 
     @classmethod
-    def load(cls, model_dir: str):
+    def load(cls, name: str, model_dir: str):
         """
         Loads a preprocessor from the specified directory.
 
@@ -182,31 +184,29 @@ class Preprocessor(object):
         """
         if not os.path.exists(model_dir):
             raise FileNotFoundError(f"Model directory {model_dir} does not exist.")
-        meta_path = os.path.join(model_dir, "preprocessor_metadata.json")
+        meta_path = os.path.join(model_dir, f"{name}_metadata.json")
         if not os.path.exists(meta_path):
             raise FileNotFoundError(f"Metadata file {meta_path} not found.")
         with open(meta_path, "r") as f:
             metadata = json.load(f)
-        obj = cls(is_sparse=metadata["is_sparse"])
+        obj = cls(is_sparse=bool(metadata["is_sparse"]))
         obj.input_dim = metadata["input_dim"]
-        var_thr_path = os.path.join(model_dir, "var_thr.joblib")
+        var_thr_path = os.path.join(model_dir, f"{name}_var_thr.joblib")
         if not os.path.exists(var_thr_path):
             raise FileNotFoundError(f"VarianceThreshold file {var_thr_path} not found.")
         obj.var_thr = joblib.load(var_thr_path)
-        imputer_path = os.path.join(model_dir, "imputer.joblib")
+        imputer_path = os.path.join(model_dir, f"{name}_imputer.joblib")
         if not os.path.exists(imputer_path):
             raise FileNotFoundError(f"Imputer file {imputer_path} not found.")
         obj.imputer = joblib.load(imputer_path)
-        scaler_path = os.path.join(model_dir, "scaler.joblib")
+        scaler_path = os.path.join(model_dir, f"{name}_scaler.joblib")
         if not os.path.exists(scaler_path):
             raise FileNotFoundError(f"Scaler file {scaler_path} not found.")
         obj.scaler = joblib.load(scaler_path)
         return obj
 
-from .. import ONNX_TARGET_OPSET, ONNX_IR_VERSION
 
-
-def convert_to_onnx(model_dir: str):
+def convert_to_onnx(name: str, model_dir: str):
     """
     Convert to ONNX format and save the preprocessor.
     It creates a file named preprocessor.onnx in the specified directory.
@@ -228,13 +228,13 @@ def convert_to_onnx(model_dir: str):
     ValueError
         If the preprocessor has not been fitted.
     """
-    preprocessor = Preprocessor.load(model_dir)
+    preprocessor = Preprocessor.load(name, model_dir)
     pipe = Pipeline([
         ("varthr_preprocessor", preprocessor.var_thr),
         ("imputer_preprocessor", preprocessor.imputer),
         ("scaler_preprocessor", preprocessor.scaler),
     ])
-    initial_type = [("input_preprocessor", FloatTensorType([None, preprocessor.input_dim]))]
+    initial_type = [(f"input_{name}", FloatTensorType([None, preprocessor.input_dim]))]
     onnx_model = convert_sklearn(
         pipe,
         initial_types=initial_type,
@@ -242,18 +242,18 @@ def convert_to_onnx(model_dir: str):
     )
     
     onnx_model.ir_version = ONNX_IR_VERSION
-    onnx_model.graph.name = "Preprocessor"
-    onnx_model.graph.output[0].name = "output_preprocessor"
-    onnx_model.graph.input[0].name = "input_preprocessor"
+    onnx_model.graph.name = f"{name}"
+    onnx_model.graph.output[0].name = f"output_{name}"
+    onnx_model.graph.input[0].name = f"input_{name}"
     
     for i, node in enumerate(onnx_model.graph.node):
-        if "preprocessor" not in node.name:
+        if name not in node.name:
             if node.name:
-                node.name = node.name + "_preprocessor"
+                node.name = node.name + "_" + name
             else:
-                node.name = "node_{0}_preprocessor".format(i)
+                node.name = "node_{0}_{1}".format(i, name)
 
-    onnx_path = os.path.join(model_dir, "preprocessor.onnx")
+    onnx_path = os.path.join(model_dir, f"{name}.onnx")
     logger.info(f"Saving the preprocessor ONNX model to {onnx_path}")
 
     with open(onnx_path, "wb") as f:

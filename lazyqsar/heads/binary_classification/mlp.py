@@ -1,21 +1,25 @@
 import os
 import json
+import joblib
 import numpy as np
 import optuna
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from sklearn.base import BaseEstimator, ClassifierMixin
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, StratifiedKFold
 from sklearn.metrics import roc_auc_score
+from sklearn.linear_model import LogisticRegression
 
-from ..utils.logging import logger
-
-from .. import ONNX_TARGET_OPSET, ONNX_IR_VERSION
 import onnx
+from onnx import helper, numpy_helper, TensorProto
+
+from ...utils.logging import logger
+
+from ... import ONNX_TARGET_OPSET, ONNX_IR_VERSION
 
 
-NUM_TRIALS = 1  # TODO: increase
+NUM_TRIALS = 10  # TODO: increase
 NUM_EPOCHS = 30
 BATCH_SIZE = 32
 
@@ -57,7 +61,7 @@ class HeadNN(nn.Module):
         return self.net(x).squeeze(-1)
 
 
-def find_head_params(X, y):
+def find_params(X, y):
     """
     Run Optuna hyperparameter optimization for HeadNN.
     Evaluation metric: ROC AUC.
@@ -69,8 +73,8 @@ def find_head_params(X, y):
     def objective(trial):
         input_dim = X.shape[1]
         n_hidden = trial.suggest_int("n_hidden", 0, 2)
-        scale1 = trial.suggest_float("scale1", 0.1, 1.0)
-        scale2 = trial.suggest_float("scale2", 0.1, 1.0)
+        scale1 = trial.suggest_float("scale1", 0.1, 0.5)
+        scale2 = trial.suggest_float("scale2", 0.1, 0.5)
         dropout = trial.suggest_float("dropout", 0.0, 0.5)
         lr = trial.suggest_float("lr", 1e-4, 1e-1, log=True)
 
@@ -111,7 +115,7 @@ def find_head_params(X, y):
         return auc
 
     study = optuna.create_study(direction="maximize")
-    study.enqueue_trial({"n_hidden": 0, "scale1": 1, "scale2": 1, "dropout": 0, "lr": 1e-3})
+    study.enqueue_trial({"n_hidden": 1, "scale1": 0.5, "scale2": 0.5, "dropout": 0.2, "lr": 1e-3})
     study.optimize(objective, n_trials=n_trials)
     
     results = {
@@ -128,7 +132,7 @@ def find_head_params(X, y):
     return results
 
 
-class HeadForBinaryClassification(BaseEstimator, ClassifierMixin):
+class Head(BaseEstimator, ClassifierMixin):
     """
     Binary classification head wrapping HeadNN, trained with BCEWithLogitsLoss and class weighting.
     """
@@ -146,7 +150,7 @@ class HeadForBinaryClassification(BaseEstimator, ClassifierMixin):
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.model = None
 
-    def fit(self, X, y):
+    def _fit(self, X, y):
         self.model = HeadNN(
             self.input_dim, self.n_hidden, self.scale1, self.scale2, self.dropout
         ).to(self.device)
@@ -162,7 +166,7 @@ class HeadForBinaryClassification(BaseEstimator, ClassifierMixin):
         X_t = torch.tensor(X, dtype=torch.float32).to(self.device)
         y_t = torch.tensor(y, dtype=torch.float32).to(self.device)
 
-        for epoch in range(self.epochs):
+        for _ in range(self.epochs):
             self.model.train()
             for i in range(0, len(X_t), self.batch_size):
                 xb = X_t[i:i+self.batch_size]
@@ -173,22 +177,52 @@ class HeadForBinaryClassification(BaseEstimator, ClassifierMixin):
                 loss.backward()
                 optimizer.step()
         return self
-
-    def predict_proba(self, X):
+    
+    def fit(self, X, y):
+        self.calibrate(X, y)
+        return self._fit(X, y)
+    
+    def calibrate(self, X, y):
+        logger.info("Calibrating the model using Platt scaling...")
+        splitter = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+        y_hat = []
+        y_true = []
+        for train_idx, val_idx in splitter.split(X, y):
+            X_train, X_val = X[train_idx], X[val_idx]
+            y_train, y_val = y[train_idx], y[val_idx]
+            self._fit(X_train, y_train)
+            logits_val = self.predict_raw(X_val)
+            y_hat += list(logits_val)
+            y_true += list(y_val)
+        y_hat = np.array(y_hat)
+        logger.debug("Shape of y_hat: {}".format(y_hat.shape))
+        y_true = np.array(y_true)
+        logger.debug("Shape of y_true: {}".format(y_true.shape))
+        self.calibrator = LogisticRegression(class_weight="balanced")
+        self.calibrator.fit(y_hat.reshape(-1, 1), y_true)
+        self.score = roc_auc_score(y_true, self.calibrator.predict_proba(y_hat.reshape(-1, 1))[:, 1])
+        logger.debug("Done with calibration! Score: {:.4f}".format(self.score))
+        return self.score
+    
+    def predict_raw(self, X):
         self.model.eval()
         X_t = torch.tensor(X, dtype=torch.float32).to(self.device)
         with torch.no_grad():
             logits = self.model(X_t).cpu().numpy()
-            probs = 1 / (1 + np.exp(-logits))  # sigmoid
-        return np.vstack([1 - probs, probs]).T
+        return logits
+
+    def predict_proba(self, X):
+        logits = self.predict_raw(X)
+        probs = self.calibrator.predict_proba(logits.reshape(-1, 1))
+        return probs
 
     def predict(self, X):
         return (self.predict_proba(X)[:, 1] >= 0.5).astype(int)
 
-    def save(self, model_dir: str):
+    def save(self, name: str, model_dir: str):
         if not os.path.exists(model_dir):
             os.makedirs(model_dir)
-        model_path = os.path.join(model_dir, "head_nn.pth")
+        model_path = os.path.join(model_dir, f"{name}.pth")
         torch.save(self.model.state_dict(), model_path)
         metadata = {
             "input_dim": self.input_dim,
@@ -200,14 +234,16 @@ class HeadForBinaryClassification(BaseEstimator, ClassifierMixin):
             "epochs": self.epochs,
             "batch_size": self.batch_size,
             "device": self.device,
+            "score": self.score,
         }
-        meta_path = os.path.join(model_dir, "head_metadata.json")
+        meta_path = os.path.join(model_dir, f"{name}_metadata.json")
         with open(meta_path, "w") as f:
             json.dump(metadata, f)
+        joblib.dump(self.calibrator, os.path.join(model_dir, f"{name}_calibrator.joblib"))
 
     @classmethod
-    def load(cls, model_dir: str):
-        meta_path = os.path.join(model_dir, "head_metadata.json")
+    def load(cls, name: str, model_dir: str):
+        meta_path = os.path.join(model_dir, f"{name}_metadata.json")
         with open(meta_path, "r") as f:
             metadata = json.load(f)
         input_dim = metadata["input_dim"]
@@ -220,7 +256,7 @@ class HeadForBinaryClassification(BaseEstimator, ClassifierMixin):
         batch_size = metadata["batch_size"]
         device = metadata["device"]
         
-        model_path = os.path.join(model_dir, "head_nn.pth")
+        model_path = os.path.join(model_dir, f"{name}.pth")
         model = HeadNN(
             input_dim, n_hidden, scale1, scale2, dropout
         ).to(device)
@@ -231,51 +267,80 @@ class HeadForBinaryClassification(BaseEstimator, ClassifierMixin):
             )
         obj.model = model
 
+        obj.calibrator = joblib.load(os.path.join(model_dir, f"{name}_calibrator.joblib"))
+        obj.score = metadata.get("score", None)
+
         return obj
-    
 
-def convert_to_onnx(model_dir: str):
-    """
-    Convert a binary classification model to ONNX format.
-    This function loads a binary classification model from the specified directory,
-    converts it to the ONNX format for interoperability, and saves the ONNX model
-    as 'head.onnx' in the specified directory.
-    
-    Parameters
-    ----------
-    model_dir : str
-        The directory where the model is stored and where the ONNX file will be saved.
 
-    Returns
-    -------
-    str
-        The path to the saved ONNX model file.
-    
-    Notes
-    -----
-    - The function assumes that the model is compatible with PyTorch's ONNX export functionality.
-    - The ONNX model is saved with dynamic axes for the batch size, allowing for variable batch sizes during inference.
-    
-    Examples
-    --------
-    >>> convert_to_onnx("/path/to/model_dir")
-    ONNX model saved to /path/to/model_dir/head.onnx
+def convert_to_onnx(name: str, model_dir: str):
     """
-    head = HeadForBinaryClassification.load(model_dir)
+    Convert the HeadForBinaryClassification (PyTorch head + Platt calibrator) to ONNX.
+    Final output is calibrated probabilities as a flat 1D vector [batch_size].
+    """
+    head = Head.load(model_dir)
     model = head.model
     model.eval()
     dummy_input = torch.randn(1, head.input_dim)
-    onnx_path = os.path.join(model_dir, "head.onnx")
+    onnx_path = os.path.join(model_dir, f"{name}.onnx")
+
     torch.onnx.export(
-        model, dummy_input, onnx_path,
-        input_names=['input_head'], 
-        output_names=['output_head'],
-        dynamic_axes={'input_head': {0: 'batch_size'}, 'output_head': {0: 'batch_size'}},
+        model,
+        dummy_input,
+        onnx_path,
+        input_names=[f'input_{name}'],
+        output_names=[f'logits_{name}'],
+        dynamic_axes={
+            f'input_{name}': {0: 'batch_size'},
+            f'logits_{name}': {0: 'batch_size'}
+        },
         opset_version=ONNX_TARGET_OPSET,
     )
+
     onnx_model = onnx.load(onnx_path)
-    onnx_model.graph.name = "Head"
+
+    coef = head.calibrator.coef_.astype(np.float32).reshape(1,)
+    intercept = head.calibrator.intercept_.astype(np.float32).reshape(1,)
+
+    coef_init = numpy_helper.from_array(coef, name=f"calib_coef_{name}")
+    intercept_init = numpy_helper.from_array(intercept, name=f"calib_intercept_{name}")
+    onnx_model.graph.initializer.extend([coef_init, intercept_init])
+
+    mul_node = helper.make_node(
+        f"Mul_{name}",
+        inputs=[f"logits_{name}", f"calib_coef_{name}"],
+        outputs=[f"logits_scaled_{name}"],
+        name=f"Calib_Mul_{name}",
+    )
+    add_node = helper.make_node(
+        f"Add_{name}",
+        inputs=[f"logits_scaled_{name}", f"calib_intercept_{name}"],
+        outputs=[f"logits_shifted_{name}"],
+        name=f"Calib_Add_{name}",
+    )
+    sigmoid_node = helper.make_node(
+        f"Sigmoid_{name}",
+        inputs=[f"logits_shifted_{name}"],
+        outputs=[f"output_head_{name}"],
+        name=f"Calib_Sigmoid_{name}",
+    )
+    onnx_model.graph.node.extend([mul_node, add_node, sigmoid_node])
+
+    del onnx_model.graph.output[:]
+    onnx_model.graph.output.extend([
+        helper.make_tensor_value_info(
+            f"output_{name}",
+            TensorProto.FLOAT,
+            ["batch_size"]
+        )
+    ])
+
+    onnx_model.graph.name = f"{name}"
     onnx_model.ir_version = ONNX_IR_VERSION
+
+    onnx.checker.check_model(onnx_model)
     onnx.save(onnx_model, onnx_path)
-    logger.info(f"ONNX model saved to {onnx_path} with updated IR version {ONNX_IR_VERSION}")
+    logger.info(f"ONNX model with calibrator saved to {onnx_path}")
+
     return onnx_path
+

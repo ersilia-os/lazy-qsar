@@ -11,14 +11,14 @@ from sklearn.model_selection import StratifiedShuffleSplit
 import skl2onnx
 from skl2onnx.common.data_types import FloatTensorType
 
-from ..utils.logging import logger
-from .. import ONNX_TARGET_OPSET, ONNX_IR_VERSION
+from ...utils.logging import logger
+from ... import ONNX_TARGET_OPSET, ONNX_IR_VERSION
 
 
 MIN_FEATURES = 4
 MAX_FEATURES = 2048
 
-NUM_TRIALS = 1
+NUM_TRIALS = 10
 
 
 def decide_if_feature_selection(X, y):
@@ -70,7 +70,7 @@ def decide_if_feature_selection(X, y):
         return True
 
 
-def find_feature_selector_params(X, y):
+def find_params(X, y):
     """
     Perform feature selection and hyperparameter optimization for binary classification.
     This function uses `SelectKBest` to determine the most relevant features based on 
@@ -110,7 +110,7 @@ def find_feature_selector_params(X, y):
     """
 
     #do_feature_selection = decide_if_feature_selection(X, y) # TODO 
-    do_feature_selection = False
+    do_feature_selection = True
     if not do_feature_selection:
         return {"k_features": None}
 
@@ -203,7 +203,7 @@ def find_feature_selector_params(X, y):
     return results
 
 
-class FeatureSelectorForBinaryClassification(object):
+class FeatureSelector(object):
     """
     A feature selector for binary classification tasks using SelectKBest.
 
@@ -294,7 +294,7 @@ class FeatureSelectorForBinaryClassification(object):
         X = self.selector.transform(X)
         return X
 
-    def save(self, model_dir: str):
+    def save(self, name: str, model_dir: str):
         """
         Save the feature selector and its metadata to the specified directory.
         This method saves the metadata (e.g., number of selected features) as a JSON file
@@ -313,14 +313,14 @@ class FeatureSelectorForBinaryClassification(object):
         metadata = {
             "k_features": self.k_features,
         }
-        meta_path = os.path.join(model_dir, "feature_selector_metadata.json")
+        meta_path = os.path.join(model_dir, f"{name}_metadata.json")
         with open(meta_path, "w") as f:
             json.dump(metadata, f)
-        joblib_path = os.path.join(model_dir, "feature_selector.joblib")
+        joblib_path = os.path.join(model_dir, f"{name}.joblib")
         joblib.dump(self.selector, joblib_path)
 
     @classmethod
-    def load(cls, model_dir: str):
+    def load(cls, name: str, model_dir: str):
         """
         Load a feature selector object from a specified directory.
 
@@ -349,13 +349,13 @@ class FeatureSelectorForBinaryClassification(object):
         """
         if not os.path.exists(model_dir):
             raise ValueError(f"Model directory {model_dir} does not exist.")
-        meta_path = os.path.join(model_dir, "feature_selector_metadata.json")
+        meta_path = os.path.join(model_dir, f"{name}_metadata.json")
         if not os.path.exists(meta_path):
             raise ValueError(f"Metadata file {meta_path} does not exist.")
         with open(meta_path, "r") as f:
             metadata = json.load(f)
         k_features = metadata.get("k_features", None)
-        selector_path = os.path.join(model_dir, "feature_selector.joblib")
+        selector_path = os.path.join(model_dir, f"{name}.joblib")
         if not os.path.exists(selector_path):
             raise ValueError(f"Selector file {selector_path} does not exist.")
         selector = joblib.load(selector_path)
@@ -364,8 +364,7 @@ class FeatureSelectorForBinaryClassification(object):
         return obj
     
 
-
-def convert_to_onnx(model_dir: str):
+def convert_to_onnx(name, model_dir: str):
     """
     Converts a feature selector model to ONNX format and saves it to the specified directory.
     
@@ -388,29 +387,29 @@ def convert_to_onnx(model_dir: str):
         If the `selector` object is not compatible with ONNX conversion.
     """
 
-    feature_selector = FeatureSelectorForBinaryClassification.load(model_dir)
+    feature_selector = FeatureSelector.load(name, model_dir)
     if feature_selector.selector is None:
         logger.info("No feature selection was performed. Skipping ONNX conversion.")
         return None
     
     selector = feature_selector.selector
-    initial_type = [("input_selector", FloatTensorType([None, selector.scores_.shape[0]]))]
+    initial_type = [(f"input_{name}", FloatTensorType([None, selector.scores_.shape[0]]))]
     onnx_model = skl2onnx.convert_sklearn(
         selector,
         initial_types=initial_type,
         target_opset=ONNX_TARGET_OPSET
     )
     
-    onnx_model.graph.name = "FeatureSelector"
+    onnx_model.graph.name = f"{name}"
     onnx_model.ir_version = ONNX_IR_VERSION
-    onnx_model.graph.input[0].name = "input_selector"
-    onnx_model.graph.output[0].name = "output_selector"
+    onnx_model.graph.input[0].name = f"input_{name}"
+    onnx_model.graph.output[0].name = f"output_{name}"
 
     for node in onnx_model.graph.node:
-        if "_selector" not in node.name:
-            node.name = f"{node.name}_selector"
+        if f"_{name}" not in node.name:
+            node.name = f"{node.name}_{name}"
 
-    onnx_path = os.path.join(model_dir, "feature_selector.onnx")
+    onnx_path = os.path.join(model_dir, f"{name}.onnx")
     with open(onnx_path, "wb") as f:
         f.write(onnx_model.SerializeToString())
 
