@@ -4,8 +4,8 @@ from lazyqsar.descriptors.descriptors import ChemeleonDescriptor, MorganFingerpr
 from lazyqsar.utils.logging import logger
 
 prefix = "ames"
-#descriptor_class = MorganFingerprint
-descriptor_class = ChemeleonDescriptor
+descriptor_class = MorganFingerprint
+#descriptor_class = ChemeleonDescriptor
 
 with open("benchmark/data/{0}_train.csv".format(prefix), "r") as f:
     reader = csv.reader(f)
@@ -39,31 +39,27 @@ import numpy as np
 X = X_train
 y = np.array(y_train)
 
-from lazyqsar.assemblers.eclectic_binary_classifier import LazyDefaultBinaryClassifier
+from lazyqsar.agnostic import LazyBinaryClassifier
 
-clf = LazyDefaultBinaryClassifier(num_trials=30)
+clf = LazyBinaryClassifier(mode="fast")
 
 clf.fit(X=np.array(X_train), y=np.array(y_train))
 
-clf.save("test_dev_2")
+clf.save("test_dev_4")
 
-clf = LazyDefaultBinaryClassifier.load("test_dev_2")
+clf = LazyBinaryClassifier.load("test_dev_4")
 
-y_pred = clf.predict(X=X_test)
+y_pred = clf.predict_proba(X=X_test)[:,1]
 
 print(y_pred)
 
 from sklearn.metrics import roc_auc_score
 print("ROC-AUC: ", roc_auc_score(y_test, y_pred))
 
-from lazyqsar.assemblers.eclectic_binary_classifier import convert_to_onnx
+clf.save_onnx("test_dev_4")
 
-convert_to_onnx("test_dev_2")
-from lazyqsar.artifacts.artifact_binary_classifier import LazyBinaryClassifierArtifact
-
-model = LazyBinaryClassifierArtifact.load("test_dev_2")
-
-y_pred = model.predict(X_test)
+art = LazyBinaryClassifier.load_onnx("test_dev_4")
+y_pred = art.predict_proba(X_test)[:,1]
 
 print(y_pred)
 

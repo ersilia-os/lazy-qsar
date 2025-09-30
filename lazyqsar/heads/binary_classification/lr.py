@@ -19,6 +19,8 @@ from sklearn.metrics import roc_auc_score
 import onnx
 from onnx import helper, numpy_helper, TensorProto
 
+from ... import ONNX_TARGET_OPSET, ONNX_IR_VERSION
+
 
 MAX_NUM_TRIALS = 100
 
@@ -222,13 +224,13 @@ def convert_to_onnx(name: str, model_dir: str) -> str:
     )
 
     # ---- Model ----
-    opset_version = globals().get("ONNX_TARGET_OPSET", 16)
+    opset_version = ONNX_TARGET_OPSET
     model = helper.make_model(
         graph,
         producer_name=f"{name}",
         opset_imports=[helper.make_operatorsetid("", opset_version)],
     )
-    ir_version = globals().get("ONNX_IR_VERSION", onnx.IR_VERSION)
+    ir_version = ONNX_IR_VERSION
     model.ir_version = ir_version
 
     # ---- Check & save ----

@@ -1,8 +1,6 @@
 {
     "num_partitions": 1,
     "random_state": 42,
-    "base_test_size": 0.25,
-    "base_num_splits": 3,
-    "base_num_trials": 5,
-    "fit_time": 36.53209114074707
+    "num_trials": 30,
+    "fit_time": 465.67011189460754
 }

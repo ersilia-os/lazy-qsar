@@ -29,12 +29,12 @@ from onnx import TensorProto
 NUM_TRIALS = 10
 
 
-class BaseDefaultBinaryClassifier(BaseEstimator, ClassifierMixin):
+class BaseEclecticBinaryClassifier(BaseEstimator, ClassifierMixin):
 
     def __init__(self, params: dict = None):
         if params is None:
             params = {}
-        logger.info("Initializing BaseDefaultBinaryClassifier...")
+        logger.info("Initializing BaseEclecticBinaryClassifier...")
         self.prep_params = params.get("prep", None)
         self.fs_params = params.get("fs", None)
         self.lv_params = params.get("lv", None)
@@ -238,8 +238,7 @@ class BaseDefaultBinaryClassifier(BaseEstimator, ClassifierMixin):
         return obj
 
 
-
-class LazyDefaultBinaryClassifier(object):
+class LazyEclecticBinaryClassifier(object):
     def __init__(
         self,
         num_trials: int = 10,
@@ -328,7 +327,7 @@ class LazyDefaultBinaryClassifier(object):
                 f"Fitting model on {len(idxs)} samples, positive samples: {np.sum(y_sampled)}, negative samples: {len(y_sampled) - np.sum(y_sampled)}, number of features {X_sampled.shape[1]}"
             )
             if len(params) < 3:
-                model = BaseDefaultBinaryClassifier()
+                model = BaseEclecticBinaryClassifier()
                 model.num_trials = self.num_trials
                 model.find_params(X_sampled, y_sampled, self.num_trials)
                 params_ = model.get_params()
@@ -337,7 +336,7 @@ class LazyDefaultBinaryClassifier(object):
             else:
                 idxs = [i for i in range(len(params))]
                 params_ = params[random.choice(idxs)]
-                model = BaseDefaultBinaryClassifier(
+                model = BaseEclecticBinaryClassifier(
                     params=params_
                 )
                 model.num_trials = self.num_trials
@@ -431,7 +430,7 @@ class LazyDefaultBinaryClassifier(object):
             suffix = str(i).zfill(3)
             partition_dir = os.path.join(model_dir, f"partition_{suffix}")
             logger.debug(f"Loading model from {partition_dir}")
-            model = BaseDefaultBinaryClassifier.load(partition_dir)
+            model = BaseEclecticBinaryClassifier.load(partition_dir)
             obj.models += [model]
         return obj
     
@@ -484,7 +483,7 @@ def convert_partition_to_onnx(partition_dir: str, clean: bool = True) -> str:
                     g.node.append(helper.make_node(
                         "Identity", inputs=[last_node_out], outputs=[out_name], name=f"OutputFixer_{name}"
                     ))
-        # Prefix everything to keep namespaces disjoint when merging
+        
         model = compose.add_prefix(model, f"{name}_")
         return model
 
@@ -510,18 +509,15 @@ def convert_partition_to_onnx(partition_dir: str, clean: bool = True) -> str:
         if not dims:
             dims = ["batch_size"]
 
-        # Replace external input and alias back to internal name
         g.input.remove(old_in_vi)
         g.input.extend([helper.make_tensor_value_info(input_name, elem_type, dims)])
         g.node.insert(0, helper.make_node("Identity", inputs=[input_name], outputs=[old_in_name], name="InputAlias"))
 
-        # Expose a single external output [batch_size] (FLOAT)
         del g.output[:]
         g.output.extend([helper.make_tensor_value_info(output_name, TensorProto.FLOAT, ["batch_size"])])
         return model
 
     def _add_scalar_mul_and_sum(model, weights, head_outputs):
-        # One scalar per head avoids bad broadcasting
         weighted_inputs = []
         for i, (name_i, wi) in enumerate(zip(head_outputs, weights)):
             w_name = f"w_{i}"
@@ -533,7 +529,6 @@ def convert_partition_to_onnx(partition_dir: str, clean: bool = True) -> str:
         model.graph.node.append(helper.make_node("Sum", inputs=weighted_inputs, outputs=["output"], name="WeightedSum"))
         return model
 
-    # ---------- Export individual pieces then merge (all FP32) ----------
     logger.info(f"Converting partition at {partition_dir} to ONNX...")
     model_dir = partition_dir
     prep_onnx_file = prep.convert_to_onnx("prep", model_dir)
@@ -616,7 +611,6 @@ def convert_partition_to_onnx(partition_dir: str, clean: bool = True) -> str:
                  "lv_mlp_output_lv_mlp"]
     )
 
-    # Weighted ensemble
     metadata_path = os.path.join(partition_dir, "metadata.json")
     with open(metadata_path, "r") as f:
         metadata = json.load(f)
@@ -644,7 +638,6 @@ def convert_partition_to_onnx(partition_dir: str, clean: bool = True) -> str:
     logger.info(f"Final FP32 ONNX model saved to {final_onnx_path}")
     _onnx_logger(model)
 
-    # Clean intermediates but keep final models
     if clean:
         logger.info("Cleaning up intermediate files...")
         keep = {"lazy_model.onnx"}

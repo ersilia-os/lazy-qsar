@@ -8,7 +8,7 @@ class LazyBinaryClassifierArtifact(object):
     def __init__(self, sessions=None):
         self.sessions = sessions
 
-    def predict(self, X):
+    def predict_proba(self, X):
         X = X.astype('float32')
         if self.sessions is None:
             raise ValueError("Model not loaded. Call `load` first.")
@@ -17,8 +17,19 @@ class LazyBinaryClassifierArtifact(object):
             inputs = {session.get_inputs()[0].name: X}
             R += [session.run(None, inputs)[0].tolist()]
         R = np.array(R)
-        y_pred = np.mean(R, axis=0)
-        return y_pred
+        y_hat_1 = np.mean(R, axis=0)
+        y_hat_0 = 1 - y_hat_1
+        return np.array([y_hat_0, y_hat_1]).T
+
+    def predict(self, X, threshold=0.5):
+        y_hat = self.predict_proba(X)[:, 1]
+        y_bin = []
+        for y in y_hat:
+            if y >= threshold:
+                y_bin.append(1)
+            else:
+                y_bin.append(0)
+        return np.array(y_bin, dtype=int)
 
     @classmethod
     def load(cls, model_dir: str):
