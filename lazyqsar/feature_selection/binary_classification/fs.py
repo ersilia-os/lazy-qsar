@@ -18,7 +18,7 @@ from ... import ONNX_TARGET_OPSET, ONNX_IR_VERSION
 MIN_FEATURES = 4
 MAX_FEATURES = 2048
 
-NUM_TRIALS = 1
+MAX_NUM_TRIALS = 10
 
 
 def decide_if_feature_selection(X, y):
@@ -70,7 +70,7 @@ def decide_if_feature_selection(X, y):
         return True
 
 
-def find_params(X, y):
+def find_params(X, y, num_trials):
     """
     Perform feature selection and hyperparameter optimization for binary classification.
     This function uses `SelectKBest` to determine the most relevant features based on 
@@ -109,7 +109,6 @@ def find_params(X, y):
     {'k_features': 10}
     """
 
-    #do_feature_selection = decide_if_feature_selection(X, y) # TODO 
     do_feature_selection = True
     if not do_feature_selection:
         return {"k_features": None}
@@ -191,7 +190,7 @@ def find_params(X, y):
         "alpha": 1e-4,
     }
     study.enqueue_trial(params=initial_params)
-    study.optimize(objective, n_trials=NUM_TRIALS, show_progress_bar=True)
+    study.optimize(objective, n_trials=min(num_trials, MAX_NUM_TRIALS), show_progress_bar=True)
     logger.info("Best trial:")
     logger.info(f"  ROC-AUC: {study.best_value}")
     logger.info(f"  Params: {study.best_params}")

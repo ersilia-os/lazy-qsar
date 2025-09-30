@@ -19,12 +19,11 @@ from sklearn.metrics import roc_auc_score
 import onnx
 from onnx import helper, numpy_helper, TensorProto
 
-from ... import ONNX_TARGET_OPSET, ONNX_IR_VERSION
 
-N_TRIALS = 1 # TODO increase for better tuning
+MAX_NUM_TRIALS = 100
 
 
-def find_params(X, y):
+def find_params(X, y, num_trials):
     """
     Tune C for LogisticRegression with Optuna using out-of-fold ROC-AUC.
     Returns {"C": best_C}.
@@ -33,7 +32,7 @@ def find_params(X, y):
     n_splits = 5
     random_state = 42
     max_iter = 1000
-    n_trials = N_TRIALS
+    n_trials = min(num_trials, MAX_NUM_TRIALS)
 
     logger.info("Finding best C for logistic regression head with Optuna...")
     X = np.asarray(X)

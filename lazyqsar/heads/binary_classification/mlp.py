@@ -19,7 +19,8 @@ from ...utils.logging import logger
 from ... import ONNX_TARGET_OPSET, ONNX_IR_VERSION
 
 
-NUM_TRIALS = 1  # TODO: increase
+MAX_NUM_TRIALS = 50
+
 NUM_EPOCHS = 30
 BATCH_SIZE = 32
 
@@ -61,12 +62,12 @@ class HeadNN(nn.Module):
         return self.net(x).squeeze(-1)
 
 
-def find_params(X, y):
+def find_params(X, y, num_trials):
     """
     Run Optuna hyperparameter optimization for HeadNN.
     Evaluation metric: ROC AUC.
     """
-    n_trials = NUM_TRIALS
+    n_trials = min(num_trials, MAX_NUM_TRIALS)
     epochs = NUM_EPOCHS
     batch_size = BATCH_SIZE
 

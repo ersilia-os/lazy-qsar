@@ -20,7 +20,7 @@ from ...utils.logging import logger
 from ... import ONNX_TARGET_OPSET, ONNX_IR_VERSION
 
 
-NUM_TRIALS = 1 # TODO increase to 20 or 50 later
+MAX_NUM_TRIALS = 10
 MIN_FEATURES = 4
 MAX_FEATURES = 512
 
@@ -131,7 +131,7 @@ def decide_if_latent_variables(X, y):
     return False
 
 
-def find_params(X, y):
+def find_params(X, y, num_trials):
     """
     Optimize the number of latent components and regularization parameter for binary classification 
     using Principal Component Analysis (PCA) and Stochastic Gradient Descent Classifier (SGDClassifier).
@@ -158,7 +158,6 @@ def find_params(X, y):
       in training and testing sets.
     """
     do_latent = True
-    #do_latent = decide_if_latent_variables(X, y) # TODO uncomment
     if not do_latent:
         logger.info("Skipping latent variable generation.")
         return {
@@ -234,7 +233,7 @@ def find_params(X, y):
         "alpha": 1e-4,
     }
     study.enqueue_trial(params=initial_params)
-    study.optimize(objective, n_trials=NUM_TRIALS, show_progress_bar=True)
+    study.optimize(objective, n_trials=min(num_trials, MAX_NUM_TRIALS), show_progress_bar=True)
     logger.info("Best trial:")
     logger.info(f"  ROC-AUC: {study.best_value}")
     logger.info(f"  Params: {study.best_params}")

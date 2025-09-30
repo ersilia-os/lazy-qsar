@@ -20,12 +20,13 @@ from ..utils.samplers import BinaryClassifierSamplingUtils as SamplingUtils
 
 from ..utils.logging import logger
 
-from .. import ONNX_IR_VERSION, ONNX_TARGET_OPSET
-
 import onnx
 from onnx import compose
 from onnx import helper
 from onnx import TensorProto
+
+
+NUM_TRIALS = 10
 
 
 class BaseDefaultBinaryClassifier(BaseEstimator, ClassifierMixin):
@@ -44,41 +45,42 @@ class BaseDefaultBinaryClassifier(BaseEstimator, ClassifierMixin):
         self.lv_lr_params = params.get("lv_lr", None)
         self.lv_svc_params = params.get("lv_svc", None)
         self.lv_mlp_params = params.get("lv_mlp", None)
+        self.num_trials = NUM_TRIALS
 
-    def find_params(self, X, y):
+    def find_params(self, X, y, num_trials):
         if self.prep_params is None:
             logger.info("Finding preprocessor parameters...")
             self.prep_params = prep.find_params(X)
         X = prep.Preprocessor(**self.prep_params).fit(X).transform(X)
         if self.fs_params is None:
             logger.info("Finding feature selector parameters...")
-            self.fs_params = fs.find_params(X, y)
+            self.fs_params = fs.find_params(X, y, num_trials)
         X_fs = fs.FeatureSelector(**self.fs_params).fit(X, y).transform(X)
         if self.lv_params is None:
             logger.info("Finding latent variable parameters...")
-            self.lv_params = lv.find_params(X, y)
+            self.lv_params = lv.find_params(X, y, num_trials)
         X_lv = lv.LatentVariables(**self.lv_params).fit(X, y).transform(X)
         if self.lr_params is None:
             logger.info("Finding raw head LR parameters...")
-            self.lr_params = lr.find_params(X, y)
+            self.lr_params = lr.find_params(X, y, num_trials)
         if self.svc_params is None:
             logger.info("Finding raw head SVC parameters...")
-            self.svc_params = svc.find_params(X, y)
+            self.svc_params = svc.find_params(X, y, num_trials)
         if self.fs_lr_params is None:
             logger.info("Finding feature selection with head LR parameters...")
-            self.fs_lr_params = lr.find_params(X_fs, y)
+            self.fs_lr_params = lr.find_params(X_fs, y, num_trials)
         if self.fs_svc_params is None:
             logger.info("Finding feature selection with head SVC parameters...")
-            self.fs_svc_params = svc.find_params(X_fs, y)
+            self.fs_svc_params = svc.find_params(X_fs, y, num_trials)
         if self.lv_lr_params is None:
             logger.info("Finding latent variables with head LR parameters...")
-            self.lv_lr_params = lr.find_params(X_lv, y)
+            self.lv_lr_params = lr.find_params(X_lv, y, num_trials)
         if self.lv_svc_params is None:
             logger.info("Finding latent variables with head SVC parameters...")
-            self.lv_svc_params = svc.find_params(X_lv, y)
+            self.lv_svc_params = svc.find_params(X_lv, y, num_trials)
         if self.lv_mlp_params is None:
             logger.info("Finding latent variables with head MLP parameters...")
-            self.lv_mlp_params = mlp.find_params(X_lv, y)
+            self.lv_mlp_params = mlp.find_params(X_lv, y, num_trials)
         return self
     
     def get_params(self):
@@ -106,10 +108,10 @@ class BaseDefaultBinaryClassifier(BaseEstimator, ClassifierMixin):
         self.lv_lr_params = None
         self.lv_svc_params = None
         self.lv_mlp_params = None
-        
+    
     def fit(self, X, y):
         if self.prep_params is None:
-            self.find_params(X, y)
+            self.find_params(X, y, self.num_trials)
         logger.info("Fitting preprocessor...")
         self.prep = prep.Preprocessor(**self.prep_params)
         self.prep.fit(X)
@@ -194,7 +196,8 @@ class BaseDefaultBinaryClassifier(BaseEstimator, ClassifierMixin):
             "lv_mlp_params": self.lv_mlp_params,
             "model_names": self.model_names,
             "model_scores": self.model_scores,
-            "weights": self.weights.tolist()}
+            "weights": self.weights.tolist(),
+            "num_trials": self.num_trials}
         metadata_path = os.path.join(model_dir, "metadata.json")
         logger.info("Saving metadata to {0}".format(metadata_path))
         metadata["prep_params"] = bool(metadata["prep_params"]["is_sparse"])
@@ -231,6 +234,7 @@ class BaseDefaultBinaryClassifier(BaseEstimator, ClassifierMixin):
         obj.scores = metadata.get("model_scores", None)
         obj.model_names = metadata.get("model_names", None)
         obj.weights = np.array(metadata.get("weights", None))
+        obj.num_trials = metadata.get("num_trials", None)
         return obj
 
 
@@ -238,24 +242,20 @@ class BaseDefaultBinaryClassifier(BaseEstimator, ClassifierMixin):
 class LazyDefaultBinaryClassifier(object):
     def __init__(
         self,
-        num_trials: int = 5,
-        base_test_size: float = 0.25,
-        base_num_splits: int = 3,
+        num_trials: int = 10,
         min_positive_proportion: float = 0.01,
         max_positive_proportion: float = 0.5,
         min_samples: int = 30,
-        max_samples: int = None,
+        max_samples: int = 10000,
         min_positive_samples: int = 10,
         max_num_partitions: int = 100,
-        min_seen_across_partitions: int = None,
+        min_seen_across_partitions: int = 1,
         force_max_positive_proportion_at_partition: bool = False,
         force_on_disk: bool = False,
         random_state: int = 42,
     ):
         self.random_state = random_state
-        self.base_test_size = base_test_size
-        self.base_num_splits = base_num_splits
-        self.base_num_trials = num_trials
+        self.num_trials = num_trials
         self.min_positive_proportion = min_positive_proportion
         self.max_positive_proportion = max_positive_proportion
         self.min_samples = min_samples
@@ -329,7 +329,8 @@ class LazyDefaultBinaryClassifier(object):
             )
             if len(params) < 3:
                 model = BaseDefaultBinaryClassifier()
-                model.find_params(X_sampled, y_sampled)
+                model.num_trials = self.num_trials
+                model.find_params(X_sampled, y_sampled, self.num_trials)
                 params_ = model.get_params()
                 params += [params_]
                 model.fit(X_sampled, y_sampled)
@@ -339,6 +340,7 @@ class LazyDefaultBinaryClassifier(object):
                 model = BaseDefaultBinaryClassifier(
                     params=params_
                 )
+                model.num_trials = self.num_trials
                 model.fit(X_sampled, y_sampled)
             logger.info("Model has successfull been fitted!")
             models += [model]
@@ -403,9 +405,7 @@ class LazyDefaultBinaryClassifier(object):
         metadata = {
             "num_partitions": len(self.models),
             "random_state": self.random_state,
-            "base_test_size": self.base_test_size,
-            "base_num_splits": self.base_num_splits,
-            "base_num_trials": self.base_num_trials,
+            "num_trials": self.num_trials,
             "fit_time": self.fit_time,
         }
         metadata_path = os.path.join(model_dir, "metadata.json")
@@ -421,9 +421,7 @@ class LazyDefaultBinaryClassifier(object):
         with open(metadata_path, "r") as f:
             metadata = json.load(f)
         obj.random_state = metadata.get("random_state", None)
-        obj.base_test_size = metadata.get("base_test_size", None)
-        obj.base_num_splits = metadata.get("base_num_splits", None)
-        obj.base_num_trials = metadata.get("base_num_trials", None)
+        obj.num_trials = metadata.get("num_trials", None)
         obj.fit_time = metadata.get("fit_time", None)
         num_partitions = metadata.get("num_partitions", None)
         if num_partitions <= 0:

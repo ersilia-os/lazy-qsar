@@ -2,7 +2,7 @@ import os
 import sys
 import json
 import pandas as pd
-from lazyqsar.qsar import LazyBinaryQSAR
+from lazyqsar.qsar_v1 import LazyBinaryQSAR
 
 from sklearn.metrics import roc_auc_score, average_precision_score
 

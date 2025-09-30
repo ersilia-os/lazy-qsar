@@ -16,10 +16,10 @@ from ... import ONNX_TARGET_OPSET, ONNX_IR_VERSION
 
 from ...utils.logging import logger
 
-N_TRIALS = 1 # TODO increase for better tuning
+MAX_NUM_TRIALS = 100
 
 
-def find_params(X, y, timeout=None, random_state=42):
+def find_params(X, y, num_trials):
     """
     Tune C for LinearSVC with Optuna using out-of-fold ROC-AUC on decision_function.
 
@@ -30,9 +30,9 @@ def find_params(X, y, timeout=None, random_state=42):
     logger.info("Finding best C for SVC head...")
     X = np.asarray(X)
     y = np.asarray(y)
-    kf = StratifiedKFold(n_splits=5, shuffle=True, random_state=random_state)
+    kf = StratifiedKFold(n_splits=5, shuffle=True)
 
-    n_trials = N_TRIALS
+    n_trials = min(num_trials, MAX_NUM_TRIALS)
 
     def objective(trial):
         C = trial.suggest_float("C", 1e-4, 1e2, log=True)
@@ -40,8 +40,7 @@ def find_params(X, y, timeout=None, random_state=42):
         oof = np.full(len(y), np.nan, dtype=np.float32)
         for tr, va in kf.split(X, y):
             clf = LinearSVC(
-                C=C,
-                random_state=random_state,
+                C=C
             )
             clf.fit(X[tr], y[tr])
             oof[va] = clf.decision_function(X[va]).astype(np.float32)
@@ -53,7 +52,7 @@ def find_params(X, y, timeout=None, random_state=42):
 
     study = optuna.create_study(direction="maximize", pruner=optuna.pruners.MedianPruner())
     study.enqueue_trial({"C": 1.0})
-    study.optimize(objective, n_trials=n_trials, timeout=timeout)
+    study.optimize(objective, n_trials=n_trials)
 
     return {"C": float(study.best_params["C"])}
 
@@ -184,13 +183,13 @@ def convert_to_onnx(name: str, model_dir: str):
         initializer=[W_init, b_init, shape1d_init],
     )
 
-    opset_version = ONNX_TARGET_OPSET           # e.g., 16 or 17
+    opset_version = ONNX_TARGET_OPSET
     model = helper.make_model(
         graph,
         producer_name=f"{name}",
         opset_imports=[helper.make_operatorsetid("", opset_version)],
     )
-    model.ir_version = ONNX_IR_VERSION          # keep your global IR version
+    model.ir_version = ONNX_IR_VERSION
 
     onnx.checker.check_model(model)
     onnx_path = os.path.join(model_dir, f"{name}.onnx")
