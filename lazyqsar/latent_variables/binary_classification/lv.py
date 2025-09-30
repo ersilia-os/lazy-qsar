@@ -20,7 +20,7 @@ from ...utils.logging import logger
 from ... import ONNX_TARGET_OPSET, ONNX_IR_VERSION
 
 
-NUM_TRIALS = 10 # TODO increase to 20 or 50 later
+NUM_TRIALS = 1 # TODO increase to 20 or 50 later
 MIN_FEATURES = 4
 MAX_FEATURES = 512
 
@@ -471,11 +471,11 @@ def convert_to_onnx(name: str, model_dir: str):
         model,
         dummy_input,
         dense_path,
-        input_names=["input_latent"],
-        output_names=["output_latent"],
+        input_names=[f"input_{name}"],
+        output_names=[f"output_{name}"],
         dynamic_axes={
-            "input_latent": {0: "batch_size"},
-            "output_latent": {0: "batch_size"},
+            f"input_{name}": {0: "batch_size"},
+            f"output_{name}": {0: "batch_size"},
         },
         opset_version=opset_version,
     )

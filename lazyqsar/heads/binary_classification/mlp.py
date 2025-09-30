@@ -19,7 +19,7 @@ from ...utils.logging import logger
 from ... import ONNX_TARGET_OPSET, ONNX_IR_VERSION
 
 
-NUM_TRIALS = 10  # TODO: increase
+NUM_TRIALS = 1  # TODO: increase
 NUM_EPOCHS = 30
 BATCH_SIZE = 32
 
@@ -275,64 +275,72 @@ class Head(BaseEstimator, ClassifierMixin):
 
 def convert_to_onnx(name: str, model_dir: str):
     """
-    Convert the HeadForBinaryClassification (PyTorch head + Platt calibrator) to ONNX.
-    Final output is calibrated probabilities as a flat 1D vector [batch_size].
+    Export Torch head -> logits and append Platt calibrator in ONNX.
+    Final output: flat 1D vector [batch_size].
     """
-    head = Head.load(model_dir)
+    head = Head.load(name, model_dir)
     model = head.model
     model.eval()
-    dummy_input = torch.randn(1, head.input_dim)
-    onnx_path = os.path.join(model_dir, f"{name}.onnx")
 
+    onnx_path = os.path.join(model_dir, f"{name}.onnx")
+    dummy_input = torch.randn(1, head.input_dim, dtype=torch.float32)
+
+    # 1) Export Torch model (produces logits_{name})
     torch.onnx.export(
         model,
         dummy_input,
         onnx_path,
-        input_names=[f'input_{name}'],
-        output_names=[f'logits_{name}'],
-        dynamic_axes={
-            f'input_{name}': {0: 'batch_size'},
-            f'logits_{name}': {0: 'batch_size'}
-        },
+        input_names=[f"input_{name}"],
+        output_names=[f"logits_{name}"],
+        dynamic_axes={f"input_{name}": {0: "batch_size"},
+                      f"logits_{name}": {0: "batch_size"}},
         opset_version=ONNX_TARGET_OPSET,
     )
 
+    # 2) Patch ONNX: add Platt = Mul + Add + Sigmoid (+ Reshape to 1D)
     onnx_model = onnx.load(onnx_path)
 
-    coef = head.calibrator.coef_.astype(np.float32).reshape(1,)
-    intercept = head.calibrator.intercept_.astype(np.float32).reshape(1,)
+    coef = np.asarray(head.calibrator.coef_, dtype=np.float32).reshape(1,)       # scalar
+    intercept = np.asarray(head.calibrator.intercept_, dtype=np.float32).reshape(1,)
+    shape1d = np.array([-1], dtype=np.int64)
 
-    coef_init = numpy_helper.from_array(coef, name=f"calib_coef_{name}")
-    intercept_init = numpy_helper.from_array(intercept, name=f"calib_intercept_{name}")
-    onnx_model.graph.initializer.extend([coef_init, intercept_init])
+    onnx_model.graph.initializer.extend([
+        numpy_helper.from_array(coef, name=f"calib_coef_{name}"),
+        numpy_helper.from_array(intercept, name=f"calib_intercept_{name}"),
+        numpy_helper.from_array(shape1d, name=f"shape1d_{name}"),
+    ])
 
     mul_node = helper.make_node(
-        f"Mul_{name}",
+        "Mul",
         inputs=[f"logits_{name}", f"calib_coef_{name}"],
         outputs=[f"logits_scaled_{name}"],
         name=f"Calib_Mul_{name}",
     )
     add_node = helper.make_node(
-        f"Add_{name}",
+        "Add",
         inputs=[f"logits_scaled_{name}", f"calib_intercept_{name}"],
         outputs=[f"logits_shifted_{name}"],
         name=f"Calib_Add_{name}",
     )
     sigmoid_node = helper.make_node(
-        f"Sigmoid_{name}",
+        "Sigmoid",
         inputs=[f"logits_shifted_{name}"],
-        outputs=[f"output_head_{name}"],
+        outputs=[f"probs_2d_{name}"],
         name=f"Calib_Sigmoid_{name}",
     )
-    onnx_model.graph.node.extend([mul_node, add_node, sigmoid_node])
+    reshape_node = helper.make_node(
+        "Reshape",
+        inputs=[f"probs_2d_{name}", f"shape1d_{name}"],
+        outputs=[f"output_{name}"],
+        name=f"Output_Reshape1D_{name}",
+    )
 
+    onnx_model.graph.node.extend([mul_node, add_node, sigmoid_node, reshape_node])
+
+    # Replace graph outputs with our final 1D tensor
     del onnx_model.graph.output[:]
     onnx_model.graph.output.extend([
-        helper.make_tensor_value_info(
-            f"output_{name}",
-            TensorProto.FLOAT,
-            ["batch_size"]
-        )
+        helper.make_tensor_value_info(f"output_{name}", TensorProto.FLOAT, ["batch_size"])
     ])
 
     onnx_model.graph.name = f"{name}"
@@ -341,6 +349,6 @@ def convert_to_onnx(name: str, model_dir: str):
     onnx.checker.check_model(onnx_model)
     onnx.save(onnx_model, onnx_path)
     logger.info(f"ONNX model with calibrator saved to {onnx_path}")
-
     return onnx_path
+
 

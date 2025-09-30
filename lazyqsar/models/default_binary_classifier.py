@@ -20,9 +20,12 @@ from ..utils.samplers import BinaryClassifierSamplingUtils as SamplingUtils
 
 from ..utils.logging import logger
 
+from .. import ONNX_IR_VERSION, ONNX_TARGET_OPSET
+
 import onnx
 from onnx import compose
 from onnx import helper
+from onnx import TensorProto
 
 
 class BaseDefaultBinaryClassifier(BaseEstimator, ClassifierMixin):
@@ -138,7 +141,7 @@ class BaseDefaultBinaryClassifier(BaseEstimator, ClassifierMixin):
             self.lv_svc.score,
             self.lv_mlp.score,
         ]
-        self.weights = np.clip(np.array(self.model_scores) - 0.5, 0, 1)
+        self.weights = np.clip(np.array(self.model_scores) - 0.5, 0, 1)+1e-4
         self.weights = self.weights / np.sum(self.weights)
         logger.info(f"Individual model scores: {self.model_scores}")
         logger.info(f"Model weights: {self.weights}")
@@ -241,7 +244,7 @@ class LazyDefaultBinaryClassifier(object):
         min_positive_proportion: float = 0.01,
         max_positive_proportion: float = 0.5,
         min_samples: int = 30,
-        max_samples: int = None,
+        max_samples: int = None, # TODO: If None, will be decided based on data
         min_positive_samples: int = 10,
         max_num_partitions: int = 100,
         min_seen_across_partitions: int = None,
@@ -435,90 +438,346 @@ class LazyDefaultBinaryClassifier(object):
         return obj
     
 
-def _onnx_logger(model):
-    logger.info("**** ONNX Model Details ****")
-    logger.info(f"ONNX model: {model.graph.name} (ir_version: {model.ir_version}, opset_import: {[opset.version for opset in model.opset_import]})")
-    for node in model.graph.node:
-        logger.info(f"  Node: {node.name} (op_type: {node.op_type}, inputs: {node.input}, outputs: {node.output})")
+def convert_partition_to_onnx(partition_dir: str, clean: bool = True) -> str:
+
+    if not os.path.exists(partition_dir):
+        raise Exception(f"Partition directory does not exist: {partition_dir}")
+    
+    if os.path.exists(os.path.join(partition_dir, "lazy_model.onnx")):
+        logger.info(f"ONNX model already exists in {partition_dir}, skipping conversion.")
+        return os.path.join(partition_dir, "lazy_model.onnx")
+
+    def _onnx_logger(model):
+        logger.info("**** ONNX Model Details ****")
+        logger.info(f"ONNX model: {model.graph.name} (ir_version: {model.ir_version}, opset_import: {[opset.version for opset in model.opset_import]})")
+        for node in model.graph.node:
+            logger.info(f"  Node: {node.name} (op_type: {node.op_type}, inputs: {list(node.input)}, outputs: {list(node.output)})")
         for input_tensor in model.graph.input:
-            dims = [d.dim_value if (d.HasField("dim_value")) else "?" for d in input_tensor.type.tensor_type.shape.dim]
+            dims = [d.dim_value if d.HasField('dim_value') else (d.dim_param if d.HasField('dim_param') else '?')
+                    for d in input_tensor.type.tensor_type.shape.dim]
             logger.info(f"    Input: {input_tensor.name}, shape: {dims}")
         for output_tensor in model.graph.output:
-            dims = [d.dim_value if (d.HasField("dim_value")) else "?" for d in output_tensor.type.tensor_type.shape.dim]
+            dims = [d.dim_value if d.HasField('dim_value') else (d.dim_param if d.HasField('dim_param') else '?')
+                    for d in output_tensor.type.tensor_type.shape.dim]
             logger.info(f"    Output: {output_tensor.name}, shape: {dims}")
-    logger.info("****************************")
+        logger.info("****************************")
 
+    def _check_graph_outputs(model):
+        g = model.graph
+        produced = {o for n in g.node for o in n.output}
+        ok = True
+        logger.info(f"Model: {g.name}")
+        for out in [o.name for o in g.output]:
+            if out in produced:
+                logger.info(f"Graph output '{out}' is produced by a node.")
+            else:
+                logger.info(f"Graph output '{out}' is not produced by any node")
+                ok = False
+        return ok
 
-def _check_graph_outputs(model):
-    g = model.graph
-    produced = set()
-    for node in g.node:
-        produced.update(node.output)
-    declared_outputs = [out.name for out in g.output]
-    logger.info(f"Model: {g.name}")
-    for out in declared_outputs:
-        if out in produced:
-            logger.info(f"Graph output '{out}' is produced by a node.")
-            return True
-        else:
-            logger.info(f"Graph output '{out}' is not produced by any node")
-            return False
+    def _fix_graph_outputs_with_identity(model):
+        g = model.graph
+        name = g.name.lower()
+        if not _check_graph_outputs(model):
+            if g.output:
+                out_name = g.output[0].name
+                last_node_out = g.node[-1].output[0]
+                if out_name != last_node_out:
+                    g.node.append(helper.make_node(
+                        "Identity", inputs=[last_node_out], outputs=[out_name], name=f"OutputFixer_{name}"
+                    ))
+        # Prefix everything to keep namespaces disjoint when merging
+        model = compose.add_prefix(model, f"{name}_")
+        return model
 
-def _fix_graph_outputs_with_identity(model):
-    g = model.graph
-    name = g.name.lower()
-    if not _check_graph_outputs(model):
-        if g.output:
-            out_name = g.output[0].name
-            last_node_out = g.node[-1].output[0]
-            if out_name != last_node_out:
-                identity_node = helper.make_node(
-                    "Identity",
-                    inputs=[last_node_out],
-                    outputs=[out_name],
-                    name=f"OutputFixer_{name}"
-                )
-                g.node.append(identity_node)
-    model = compose.add_prefix(model, f"{name}_")
-    return model
+    def _standardize_io_names(model, input_name="input", output_name="output"):
+        """
+        Expose a single external input called `input` and a single external output called `output`.
+        Internals keep their original names; we alias `input` -> <old_input_name> via Identity.
+        """
+        g = model.graph
+        assert len(g.input) >= 1, "Merged graph has no external inputs."
+        old_in_vi = g.input[0]
+        old_in_name = old_in_vi.name
 
+        elem_type = old_in_vi.type.tensor_type.elem_type or TensorProto.FLOAT
+        dims = []
+        for i, d in enumerate(old_in_vi.type.tensor_type.shape.dim):
+            if d.HasField("dim_param"):
+                dims.append(d.dim_param if i != 0 else "batch_size")
+            elif d.HasField("dim_value"):
+                dims.append(d.dim_value if i != 0 else "batch_size")
+            else:
+                dims.append("batch_size" if i == 0 else None)
+        if not dims:
+            dims = ["batch_size"]
 
-def convert_partition_to_onnx(partition_dir: str):
+        # Replace external input and alias back to internal name
+        g.input.remove(old_in_vi)
+        g.input.extend([helper.make_tensor_value_info(input_name, elem_type, dims)])
+        g.node.insert(0, helper.make_node("Identity", inputs=[input_name], outputs=[old_in_name], name="InputAlias"))
+
+        # Expose a single external output [batch_size] (FLOAT)
+        del g.output[:]
+        g.output.extend([helper.make_tensor_value_info(output_name, TensorProto.FLOAT, ["batch_size"])])
+        return model
+
+    def _add_scalar_mul_and_sum(model, weights, head_outputs):
+        # One scalar per head avoids bad broadcasting
+        weighted_inputs = []
+        for i, (name_i, wi) in enumerate(zip(head_outputs, weights)):
+            w_name = f"w_{i}"
+            w_init = helper.make_tensor(name=w_name, data_type=onnx.TensorProto.FLOAT, dims=[], vals=[float(wi)])
+            model.graph.initializer.append(w_init)
+            mul_out = f"weighted_{name_i}"
+            weighted_inputs.append(mul_out)
+            model.graph.node.append(helper.make_node("Mul", inputs=[name_i, w_name], outputs=[mul_out], name=f"WeightMul_{i}"))
+        model.graph.node.append(helper.make_node("Sum", inputs=weighted_inputs, outputs=["output"], name="WeightedSum"))
+        return model
+
+    # ---------- Export individual pieces then merge (all FP32) ----------
+    logger.info(f"Converting partition at {partition_dir} to ONNX...")
     model_dir = partition_dir
     prep_onnx_file = prep.convert_to_onnx("prep", model_dir)
-    fs_onnx_file = fs.convert_to_onnx("fs", model_dir)
-    lv_onnx_file = lv.convert_to_onnx("lv", model_dir)
-    lr_onnx_file = lr.convert_to_onnx("lr", model_dir)
-    svc_onnx_file = svc.convert_to_onnx("svc", model_dir)
-    fs_lr_onnx_file = lr.convert_to_onnx("fs_lr", model_dir)
-    fs_svc_onnx_file = svc.convert_to_onnx("fs_svc", model_dir)
-    lv_lr_onnx_file = lr.convert_to_onnx("lv_lr", model_dir)
-    lv_svc_onnx_file = svc.convert_to_onnx("lv_svc", model_dir)
-    lv_mlp_onnx_file = mlp.convert_to_onnx("lv_mlp", model_dir)
-    onnx_graphs = {}
-    onnx_graphs["prep"] = onnx.load(prep_onnx_file)
-    onnx_graphs["fs"] = onnx.load(fs_onnx_file)
-    onnx_graphs["lv"] = onnx.load(lv_onnx_file)
-    onnx_graphs["lr"] = onnx.load(lr_onnx_file)
-    onnx_graphs["svc"] = onnx.load(svc_onnx_file)
-    onnx_graphs["fs_lr"] = onnx.load(fs_lr_onnx_file)
-    onnx_graphs["fs_svc"] = onnx.load(fs_svc_onnx_file)
-    onnx_graphs["lv_lr"] = onnx.load(lv_lr_onnx_file)
-    onnx_graphs["lv_svc"] = onnx.load(lv_svc_onnx_file)
-    onnx_graphs["lv_mlp"] = onnx.load(lv_mlp_onnx_file)
-    onnx_graphs = dict((k, _fix_graph_outputs_with_identity(v)) for k, v in onnx_graphs.items())
+    fs_onnx_file   = fs.convert_to_onnx("fs", model_dir)
+    lv_onnx_file   = lv.convert_to_onnx("lv", model_dir)
+    lr_onnx_file   = lr.convert_to_onnx("lr", model_dir)
+    svc_onnx_file  = svc.convert_to_onnx("svc", model_dir)
+    fs_lr_onnx_file   = lr.convert_to_onnx("fs_lr", model_dir)
+    fs_svc_onnx_file  = svc.convert_to_onnx("fs_svc", model_dir)
+    lv_lr_onnx_file   = lr.convert_to_onnx("lv_lr", model_dir)
+    lv_svc_onnx_file  = svc.convert_to_onnx("lv_svc", model_dir)
+    lv_mlp_onnx_file  = mlp.convert_to_onnx("lv_mlp", model_dir)
+
+    onnx_graphs = {
+        "prep":  onnx.load(prep_onnx_file),
+        "fs":    onnx.load(fs_onnx_file),
+        "lv":    onnx.load(lv_onnx_file),
+        "lr":    onnx.load(lr_onnx_file),
+        "svc":   onnx.load(svc_onnx_file),
+        "fs_lr": onnx.load(fs_lr_onnx_file),
+        "fs_svc": onnx.load(fs_svc_onnx_file),
+        "lv_lr":  onnx.load(lv_lr_onnx_file),
+        "lv_svc": onnx.load(lv_svc_onnx_file),
+        "lv_mlp": onnx.load(lv_mlp_onnx_file),
+    }
+    onnx_graphs = {k: _fix_graph_outputs_with_identity(v) for k, v in onnx_graphs.items()}
 
     for name, onnx_model in onnx_graphs.items():
         logger.info(f"Checking ONNX graph outputs for model: {name}")
         _onnx_logger(onnx_model)
 
-    model = onnx_graphs[0]
-    for next_model in onnx_graphs[1:]:
-        logger.debug(next_model.graph.name)
-        src_output = model.graph.output[0].name
-        dst_input = next_model.graph.input[0].name
-        model = compose.merge_models(model, next_model, io_map=[(src_output, dst_input)])
+    logger.info("Merging ONNX graphs...")
+    model = compose.merge_models(
+        onnx_graphs["prep"], onnx_graphs["fs"],
+        io_map=[("prep_output_prep", "fs_input_fs")],
+        outputs=["prep_output_prep", "fs_output_fs"]
+    )
+    model = compose.merge_models(
+        model, onnx_graphs["lv"],
+        io_map=[("prep_output_prep", "lv_input_lv")],
+        outputs=["prep_output_prep", "fs_output_fs", "lv_output_lv"]
+    )
+    model = compose.merge_models(
+        model, onnx_graphs["lr"],
+        io_map=[("prep_output_prep", "lr_input_lr")],
+        outputs=["prep_output_prep", "fs_output_fs", "lv_output_lv", "lr_output_lr"]
+    )
+    model = compose.merge_models(
+        model, onnx_graphs["svc"],
+        io_map=[("prep_output_prep", "svc_input_svc")],
+        outputs=["prep_output_prep", "fs_output_fs", "lv_output_lv", "lr_output_lr", "svc_output_svc"]
+    )
+    model = compose.merge_models(
+        model, onnx_graphs["fs_lr"],
+        io_map=[("fs_output_fs", "fs_lr_input_fs_lr")],
+        outputs=["prep_output_prep", "fs_output_fs", "lv_output_lv", "lr_output_lr", "svc_output_svc", "fs_lr_output_fs_lr"]
+    )
+    model = compose.merge_models(
+        model, onnx_graphs["fs_svc"],
+        io_map=[("fs_output_fs", "fs_svc_input_fs_svc")],
+        outputs=["prep_output_prep", "fs_output_fs", "lv_output_lv", "lr_output_lr", "svc_output_svc", "fs_lr_output_fs_lr", "fs_svc_output_fs_svc"]
+    )
+    model = compose.merge_models(
+        model, onnx_graphs["lv_lr"],
+        io_map=[("lv_output_lv", "lv_lr_input_lv_lr")],
+        outputs=["prep_output_prep", "fs_output_fs", "lv_output_lv", "lr_output_lr", "svc_output_svc",
+                 "fs_lr_output_fs_lr", "fs_svc_output_fs_svc", "lv_lr_output_lv_lr"]
+    )
+    model = compose.merge_models(
+        model, onnx_graphs["lv_svc"],
+        io_map=[("lv_output_lv", "lv_svc_input_lv_svc")],
+        outputs=["prep_output_prep", "fs_output_fs", "lv_output_lv", "lr_output_lr", "svc_output_svc",
+                 "fs_lr_output_fs_lr", "fs_svc_output_fs_svc", "lv_lr_output_lv_lr", "lv_svc_output_lv_svc"]
+    )
+    model = compose.merge_models(
+        model, onnx_graphs["lv_mlp"],
+        io_map=[("lv_output_lv", "lv_mlp_input_lv_mlp")],
+        outputs=["prep_output_prep", "fs_output_fs", "lv_output_lv", "lr_output_lr", "svc_output_svc",
+                 "fs_lr_output_fs_lr", "fs_svc_output_fs_svc", "lv_lr_output_lv_lr", "lv_svc_output_lv_svc",
+                 "lv_mlp_output_lv_mlp"]
+    )
+
+    # Weighted ensemble
+    metadata_path = os.path.join(partition_dir, "metadata.json")
+    with open(metadata_path, "r") as f:
+        metadata = json.load(f)
+
+    head_outputs = [
+        "lr_output_lr",
+        "svc_output_svc",
+        "fs_lr_output_fs_lr",
+        "fs_svc_output_fs_svc",
+        "lv_lr_output_lv_lr",
+        "lv_svc_output_lv_svc",
+        "lv_mlp_output_lv_mlp",
+    ]
+    weights = np.array(metadata.get("weights", None), dtype=np.float32)
+    if weights is None or len(weights) != len(head_outputs):
+        logger.warning("Weights missing or wrong length; using uniform weights.")
+        weights = np.ones(len(head_outputs), dtype=np.float32) / float(len(head_outputs))
+    logger.info(f"Weights: {weights}")
+
+    model = _add_scalar_mul_and_sum(model, weights, head_outputs)
+    model = _standardize_io_names(model, input_name="input", output_name="output")
 
     final_onnx_path = os.path.join(partition_dir, "lazy_model.onnx")
     onnx.save(model, final_onnx_path)
+    logger.info(f"Final FP32 ONNX model saved to {final_onnx_path}")
+    _onnx_logger(model)
+
+    # Clean intermediates but keep final models
+    if clean:
+        logger.info("Cleaning up intermediate files...")
+        keep = {"lazy_model.onnx"}
+        for fn in os.listdir(partition_dir):
+            fp = os.path.join(partition_dir, fn)
+            if fn in keep:
+                continue
+            try:
+                if os.path.isfile(fp):
+                    os.remove(fp)
+                elif os.path.isdir(fp):
+                    shutil.rmtree(fp)
+            except Exception as e:
+                logger.warning(f"Could not remove {fp}: {e}")
+
     return final_onnx_path
+
+
+import os
+import copy
+import onnx
+from onnx import helper, numpy_helper, TensorProto
+
+def convert_to_onnx(model_dir: str, clean: bool = True):
+    if not os.path.exists(model_dir):
+        raise Exception(f"Model directory does not exist: {model_dir}")
+    
+    if clean:
+        final_path = os.path.join(model_dir, "lazy_model.onnx")
+        if os.path.exists(final_path):
+            logger.info(f"ONNX model already exists in {model_dir}, removing it.")
+            os.remove(final_path)
+
+    # Convert each partition first
+    partitions = []
+    for fn in os.listdir(model_dir):
+        if fn.startswith("partition_"):
+            partition_dir = os.path.join(model_dir, fn)
+            convert_partition_to_onnx(partition_dir, clean=clean)
+            partitions.append(partition_dir)
+
+    partition_paths = sorted(
+        os.path.join(p, "lazy_model.onnx") for p in partitions
+    )
+
+    # Load all partition models
+    partition_models = [onnx.load(p) for p in partition_paths]
+
+    # Check input/output consistency
+    ref_inputs = partition_models[0].graph.input
+    ref_outputs = partition_models[0].graph.output
+    output_shape = ref_outputs[0].type.tensor_type.shape
+
+    for i, m in enumerate(partition_models[1:], start=1):
+        if (
+            m.graph.input[0].type != ref_inputs[0].type
+            or m.graph.output[0].type != ref_outputs[0].type
+        ):
+            raise Exception(f"Partition {i} has mismatched I/O types")
+
+    # Collect nodes, initializers, value_infos
+    nodes, initializers, value_infos = [], [], []
+    partition_outputs = []
+
+    for idx, part in enumerate(partition_models):
+        suffix = f"_p{idx}"
+
+        # copy nodes with attributes preserved
+        for node in part.graph.node:
+            new_node = copy.deepcopy(node)
+            # rename inputs/outputs
+            new_node.input[:] = [inp + suffix if inp not in [ref_inputs[0].name] else inp
+                                 for inp in new_node.input]
+            new_node.output[:] = [out + suffix for out in new_node.output]
+            new_node.name = node.name + suffix
+            nodes.append(new_node)
+
+        # copy initializers
+        for init in part.graph.initializer:
+            new_init = copy.deepcopy(init)
+            new_init.name = init.name + suffix
+            initializers.append(new_init)
+
+        # copy value_info
+        for v in part.graph.value_info:
+            new_vi = copy.deepcopy(v)
+            new_vi.name = v.name + suffix
+            value_infos.append(new_vi)
+
+        # renamed output
+        partition_outputs.append(part.graph.output[0].name + suffix)
+
+    # Add averaging logic: Sum + Div
+    sum_output = "sum_output"
+    avg_output = "output"
+    divisor_name = "num_partitions"
+
+    nodes.append(
+        helper.make_node("Sum", inputs=partition_outputs, outputs=[sum_output], name="SumPartitions")
+    )
+    initializers.append(
+        helper.make_tensor(divisor_name, TensorProto.FLOAT, [], [float(len(partition_models))])
+    )
+    nodes.append(
+        helper.make_node("Div", inputs=[sum_output, divisor_name], outputs=[avg_output], name="AverageOutput")
+    )
+
+    # Build final graph
+    graph = helper.make_graph(
+        nodes=nodes,
+        name="LazyEnsemble",
+        inputs=ref_inputs,
+        outputs=[
+            helper.make_tensor_value_info(
+                avg_output,
+                ref_outputs[0].type.tensor_type.elem_type,
+                [d.dim_value for d in output_shape.dim],
+            )
+        ],
+        initializer=initializers,
+        value_info=value_infos,
+    )
+
+    model = helper.make_model(graph, producer_name="lazy_model")
+    model.ir_version = onnx.IR_VERSION
+    logger.info(f"Ensemble model IR version {model.ir_version}")
+
+    final_path = os.path.join(model_dir, "lazy_model.onnx")
+    onnx.save(model, final_path)
+    logger.info(f"Final ensemble ONNX model saved to {final_path}")
+
+    return final_path
+
+

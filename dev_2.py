@@ -60,7 +60,7 @@ from lazyqsar.models.default_binary_classifier import convert_partition_to_onnx
 convert_partition_to_onnx("test_dev_2/partition_000")
 from lazyqsar.artifacts.artifact_binary_classifier import LazyBinaryClassifierArtifact
 
-model = LazyBinaryClassifierArtifact.load("test_dev_2/partition_000/lazy_model.onnx")
+model = LazyBinaryClassifierArtifact.load("test_dev_2/lazy_model.onnx")
 
 y_pred = model.predict(X_test)
 

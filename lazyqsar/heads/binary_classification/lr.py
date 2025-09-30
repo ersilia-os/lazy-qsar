@@ -21,7 +21,7 @@ from onnx import helper, numpy_helper, TensorProto
 
 from ... import ONNX_TARGET_OPSET, ONNX_IR_VERSION
 
-N_TRIALS = 10 # TODO increase for better tuning
+N_TRIALS = 1 # TODO increase for better tuning
 
 
 def find_params(X, y):

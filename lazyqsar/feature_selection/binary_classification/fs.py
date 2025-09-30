@@ -18,7 +18,7 @@ from ... import ONNX_TARGET_OPSET, ONNX_IR_VERSION
 MIN_FEATURES = 4
 MAX_FEATURES = 2048
 
-NUM_TRIALS = 10
+NUM_TRIALS = 1
 
 
 def decide_if_feature_selection(X, y):
