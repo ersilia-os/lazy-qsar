@@ -5,6 +5,7 @@ from lazyqsar.utils.logging import logger
 
 prefix = "ames"
 descriptor_class = MorganFingerprint
+descriptor_class = ChemeleonDescriptor
 
 with open("benchmark/data/{0}_train.csv".format(prefix), "r") as f:
     reader = csv.reader(f)
@@ -55,12 +56,12 @@ print(y_pred)
 from sklearn.metrics import roc_auc_score
 print("ROC-AUC: ", roc_auc_score(y_test, y_pred))
 
-from lazyqsar.models.default_binary_classifier import convert_partition_to_onnx
+from lazyqsar.models.default_binary_classifier import convert_to_onnx
 
-convert_partition_to_onnx("test_dev_2/partition_000")
+convert_to_onnx("test_dev_2")
 from lazyqsar.artifacts.artifact_binary_classifier import LazyBinaryClassifierArtifact
 
-model = LazyBinaryClassifierArtifact.load("test_dev_2/lazy_model.onnx")
+model = LazyBinaryClassifierArtifact.load("test_dev_2")
 
 y_pred = model.predict(X_test)
 

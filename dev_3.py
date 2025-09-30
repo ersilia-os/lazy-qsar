@@ -40,7 +40,7 @@ print("Shape of testing descriptors: ", X_test.shape)
 
 from lazyqsar.artifacts.artifact_binary_classifier import LazyBinaryClassifierArtifact
 
-model = LazyBinaryClassifierArtifact.load("test_dev_2/lazy_model.onnx")
+model = LazyBinaryClassifierArtifact.load("test_dev_2")
 
 y_pred = model.predict(X_test)
 print(y_pred)

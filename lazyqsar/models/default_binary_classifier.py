@@ -244,7 +244,7 @@ class LazyDefaultBinaryClassifier(object):
         min_positive_proportion: float = 0.01,
         max_positive_proportion: float = 0.5,
         min_samples: int = 30,
-        max_samples: int = None, # TODO: If None, will be decided based on data
+        max_samples: int = None,
         min_positive_samples: int = 10,
         max_num_partitions: int = 100,
         min_seen_across_partitions: int = None,
@@ -665,11 +665,6 @@ def convert_partition_to_onnx(partition_dir: str, clean: bool = True) -> str:
     return final_onnx_path
 
 
-import os
-import copy
-import onnx
-from onnx import helper, numpy_helper, TensorProto
-
 def convert_to_onnx(model_dir: str, clean: bool = True):
     if not os.path.exists(model_dir):
         raise Exception(f"Model directory does not exist: {model_dir}")
@@ -677,10 +672,8 @@ def convert_to_onnx(model_dir: str, clean: bool = True):
     if clean:
         final_path = os.path.join(model_dir, "lazy_model.onnx")
         if os.path.exists(final_path):
-            logger.info(f"ONNX model already exists in {model_dir}, removing it.")
             os.remove(final_path)
 
-    # Convert each partition first
     partitions = []
     for fn in os.listdir(model_dir):
         if fn.startswith("partition_"):
@@ -688,96 +681,11 @@ def convert_to_onnx(model_dir: str, clean: bool = True):
             convert_partition_to_onnx(partition_dir, clean=clean)
             partitions.append(partition_dir)
 
-    partition_paths = sorted(
-        os.path.join(p, "lazy_model.onnx") for p in partitions
-    )
+    partition_paths = sorted(os.path.join(p, "lazy_model.onnx") for p in partitions)
 
-    # Load all partition models
-    partition_models = [onnx.load(p) for p in partition_paths]
-
-    # Check input/output consistency
-    ref_inputs = partition_models[0].graph.input
-    ref_outputs = partition_models[0].graph.output
-    output_shape = ref_outputs[0].type.tensor_type.shape
-
-    for i, m in enumerate(partition_models[1:], start=1):
-        if (
-            m.graph.input[0].type != ref_inputs[0].type
-            or m.graph.output[0].type != ref_outputs[0].type
-        ):
-            raise Exception(f"Partition {i} has mismatched I/O types")
-
-    # Collect nodes, initializers, value_infos
-    nodes, initializers, value_infos = [], [], []
-    partition_outputs = []
-
-    for idx, part in enumerate(partition_models):
-        suffix = f"_p{idx}"
-
-        # copy nodes with attributes preserved
-        for node in part.graph.node:
-            new_node = copy.deepcopy(node)
-            # rename inputs/outputs
-            new_node.input[:] = [inp + suffix if inp not in [ref_inputs[0].name] else inp
-                                 for inp in new_node.input]
-            new_node.output[:] = [out + suffix for out in new_node.output]
-            new_node.name = node.name + suffix
-            nodes.append(new_node)
-
-        # copy initializers
-        for init in part.graph.initializer:
-            new_init = copy.deepcopy(init)
-            new_init.name = init.name + suffix
-            initializers.append(new_init)
-
-        # copy value_info
-        for v in part.graph.value_info:
-            new_vi = copy.deepcopy(v)
-            new_vi.name = v.name + suffix
-            value_infos.append(new_vi)
-
-        # renamed output
-        partition_outputs.append(part.graph.output[0].name + suffix)
-
-    # Add averaging logic: Sum + Div
-    sum_output = "sum_output"
-    avg_output = "output"
-    divisor_name = "num_partitions"
-
-    nodes.append(
-        helper.make_node("Sum", inputs=partition_outputs, outputs=[sum_output], name="SumPartitions")
-    )
-    initializers.append(
-        helper.make_tensor(divisor_name, TensorProto.FLOAT, [], [float(len(partition_models))])
-    )
-    nodes.append(
-        helper.make_node("Div", inputs=[sum_output, divisor_name], outputs=[avg_output], name="AverageOutput")
-    )
-
-    # Build final graph
-    graph = helper.make_graph(
-        nodes=nodes,
-        name="LazyEnsemble",
-        inputs=ref_inputs,
-        outputs=[
-            helper.make_tensor_value_info(
-                avg_output,
-                ref_outputs[0].type.tensor_type.elem_type,
-                [d.dim_value for d in output_shape.dim],
-            )
-        ],
-        initializer=initializers,
-        value_info=value_infos,
-    )
-
-    model = helper.make_model(graph, producer_name="lazy_model")
-    model.ir_version = onnx.IR_VERSION
-    logger.info(f"Ensemble model IR version {model.ir_version}")
-
-    final_path = os.path.join(model_dir, "lazy_model.onnx")
-    onnx.save(model, final_path)
-    logger.info(f"Final ensemble ONNX model saved to {final_path}")
-
-    return final_path
-
-
+    for onnx_file in partition_paths:
+        suffix = onnx_file.split("/lazy_model")[0].split("partition_")[-1]
+        final_onnx_path = os.path.join(model_dir, f"model_{suffix}.onnx")
+        shutil.copy(onnx_file, final_onnx_path)
+        logger.info(f"Copied partition ONNX model to {final_onnx_path}")
+        shutil.rmtree(onnx_file.split("/lazy_model")[0])

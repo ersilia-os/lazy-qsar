@@ -1,20 +1,33 @@
+import os
+import numpy as np
 import onnxruntime as ort
 
 
 class LazyBinaryClassifierArtifact(object):
 
-    def __init__(self):
-        self.session = None
+    def __init__(self, sessions=None):
+        self.sessions = sessions
 
     def predict(self, X):
         X = X.astype('float32')
-        if self.session is None:
+        if self.sessions is None:
             raise ValueError("Model not loaded. Call `load` first.")
-        inputs = {self.session.get_inputs()[0].name: X}
-        return self.session.run(None, inputs)[0]
+        R = []
+        for session in self.sessions:
+            inputs = {session.get_inputs()[0].name: X}
+            R += [session.run(None, inputs)[0].tolist()]
+        R = np.array(R)
+        y_pred = np.mean(R, axis=0)
+        return y_pred
 
     @classmethod
-    def load(cls, onnx_file: str):
-        obj = cls()
-        obj.session = ort.InferenceSession(onnx_file)
+    def load(cls, model_dir: str):
+        onnx_files = []
+        for fn in os.listdir(model_dir):
+            if fn.endswith(".onnx"):
+                onnx_files += [os.path.join(model_dir, fn)]
+        sessions = []
+        for onnx_file in onnx_files:
+            sessions += [ort.InferenceSession(onnx_file)]
+        obj = cls(sessions=sessions)
         return obj
