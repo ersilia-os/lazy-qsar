@@ -1,4 +1,4 @@
-from lazyqsar.assemblers.default_binary_classifier import convert_to_onnx
+from lazyqsar.assemblers.eclectic_binary_classifier import convert_to_onnx
 
 convert_to_onnx("test_dev_2")
 
