@@ -42,12 +42,7 @@ Pre-calculate your descriptors using the preferred method. We recommend using th
 ```python
 import lazyqsar
 
-X_train = "my_descriptors" #path to descriptors
-X_test = "my_descriptors" #path to descriptors
-
- model = lazyqsar.LazyBinaryClassifier(
-    model_type="logistic_regression"
-    )
+model = lazyqsar.LazyBinaryClassifier()
 model.fit(X_train, y_train)
 model.save_model(model_path)
 y_hat = model.predict_proba(X_test)
