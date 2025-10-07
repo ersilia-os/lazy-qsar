@@ -19,6 +19,7 @@ from ... import ONNX_TARGET_OPSET, ONNX_IR_VERSION
 
 
 MAX_NUM_TRIALS = 100
+MAX_ITER = 1000
 
 
 def find_params(X, y, num_trials):
@@ -29,7 +30,7 @@ def find_params(X, y, num_trials):
 
     n_splits = 5
     random_state = 42
-    max_iter = 1000
+    max_iter = min(MAX_ITER, 1000)
     n_trials = min(num_trials, MAX_NUM_TRIALS)
 
     logger.info("Finding best C for logistic regression head with Optuna...")
@@ -47,6 +48,9 @@ def find_params(X, y, num_trials):
                 C=C,
                 max_iter=max_iter,
                 random_state=random_state,
+                solver="saga",
+                class_weight="balanced",
+                n_jobs=-1,
             )
             clf.fit(X[tr], y[tr])
             oof[va] = clf.predict_proba(X[va])[:, 1].astype(np.float32)
@@ -76,7 +80,7 @@ class Head(BaseEstimator, ClassifierMixin):
 
     def fit(self, X, y):
         logger.info("Fitting logistic regression head...")
-        self.model = LogisticRegression(C=self.C, class_weight="balanced")
+        self.model = LogisticRegression(C=self.C, class_weight="balanced", solver="saga", max_iter=MAX_ITER, n_jobs=-1)
         self.model.fit(X, y)
         self.calibrate(X, y)
         self.input_dim = X.shape[1]

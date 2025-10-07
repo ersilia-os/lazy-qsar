@@ -17,6 +17,7 @@ from ... import ONNX_TARGET_OPSET, ONNX_IR_VERSION
 from ...utils.logging import logger
 
 MAX_NUM_TRIALS = 100
+MAX_ITER = 1000
 
 
 def find_params(X, y, num_trials):
@@ -37,6 +38,11 @@ def find_params(X, y, num_trials):
     else:
         dual = True
 
+    if dual:
+        loss = "hinge"
+    else:
+        loss = "squared_hinge"
+
     n_trials = min(num_trials, MAX_NUM_TRIALS)
 
     def objective(trial):
@@ -44,7 +50,7 @@ def find_params(X, y, num_trials):
 
         oof = np.full(len(y), np.nan, dtype=np.float32)
         for tr, va in kf.split(X, y):
-            clf = LinearSVC(C=C, dual=dual, class_weight="balanced", max_iter=5000)
+            clf = LinearSVC(C=C, dual=dual, loss=loss, class_weight="balanced", max_iter=MAX_ITER)
             clf.fit(X[tr], y[tr])
             oof[va] = clf.decision_function(X[va]).astype(np.float32)
 
@@ -69,8 +75,12 @@ class Head(BaseEstimator, ClassifierMixin):
 
     def fit(self, X, y):
         logger.info("Fitting SVC head...")
+        if self.dual:
+            loss = "hinge"
+        else:
+            loss = "squared_hinge"
         self.model = LinearSVC(
-            C=self.C, class_weight="balanced", dual=self.dual, max_iter=5000
+            C=self.C, class_weight="balanced", loss=loss, dual=self.dual, max_iter=MAX_ITER
         )
         self.model.fit(X, y)
         self.calibrate(X, y)
