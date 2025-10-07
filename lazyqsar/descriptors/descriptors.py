@@ -18,7 +18,7 @@ class ChemeleonDescriptor(object):
         >>> chemeleon = ChemeleonDescriptor()
         >>> X = chemeleon.transform(smiles_list)
         """
-
+        self.featurizer_name = "chemeleon"
         self.chemeleon_fingerprint = CheMeleonFingerprint()
         self.n_dim = 2048
         self.features = ["dim_{0}".format(i) for i in range(self.n_dim)]
@@ -37,12 +37,12 @@ class ChemeleonDescriptor(object):
 
     def save(self, dir_name: str):
         if not os.path.exists(dir_name):
-            os.makedirs(dir_name)
+            raise Exception(f"Directory {dir_name} does not exist.")
         metadata = {
+            "featurizer": self.featurizer_name,
             "rdkit_version": Chem.rdBase.rdkitVersion,
-            "features": self.features,
         }
-        with open(os.path.join(dir_name, "descriptor_metadata.json"), "w") as f:
+        with open(os.path.join(dir_name, "featurizer.json"), "w") as f:
             json.dump(metadata, f)
 
     @classmethod
@@ -50,7 +50,7 @@ class ChemeleonDescriptor(object):
         if not os.path.exists(dir_name):
             raise FileNotFoundError(f"Directory {dir_name} does not exist.")
         obj = cls()
-        with open(os.path.join(dir_name, "descriptor_metadata.json"), "r") as f:
+        with open(os.path.join(dir_name, "featurizer.json"), "r") as f:
             metadata = json.load(f)
             rdkit_version = metadata.get("rdkit_version")
             if rdkit_version:
@@ -60,7 +60,6 @@ class ChemeleonDescriptor(object):
                 raise ValueError(
                     f"RDKit version mismatch: expected {current_rdkit_version}, got {rdkit_version}"
                 )
-        obj.features = metadata.get("features", [])
         return obj
 
 
@@ -76,7 +75,7 @@ class MorganFingerprint(object):
         >>> morgan = MorganFingerprint()
         >>> X = morgan.transform(smiles_list)
         """
-
+        self.featurizer_name = "morgan"
         self.n_dim = 2048
         self.radius = 3
         self.mfpgen = rdFingerprintGenerator.GetMorganGenerator(
@@ -85,10 +84,10 @@ class MorganFingerprint(object):
         self.features = ["dim_{0}".format(i) for i in range(self.n_dim)]
 
     def _clip_sparse(self, vect, nbits):
-        l = [0] * nbits
+        data = [0] * nbits
         for i, v in vect.GetNonzeroElements().items():
-            l[i] = v if v < 255 else 255
-        return l
+            data[i] = v if v < 255 else 255
+        return data
 
     def morganfp(self, smiles):
         v_ = []
@@ -116,12 +115,12 @@ class MorganFingerprint(object):
 
     def save(self, dir_name: str):
         if not os.path.exists(dir_name):
-            os.makedirs(dir_name)
+            raise Exception(f"Directory {dir_name} does not exist.")
         metadata = {
+            "featurizer": self.featurizer_name,
             "rdkit_version": Chem.rdBase.rdkitVersion,
-            "features": self.features,
         }
-        with open(os.path.join(dir_name, "descriptor_metadata.json"), "w") as f:
+        with open(os.path.join(dir_name, "featurizer.json"), "w") as f:
             json.dump(metadata, f)
 
     @classmethod
@@ -129,7 +128,7 @@ class MorganFingerprint(object):
         if not os.path.exists(dir_name):
             raise FileNotFoundError(f"Directory {dir_name} does not exist.")
         obj = cls()
-        with open(os.path.join(dir_name, "descriptor_metadata.json"), "r") as f:
+        with open(os.path.join(dir_name, "featurizer.json"), "r") as f:
             metadata = json.load(f)
             rdkit_version = metadata.get("rdkit_version")
             if rdkit_version:
@@ -139,5 +138,4 @@ class MorganFingerprint(object):
                 raise ValueError(
                     f"RDKit version mismatch: expected {current_rdkit_version}, got {rdkit_version}"
                 )
-        obj.features = metadata.get("features", [])
         return obj

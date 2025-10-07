@@ -32,6 +32,11 @@ def find_params(X, y, num_trials):
     y = np.asarray(y)
     kf = StratifiedKFold(n_splits=5, shuffle=True)
 
+    if X.shape[0] > X.shape[1]:
+        dual = False
+    else:
+        dual = True
+
     n_trials = min(num_trials, MAX_NUM_TRIALS)
 
     def objective(trial):
@@ -39,7 +44,7 @@ def find_params(X, y, num_trials):
 
         oof = np.full(len(y), np.nan, dtype=np.float32)
         for tr, va in kf.split(X, y):
-            clf = LinearSVC(C=C)
+            clf = LinearSVC(C=C, dual=dual, class_weight="balanced", max_iter=5000)
             clf.fit(X[tr], y[tr])
             oof[va] = clf.decision_function(X[va]).astype(np.float32)
 
@@ -54,16 +59,19 @@ def find_params(X, y, num_trials):
     study.enqueue_trial({"C": 1.0})
     study.optimize(objective, n_trials=n_trials)
 
-    return {"C": float(study.best_params["C"])}
+    return {"C": float(study.best_params["C"]), "dual": dual}
 
 
 class Head(BaseEstimator, ClassifierMixin):
-    def __init__(self, C):
+    def __init__(self, C, dual):
         self.C = C
+        self.dual = dual
 
     def fit(self, X, y):
         logger.info("Fitting SVC head...")
-        self.model = LinearSVC(C=self.C, class_weight="balanced")
+        self.model = LinearSVC(
+            C=self.C, class_weight="balanced", dual=self.dual, max_iter=5000
+        )
         self.model.fit(X, y)
         self.calibrate(X, y)
         self.input_dim = X.shape[1]

@@ -98,7 +98,6 @@ def find_params(X, y, num_trials):
         X_train_t = torch.tensor(X_train, dtype=torch.float32)
         y_train_t = torch.tensor(y_train, dtype=torch.float32)
         X_val_t = torch.tensor(X_val, dtype=torch.float32)
-        y_val_t = torch.tensor(y_val, dtype=torch.float32)
 
         for epoch in range(epochs):
             model.train()

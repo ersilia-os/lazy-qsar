@@ -33,7 +33,7 @@ def find_params(X):
     tot = X.shape[0] * X.shape[1]
     n_zero = np.sum(X == 0)
     sparsity = n_zero / tot
-    is_sparse = sparsity > 0.5
+    is_sparse = sparsity > 0.9
 
     results = {
         "is_sparse": is_sparse,
@@ -83,13 +83,13 @@ class Preprocessor(object):
         logger.info("Shape of the input data: {0}".format(X.shape))
         logger.info("Removing constant features")
         self.input_dim = X.shape[1]
-        self.var_thr = VarianceThreshold(threshold=0.0)
-        self.var_thr.fit(X)
-        X = self.var_thr.transform(X)
         logger.info("Fitting a simple median imputer")
         self.imputer = SimpleImputer(strategy="median")
         self.imputer.fit(X)
         X = self.imputer.transform(X)
+        self.var_thr = VarianceThreshold(threshold=0.0)
+        self.var_thr.fit(X)
+        X = self.var_thr.transform(X)
         if self.is_sparse:
             logger.info("Data is sparse, TF-IDF preprocessor will be used")
             self.scaler = TfidfTransformer()
@@ -122,8 +122,8 @@ class Preprocessor(object):
         if not hasattr(self, "var_thr") or self.var_thr is None:
             raise ValueError("Preprocessor not fitted. Call `fit` first.")
         logger.info("Transforming the data using the fitted preprocessor...")
-        X = self.var_thr.transform(X)
         X = self.imputer.transform(X)
+        X = self.var_thr.transform(X)
         X = (
             self.scaler.transform(X).toarray()
             if self.is_sparse
@@ -159,10 +159,10 @@ class Preprocessor(object):
         meta_path = os.path.join(model_dir, f"{name}_metadata.json")
         with open(meta_path, "w") as f:
             json.dump(metadata, f)
-        var_thr_path = os.path.join(model_dir, f"{name}_var_thr.joblib")
-        joblib.dump(self.var_thr, var_thr_path)
         imputer_path = os.path.join(model_dir, f"{name}_imputer.joblib")
         joblib.dump(self.imputer, imputer_path)
+        var_thr_path = os.path.join(model_dir, f"{name}_var_thr.joblib")
+        joblib.dump(self.var_thr, var_thr_path)
         scaler_path = os.path.join(model_dir, f"{name}_scaler.joblib")
         joblib.dump(self.scaler, scaler_path)
 
@@ -195,14 +195,14 @@ class Preprocessor(object):
             metadata = json.load(f)
         obj = cls(is_sparse=bool(metadata["is_sparse"]))
         obj.input_dim = metadata["input_dim"]
-        var_thr_path = os.path.join(model_dir, f"{name}_var_thr.joblib")
-        if not os.path.exists(var_thr_path):
-            raise FileNotFoundError(f"VarianceThreshold file {var_thr_path} not found.")
-        obj.var_thr = joblib.load(var_thr_path)
         imputer_path = os.path.join(model_dir, f"{name}_imputer.joblib")
         if not os.path.exists(imputer_path):
             raise FileNotFoundError(f"Imputer file {imputer_path} not found.")
         obj.imputer = joblib.load(imputer_path)
+        var_thr_path = os.path.join(model_dir, f"{name}_var_thr.joblib")
+        if not os.path.exists(var_thr_path):
+            raise FileNotFoundError(f"VarianceThreshold file {var_thr_path} not found.")
+        obj.var_thr = joblib.load(var_thr_path)
         scaler_path = os.path.join(model_dir, f"{name}_scaler.joblib")
         if not os.path.exists(scaler_path):
             raise FileNotFoundError(f"Scaler file {scaler_path} not found.")
@@ -235,8 +235,8 @@ def convert_to_onnx(name: str, model_dir: str):
     preprocessor = Preprocessor.load(name, model_dir)
     pipe = Pipeline(
         [
-            ("varthr_preprocessor", preprocessor.var_thr),
             ("imputer_preprocessor", preprocessor.imputer),
+            ("varthr_preprocessor", preprocessor.var_thr),
             ("scaler_preprocessor", preprocessor.scaler),
         ]
     )

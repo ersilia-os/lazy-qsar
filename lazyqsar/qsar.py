@@ -2,12 +2,14 @@ import os
 import json
 import numpy as np
 
-from .descriptors import ChemeleonDescriptor, MorganFingerprint
+from .descriptors.descriptors import ChemeleonDescriptor, MorganFingerprint
 
 from .agnostic import LazyEclecticBinaryClassifier
 from .agnostic import LazyBinaryClassifierArtifact
 from .agnostic import convert_to_onnx
 from .agnostic import NUM_TRIALS_MODES
+
+from .utils.logging import logger
 
 
 DESCRIPTOR_TYPES = {"chemeleon": ChemeleonDescriptor, "morgan": MorganFingerprint}
@@ -30,13 +32,12 @@ class ArtifactWrapper(object):
 class LazyBinaryQSAR(object):
     def __init__(self, descriptor_type, mode):
         self.descriptor_type = descriptor_type
-        self.descriptor = DESCRIPTOR_TYPES[descriptor_type]
+        self.descriptor = DESCRIPTOR_TYPES[descriptor_type]()
         self.num_trials = NUM_TRIALS_MODES[mode]
         self.is_saved = False
 
     def fit(self, smiles_list, y):
         y = np.array(y, dtype=int)
-        self.descriptor.fit(smiles_list)
         descriptors = self.descriptor.transform(smiles_list)
         self.model = LazyEclecticBinaryClassifier(num_trials=self.num_trials)
         self.model.fit(X=descriptors, y=y)
@@ -58,24 +59,25 @@ class LazyBinaryQSAR(object):
         return np.array(y_bin, dtype=int)
 
     def save(self, model_dir: str):
+        logger.debug(f"Saving model to {model_dir}")
         self.model.save(model_dir)
-        metadata = {"descriptor_type": self.descriptor_type}
-        with open(os.path.join(model_dir, "descriptor.json"), "w") as f:
-            json.dump(metadata, f)
+        logger.debug(f"Saving descriptor to {model_dir}")
+        self.descriptor.save(model_dir)
         self.is_saved = True
 
     @classmethod
     def load(cls, model_dir: str):
-        with open(os.path.join(model_dir, "descriptor.json"), "r") as f:
+        with open(os.path.join(model_dir, "featurizer.json"), "r") as f:
             desc_metadata = json.load(f)
         with open(os.path.join(model_dir, "metadata.json"), "r") as f:
             metadata = json.load(f)
         num_trials = metadata["num_trials"]
         mode = None
-        for k, v in NUM_TRIALS_MODES.keys():
+        for k, v in NUM_TRIALS_MODES.items():
             if v == num_trials:
                 mode = k
-        obj = cls(descriptor_type=desc_metadata["descriptor_type"], mode=mode)
+        obj = cls(descriptor_type=desc_metadata["featurizer"], mode=mode)
+        obj.descriptor = obj.descriptor.load(model_dir)
         obj.model = LazyEclecticBinaryClassifier.load(model_dir)
         obj.is_saved = True
         return obj
@@ -84,8 +86,8 @@ class LazyBinaryQSAR(object):
         if not self.is_saved:
             self.save(model_dir)
         convert_to_onnx(model_dir, clean=clean)
-        # TODO need to skip "descriptor.json" in the cleaning
 
     def load_onnx(self, model_dir: str):
+        descriptor = self.descriptor.load(model_dir)
         art = LazyBinaryClassifierArtifact.load(model_dir=model_dir)
-        # TODO need to figure out the fit of the descriptor
+        return ArtifactWrapper(descriptor=descriptor, artifact=art)
