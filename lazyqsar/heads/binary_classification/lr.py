@@ -80,7 +80,13 @@ class Head(BaseEstimator, ClassifierMixin):
 
     def fit(self, X, y):
         logger.info("Fitting logistic regression head...")
-        self.model = LogisticRegression(C=self.C, class_weight="balanced", solver="saga", max_iter=MAX_ITER, n_jobs=-1)
+        self.model = LogisticRegression(
+            C=self.C,
+            class_weight="balanced",
+            solver="saga",
+            max_iter=MAX_ITER,
+            n_jobs=-1,
+        )
         self.model.fit(X, y)
         self.calibrate(X, y)
         self.input_dim = X.shape[1]

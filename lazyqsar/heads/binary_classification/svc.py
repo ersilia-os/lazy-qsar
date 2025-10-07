@@ -50,7 +50,9 @@ def find_params(X, y, num_trials):
 
         oof = np.full(len(y), np.nan, dtype=np.float32)
         for tr, va in kf.split(X, y):
-            clf = LinearSVC(C=C, dual=dual, loss=loss, class_weight="balanced", max_iter=MAX_ITER)
+            clf = LinearSVC(
+                C=C, dual=dual, loss=loss, class_weight="balanced", max_iter=MAX_ITER
+            )
             clf.fit(X[tr], y[tr])
             oof[va] = clf.decision_function(X[va]).astype(np.float32)
 
@@ -80,7 +82,11 @@ class Head(BaseEstimator, ClassifierMixin):
         else:
             loss = "squared_hinge"
         self.model = LinearSVC(
-            C=self.C, class_weight="balanced", loss=loss, dual=self.dual, max_iter=MAX_ITER
+            C=self.C,
+            class_weight="balanced",
+            loss=loss,
+            dual=self.dual,
+            max_iter=MAX_ITER,
         )
         self.model.fit(X, y)
         self.calibrate(X, y)
