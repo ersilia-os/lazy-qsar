@@ -21,55 +21,6 @@ MAX_FEATURES = 2048
 MAX_NUM_TRIALS = 10
 
 
-def decide_if_feature_selection(X, y):
-    """
-    Determines whether feature selection should be performed for binary classification.
-    This function evaluates the dataset based on the number of features, the number of samples, 
-    and the informativeness of the features. If certain conditions are met, it decides to skip 
-    feature selection.
-    
-    Parameters
-    ----------
-    X : numpy.ndarray
-        Feature matrix of shape (n_samples, n_features).
-    y : numpy.ndarray
-        Target vector of shape (n_samples,).
-    
-    Returns
-    -------
-    bool
-        True if feature selection should be performed, False otherwise.
-    
-    Notes
-    -----
-    - If the number of features is less than `MIN_FEATURES`, feature selection is skipped.
-    - If the number of features is less than the number of samples, feature selection is skipped.
-    - If the majority of features are deemed informative (based on a threshold score > 5), 
-      feature selection is skipped.
-    """
-
-    if X.shape[1] < MIN_FEATURES:
-        logger.info(f"Number of features {X.shape[1]} is less than {MIN_FEATURES}. Skip feature selection.")
-        return False
-
-    if X.shape[1] < X.shape[0]:
-        logger.info(f"Number of features {X.shape[1]} is less than number of samples {X.shape[0]}. Skip feature selection.")
-        return False
-    
-    selector = SelectKBest(score_func=f_classif, k="all")
-    selector.fit(X, y)
-    scores = selector.scores_
-    scores = np.nan_to_num(scores, nan=0.0, posinf=0.0, neginf=0.0)
-
-    informative_scores = np.sum(scores > 5)
-    if informative_scores > (0.5 * len(scores)):
-        logger.info(f"Majority of features are informative ({informative_scores}/{len(scores)}). Skip feature selection.")
-        return False
-    else:
-        logger.info(f"Majority of features are not informative ({informative_scores}/{len(scores)}). Perform feature selection.")
-        return True
-
-
 def find_params(X, y, num_trials):
     """
     Perform feature selection and hyperparameter optimization for binary classification.

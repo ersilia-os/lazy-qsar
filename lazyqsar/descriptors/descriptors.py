@@ -7,6 +7,7 @@ from rdkit.Chem import rdFingerprintGenerator
 from .chemeleon_descriptor import CheMeleonFingerprint
 from ..utils.logging import logger
 
+
 class ChemeleonDescriptor(object):
 
     def __init__(self):
@@ -21,16 +22,9 @@ class ChemeleonDescriptor(object):
 
         self.chemeleon_fingerprint = CheMeleonFingerprint()
         self.n_dim = 2048
-        self.features = None
-
-    def fit(self, smiles):
         self.features = ["dim_{0}".format(i) for i in range(self.n_dim)]
-        logger.warning("No fitting is necessary for Chemeleon descriptor")
-        return None
 
-    def transform(self, smiles):
-        if self.features is None:
-            self.features = ["dim_{0}".format(i) for i in range(self.n_dim)]
+    def transform(self, smiles):            
         chunk_size = 100
         R = []
         for i in tqdm(
@@ -89,7 +83,7 @@ class MorganFingerprint(object):
         self.mfpgen = rdFingerprintGenerator.GetMorganGenerator(
             radius=self.radius, fpSize=self.n_dim
         )
-        self.features = None
+        self.features = ["dim_{0}".format(i) for i in range(self.n_dim)]
 
     def _clip_sparse(self, vect, nbits):
         l = [0] * nbits
@@ -106,17 +100,12 @@ class MorganFingerprint(object):
             v_.append(v)
         return np.array(v_, dtype=int)
 
-    def fit(self, smiles):
-        self.features = ["dim_{0}".format(i) for i in range(self.n_dim)]
-        logger.warning("No fitting is necessary for Morgan descriptor")
-        return None
+
 
     def _mol_from_smiles(self, smiles):
         return Chem.MolFromSmiles(smiles)
 
     def transform(self, smiles):
-        if self.features is None:
-            self.features = ["dim_{0}".format(i) for i in range(self.n_dim)]
         chunk_size = 100_000
         R = []
         for i in tqdm(

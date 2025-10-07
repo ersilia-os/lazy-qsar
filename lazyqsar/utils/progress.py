@@ -1,10 +1,10 @@
-from typing import Iterable, List, TypeVar, Optional
+from typing import Iterable, TypeVar, Optional
 from rich.progress import (
     Progress, SpinnerColumn, TextColumn, BarColumn,
     TaskProgressColumn, TimeElapsedColumn, TimeRemainingColumn
 )
 
-T = TypeVar("T") # lets do generics here for fun
+T = TypeVar("T")
 
 def make_progress(transient: bool = True) -> Progress:
     return Progress(
