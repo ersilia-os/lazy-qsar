@@ -1,7 +1,8 @@
 import logging
 import optuna
 from rich.logging import RichHandler
-from loguru import logger as _loguru 
+from loguru import logger as _loguru
+
 
 class InterceptHandler(logging.Handler):
     def emit(self, record):
@@ -11,12 +12,14 @@ class InterceptHandler(logging.Handler):
             level = record.levelno
         _loguru.opt(depth=6, exception=record.exc_info).log(level, record.getMessage())
 
+
 def setup_optuna_logging(level=logging.INFO):
     optuna.logging.disable_default_handler()
     optuna.logging.enable_propagation()
     lg = logging.getLogger("optuna")
     lg.handlers = [InterceptHandler()]
     lg.setLevel(level)
+
 
 setup_optuna_logging(logging.INFO)
 
@@ -30,6 +33,7 @@ _loguru.level("ERROR", color="<white><bold><bg red>")
 _loguru.level("CRITICAL", color="<white><bold><bg red>")
 _loguru.level("SUCCESS", color="<black><bold><bg green>")
 
+
 class Logger:
     def __init__(self):
         self.logger = _loguru
@@ -40,9 +44,14 @@ class Logger:
     def _log_to_console(self):
         if self._console is None:
             rich_handler = RichHandler(
-                rich_tracebacks=True, markup=True, log_time_format="%H:%M:%S", show_path=False
+                rich_tracebacks=True,
+                markup=True,
+                log_time_format="%H:%M:%S",
+                show_path=False,
             )
-            self._console = self.logger.add(rich_handler, format="{message}", colorize=True)
+            self._console = self.logger.add(
+                rich_handler, format="{message}", colorize=True
+            )
 
     def _unlog_from_console(self):
         if self._console is not None:
@@ -58,11 +67,23 @@ class Logger:
         else:
             self._unlog_from_console()
 
-    def debug(self, text): self.logger.debug(text)
-    def info(self, text): self.logger.info(text)
-    def warning(self, text): self.logger.warning(text)
-    def error(self, text): self.logger.error(text)
-    def critical(self, text): self.logger.critical(text)
-    def success(self, text): self.logger.success(text)
+    def debug(self, text):
+        self.logger.debug(text)
+
+    def info(self, text):
+        self.logger.info(text)
+
+    def warning(self, text):
+        self.logger.warning(text)
+
+    def error(self, text):
+        self.logger.error(text)
+
+    def critical(self, text):
+        self.logger.critical(text)
+
+    def success(self, text):
+        self.logger.success(text)
+
 
 logger = Logger()

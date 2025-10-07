@@ -1,6 +1,6 @@
 import csv
 
-from lazyqsar.descriptors.descriptors import ChemeleonDescriptor, MorganFingerprint
+from lazyqsar.descriptors.descriptors import MorganFingerprint
 from lazyqsar.utils.logging import logger
 
 prefix = "ames"
@@ -35,11 +35,13 @@ X_test = descriptor.transform(smiles_test)
 print("Shape of testing descriptors: ", X_test.shape)
 
 import numpy as np
+
 X = X_train
 y = np.array(y_train)
 
 from lazyqsar.latent_variables.old.sparse import get_reducer_parameters
 from lazyqsar.latent_variables.old.sparse import SparseDimReducerBinaryClassification
+
 red_params = get_reducer_parameters(X, y)
 
 reducer = SparseDimReducerBinaryClassification(
@@ -54,6 +56,7 @@ print("Shape of reduced training descriptors: ", X_train.shape)
 print("Shape of reduced testing descriptors: ", X_test.shape)
 
 from sklearn.linear_model import LogisticRegressionCV
+
 clf = LogisticRegressionCV(
     class_weight="balanced",
     cv=5,
@@ -63,8 +66,8 @@ clf = LogisticRegressionCV(
     n_jobs=-1,
 )
 
-from sklearn.ensemble import RandomForestClassifier
 from sklearn.svm import LinearSVC
+
 clf = LinearSVC()
 
 clf.fit(X_train, y_train)
@@ -72,7 +75,14 @@ y_pred = clf.predict(X_test)
 y_proba = clf.predict_proba(X_test)[:, 1]
 print(y_proba)
 
-from sklearn.metrics import roc_auc_score, accuracy_score, precision_score, recall_score, f1_score
+from sklearn.metrics import (
+    roc_auc_score,
+    accuracy_score,
+    precision_score,
+    recall_score,
+    f1_score,
+)
+
 print("ROC-AUC: ", roc_auc_score(y_test, y_proba))
 print("Accuracy: ", accuracy_score(y_test, y_pred))
 print("Precision: ", precision_score(y_test, y_pred))

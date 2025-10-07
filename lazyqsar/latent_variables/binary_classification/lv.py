@@ -27,36 +27,34 @@ MAX_FEATURES = 512
 
 def find_params(X, y, num_trials):
     """
-    Optimize the number of latent components and regularization parameter for binary classification 
+    Optimize the number of latent components and regularization parameter for binary classification
     using Principal Component Analysis (PCA) and Stochastic Gradient Descent Classifier (SGDClassifier).
-    
+
     Parameters
     ----------
     X : array-like of shape (n_samples, n_features)
         The input data matrix.
     y : array-like of shape (n_samples,)
         The target binary labels.
-    
+
     Returns
     -------
     results : dict
         A dictionary containing the optimal number of latent components:
         - "n_components": int, the optimal number of components.
-    
+
     Notes
     -----
     - The function uses PCA to reduce dimensionality and Optuna for hyperparameter optimization.
     - The optimization process includes pruning of unpromising trials using a MedianPruner.
     - The ROC-AUC score is used as the evaluation metric for model performance.
-    - The function performs stratified shuffle split cross-validation to ensure balanced class distribution 
+    - The function performs stratified shuffle split cross-validation to ensure balanced class distribution
       in training and testing sets.
     """
     do_latent = True
     if not do_latent:
         logger.info("Skipping latent variable generation.")
-        return {
-            "n_components": None
-        }
+        return {"n_components": None}
     logger.info("Finding optimal latent variable parameters...")
 
     cv = StratifiedShuffleSplit(n_splits=3, test_size=0.2, random_state=42)
@@ -75,7 +73,9 @@ def find_params(X, y, num_trials):
         n_components = min(X_tr.shape[1], X_tr.shape[0]) - 1
         n_components = min(n_components, MAX_FEATURES)
         logger.debug(f"Using n_components={n_components} for PCA.")
-        reducer = PCA(n_components=n_components, svd_solver="randomized", random_state=42)
+        reducer = PCA(
+            n_components=n_components, svd_solver="randomized", random_state=42
+        )
         reducer.fit(X_tr)
         X_tr = reducer.transform(X_tr)
         X_te = reducer.transform(X_te)
@@ -87,13 +87,15 @@ def find_params(X, y, num_trials):
         min_n_components += [n_components_80]
         seed_n_components += [n_components_90]
         max_n_components += [n_components_99]
-    
+
     min_n_components = int(np.mean(min_n_components))
     seed_n_components = int(np.mean(seed_n_components))
     max_n_components = int(np.mean(max_n_components))
-        
+
     def objective(trial):
-        n_components = trial.suggest_int("n_components", min_n_components, max_n_components, step=1)
+        n_components = trial.suggest_int(
+            "n_components", min_n_components, max_n_components, step=1
+        )
         alpha = trial.suggest_float("alpha", 1e-6, 1e-2, log=True)
 
         clf = SGDClassifier(
@@ -105,7 +107,7 @@ def find_params(X, y, num_trials):
             early_stopping=True,
             validation_fraction=0.2,
             n_iter_no_change=5,
-            random_state=42
+            random_state=42,
         )
         scores = []
         for fold_idx, (X_tr, X_te, y_tr, y_te) in enumerate(folds):
@@ -127,28 +129,28 @@ def find_params(X, y, num_trials):
         "alpha": 1e-4,
     }
     study.enqueue_trial(params=initial_params)
-    study.optimize(objective, n_trials=min(num_trials, MAX_NUM_TRIALS), show_progress_bar=True)
+    study.optimize(
+        objective, n_trials=min(num_trials, MAX_NUM_TRIALS), show_progress_bar=True
+    )
     logger.info("Best trial:")
     logger.info(f"  ROC-AUC: {study.best_value}")
     logger.info(f"  Params: {study.best_params}")
-    
-    results = {
-        "n_components": min(MAX_FEATURES, study.best_params["n_components"])
-    }
+
+    results = {"n_components": min(MAX_FEATURES, study.best_params["n_components"])}
 
     return results
 
 
 class LatentVariables(object):
     """
-    A class for reducing the dimensionality of data for binary classification tasks 
+    A class for reducing the dimensionality of data for binary classification tasks
     using Principal Component Analysis (PCA).
-    
+
     Parameters
     ----------
     n_components : int
         The number of principal components to retain during dimensionality reduction.
-    
+
     Methods
     -------
     fit(X, y=None)
@@ -161,7 +163,7 @@ class LatentVariables(object):
         Loads the reducer and its metadata from the specified directory.
     """
 
-    def __init__(self, n_components: int=None):
+    def __init__(self, n_components: int = None):
         """
         Initializes the class with the specified number of components.
         Parameters
@@ -174,14 +176,14 @@ class LatentVariables(object):
     def fit(self, X, y=None):
         """
         Fit the latent variable reducer using the provided data.
-        
+
         Parameters
         ----------
         X : array-like of shape (n_samples, n_features)
             The input data to fit the latent variable reducer.
         y : array-like of shape (n_samples,), optional
             The target values (ignored in this method, included for compatibility).
-        
+
         Returns
         -------
         self : object
@@ -191,16 +193,20 @@ class LatentVariables(object):
         if self.n_components is None:
             self.reducer = None
             return self
-        logger.info("Fitting latent reducer with {0} components...".format(self.n_components))
+        logger.info(
+            "Fitting latent reducer with {0} components...".format(self.n_components)
+        )
         n_components = min(self.n_components, X.shape[1])
-        self.reducer = SparseRandomProjection(n_components=n_components, random_state=42)
+        self.reducer = SparseRandomProjection(
+            n_components=n_components, random_state=42
+        )
         self.reducer.fit(X)
         return self
-    
+
     def transform(self, X, y=None):
         """
         Transform the input data using the fitted dimensionality reducer.
-        
+
         Parameters
         ----------
         X : array-like of shape (n_samples, n_features)
@@ -208,25 +214,27 @@ class LatentVariables(object):
         y : None, optional
             Ignored. This parameter exists for compatibility with scikit-learn
             transformers.
-        
+
         Returns
         -------
         X : array-like of shape (n_samples, n_components)
             The transformed data.
-        
+
         Raises
         ------
         RuntimeError
             If the reducer has not been fitted prior to calling this method.
         """
         if not hasattr(self, "reducer"):
-            raise RuntimeError("The reducer has not been fitted yet. Please call 'fit' before 'transform'.")
+            raise RuntimeError(
+                "The reducer has not been fitted yet. Please call 'fit' before 'transform'."
+            )
         if self.reducer is None:
             return X
         logger.info("Transforming latent reducer using PCA...")
         X = self.reducer.transform(X)
         return X
-    
+
     def save(self, name: str, model_dir: str):
         """
         Save the latent variable reducer to the specified directory.
@@ -239,19 +247,18 @@ class LatentVariables(object):
         model_dir : str
             The directory where the latent variable reducer and its metadata will be saved.
 
-        
+
         Notes
         -----
         - The metadata is saved as a JSON file named `latent_reducer_metadata.json`.
         - The reducer object is serialized and saved as a joblib file named `latent_reducer.joblib`.
         """
         if not os.path.exists(model_dir):
-            logger.info(f"Creating directory {model_dir} for saving the latent reducer.")
+            logger.info(
+                f"Creating directory {model_dir} for saving the latent reducer."
+            )
             os.makedirs(model_dir)
-        metadata = {
-            "n_components": self.n_components,
-            "input_dim": self.input_dim
-        }
+        metadata = {"n_components": self.n_components, "input_dim": self.input_dim}
         meta_path = os.path.join(model_dir, f"{name}_metadata.json")
         with open(meta_path, "w") as f:
             json.dump(metadata, f)
@@ -290,20 +297,25 @@ class LatentVariables(object):
             raise FileNotFoundError(f"The directory {model_dir} does not exist.")
         meta_path = os.path.join(model_dir, f"{name}_metadata.json")
         if not os.path.exists(meta_path):
-            raise FileNotFoundError(f"The metadata file {meta_path} does not exist in the directory {model_dir}.")
+            raise FileNotFoundError(
+                f"The metadata file {meta_path} does not exist in the directory {model_dir}."
+            )
         with open(meta_path, "r") as f:
             metadata = json.load(f)
         obj = cls(n_components=metadata["n_components"])
         obj.input_dim = metadata["input_dim"]
         reducer_path = os.path.join(model_dir, f"{name}.joblib")
         if not os.path.exists(reducer_path):
-            raise FileNotFoundError(f"The reducer file {reducer_path} does not exist in the directory {model_dir}.")
+            raise FileNotFoundError(
+                f"The reducer file {reducer_path} does not exist in the directory {model_dir}."
+            )
         obj.reducer = joblib.load(reducer_path)
         return obj
 
 
 class DenseProjectionLayer(nn.Module):
     """Dense wrapper for sklearn SparseRandomProjection so ONNX export succeeds."""
+
     def __init__(self, components):
         super().__init__()
         n_components, n_features = components.shape
@@ -318,11 +330,11 @@ class DenseProjectionLayer(nn.Module):
 
 def convert_to_onnx(name: str, model_dir: str):
     """
-    Converts a latent variable reducer for binary classification into an ONNX model 
-    with sparse storage. The function first exports a dense ONNX model and then patches 
+    Converts a latent variable reducer for binary classification into an ONNX model
+    with sparse storage. The function first exports a dense ONNX model and then patches
     it to replace the dense weight matrix with a sparse initializer.
 
-        Path to the directory containing the latent variable reducer model 
+        Path to the directory containing the latent variable reducer model
         (`latent_reducer.joblib`).
 
     Returns
@@ -333,15 +345,15 @@ def convert_to_onnx(name: str, model_dir: str):
     Raises
     ------
     RuntimeError
-        If the latent reducer is not found in the specified directory, or if the 
+        If the latent reducer is not found in the specified directory, or if the
         projection matrix initializer cannot be located in the ONNX export.
 
     Notes
     -----
-    - The function assumes that the latent reducer is stored as a `LatentVariablesForBinaryClassification` 
+    - The function assumes that the latent reducer is stored as a `LatentVariablesForBinaryClassification`
       object and that its `reducer` attribute contains a trained projection matrix.
-    - The ONNX model is first exported in dense format using PyTorch's `torch.onnx.export` 
-      and then modified to use sparse storage by replacing the dense initializer with a 
+    - The ONNX model is first exported in dense format using PyTorch's `torch.onnx.export`
+      and then modified to use sparse storage by replacing the dense initializer with a
       sparse tensor.
     - The intermediate dense ONNX file is removed after the sparse ONNX model is created.
     """
@@ -384,7 +396,9 @@ def convert_to_onnx(name: str, model_dir: str):
             dense_array = arr
             break
     if dense_init is None:
-        raise RuntimeError("Could not find 2D projection matrix initializer in ONNX export")
+        raise RuntimeError(
+            "Could not find 2D projection matrix initializer in ONNX export"
+        )
 
     nz_rows, nz_cols = np.nonzero(dense_array)
     values = dense_array[nz_rows, nz_cols].astype(np.float32)

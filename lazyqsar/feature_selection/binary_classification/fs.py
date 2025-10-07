@@ -24,9 +24,9 @@ MAX_NUM_TRIALS = 10
 def find_params(X, y, num_trials):
     """
     Perform feature selection and hyperparameter optimization for binary classification.
-    This function uses `SelectKBest` to determine the most relevant features based on 
-    ANOVA F-values and employs `optuna` for hyperparameter optimization of the number 
-    of features (`k_features`) and the regularization strength (`alpha`) of an 
+    This function uses `SelectKBest` to determine the most relevant features based on
+    ANOVA F-values and employs `optuna` for hyperparameter optimization of the number
+    of features (`k_features`) and the regularization strength (`alpha`) of an
     `SGDClassifier`. The optimization aims to maximize the ROC-AUC score.
 
     Parameters
@@ -47,7 +47,7 @@ def find_params(X, y, num_trials):
     -----
     - The function splits the data into stratified folds for cross-validation.
     - The `optuna` library is used for hyperparameter optimization with a pruning mechanism.
-    - The initial limits for `k_features` are determined based on the significance 
+    - The initial limits for `k_features` are determined based on the significance
       of features (p-values and scores).
     - The `SGDClassifier` is used with logistic loss and early stopping enabled.
 
@@ -87,7 +87,9 @@ def find_params(X, y, num_trials):
             seed_features = int(num_sign_features)
         else:
             seed_features = int((min_features + max_features) / 2)
-        logger.info(f"Initial limits for k_features: {min_features} - {max_features}, seed: {seed_features}")
+        logger.info(
+            f"Initial limits for k_features: {min_features} - {max_features}, seed: {seed_features}"
+        )
         return min_features, max_features, seed_features
 
     folds = []
@@ -107,7 +109,9 @@ def find_params(X, y, num_trials):
     min_k_features, max_k_features, seed_k_features = k_features_initial_limits(X, y)
 
     def objective(trial):
-        k_features = trial.suggest_int("k_features", min_k_features, max_k_features, step=1)
+        k_features = trial.suggest_int(
+            "k_features", min_k_features, max_k_features, step=1
+        )
         alpha = trial.suggest_float("alpha", 1e-6, 1e-2, log=True)
 
         clf = SGDClassifier(
@@ -119,7 +123,7 @@ def find_params(X, y, num_trials):
             early_stopping=True,
             validation_fraction=0.2,
             n_iter_no_change=5,
-            random_state=42
+            random_state=42,
         )
         scores = []
         for fold_idx, (X_tr, X_te, y_tr, y_te) in enumerate(folds):
@@ -141,14 +145,14 @@ def find_params(X, y, num_trials):
         "alpha": 1e-4,
     }
     study.enqueue_trial(params=initial_params)
-    study.optimize(objective, n_trials=min(num_trials, MAX_NUM_TRIALS), show_progress_bar=True)
+    study.optimize(
+        objective, n_trials=min(num_trials, MAX_NUM_TRIALS), show_progress_bar=True
+    )
     logger.info("Best trial:")
     logger.info(f"  ROC-AUC: {study.best_value}")
     logger.info(f"  Params: {study.best_params}")
-    
-    results = {
-        "k_features": study.best_params["k_features"]
-    }
+
+    results = {"k_features": study.best_params["k_features"]}
 
     return results
 
@@ -198,7 +202,7 @@ class FeatureSelector(object):
     def fit(self, X, y):
         """
         Fits the SelectKBest feature selector to the input data.
-        
+
         Parameters
         ----------
         X : array-like of shape (n_samples, n_features)
@@ -211,7 +215,9 @@ class FeatureSelector(object):
         if self.k_features is None:
             self.selector = None
             return self
-        k_features = min(self.k_features, X.shape[1]) if self.k_features is not None else "all"
+        k_features = (
+            min(self.k_features, X.shape[1]) if self.k_features is not None else "all"
+        )
         self.selector = SelectKBest(score_func=f_classif, k=k_features)
         self.selector.fit(X, y)
         return self
@@ -219,19 +225,19 @@ class FeatureSelector(object):
     def transform(self, X, y=None):
         """
         Transform the input data using the fitted feature selector.
-        
+
         Parameters
         ----------
         X : array-like of shape (n_samples, n_features)
             The input data to transform.
         y : Ignored
             Not used, present here for API consistency by convention.
-        
+
         Returns
         -------
         X_transformed : array-like of shape (n_samples, n_selected_features)
             The transformed data with selected features.
-        
+
         Raises
         ------
         ValueError
@@ -249,12 +255,12 @@ class FeatureSelector(object):
         Save the feature selector and its metadata to the specified directory.
         This method saves the metadata (e.g., number of selected features) as a JSON file
         and the feature selector object as a joblib file in the given directory.
-        
+
         Parameters
         ----------
         model_dir : str
             The directory where the metadata and feature selector will be saved.
-        
+
         Raises
         ------
         OSError
@@ -312,23 +318,23 @@ class FeatureSelector(object):
         obj = cls(k_features=k_features)
         obj.selector = selector
         return obj
-    
+
 
 def convert_to_onnx(name, model_dir: str):
     """
     Converts a feature selector model to ONNX format and saves it to the specified directory.
-    
+
     Parameters
     ----------
     model_dir : str
         The directory where the feature selector model is stored and where the ONNX file will be saved.
-    
+
     Notes
     -----
-    - If no feature selection was performed (i.e., `feature_selector.selector` is None), the function logs a message 
+    - If no feature selection was performed (i.e., `feature_selector.selector` is None), the function logs a message
       and skips the ONNX conversion.
     - The ONNX model is saved as "feature_selector.onnx" in the specified `model_dir`.
-    
+
     Raises
     ------
     FileNotFoundError
@@ -341,15 +347,15 @@ def convert_to_onnx(name, model_dir: str):
     if feature_selector.selector is None:
         logger.info("No feature selection was performed. Skipping ONNX conversion.")
         return None
-    
+
     selector = feature_selector.selector
-    initial_type = [(f"input_{name}", FloatTensorType([None, selector.scores_.shape[0]]))]
+    initial_type = [
+        (f"input_{name}", FloatTensorType([None, selector.scores_.shape[0]]))
+    ]
     onnx_model = skl2onnx.convert_sklearn(
-        selector,
-        initial_types=initial_type,
-        target_opset=ONNX_TARGET_OPSET
+        selector, initial_types=initial_type, target_opset=ONNX_TARGET_OPSET
     )
-    
+
     onnx_model.graph.name = f"{name}"
     onnx_model.ir_version = ONNX_IR_VERSION
     onnx_model.graph.input[0].name = f"input_{name}"

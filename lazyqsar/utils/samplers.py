@@ -277,7 +277,9 @@ class BinaryClassifierSamplingUtils(object):
         patience = 0
         current_size = 0
         max_patience = 10
-        for i in track_chunks(range(effective_sampling_rounds), desc="Computing sample partition indices"):
+        for i in track_chunks(
+            range(effective_sampling_rounds), desc="Computing sample partition indices"
+        ):
             pos_idxs_sampled = self.random_sample(pos_idxs, n_pos_samples, all_idxs)
             neg_idxs_sampled = self.random_sample(neg_idxs, n_neg_samples, all_idxs)
             sampled_idxs = pos_idxs_sampled + neg_idxs_sampled
@@ -323,7 +325,10 @@ class BinaryClassifierSamplingUtils(object):
                     raise Exception("HDF5 does not contain a values key")
                 auc_estimates = []
                 t0 = time.time()
-                for i in track_chunks(range(idxs_matrix.shape[0]), desc="Computing sample partition indices"):
+                for i in track_chunks(
+                    range(idxs_matrix.shape[0]),
+                    desc="Computing sample partition indices",
+                ):
                     t1 = time.time()
                     if t1 - t0 > auc_estimate_timeout:
                         if len(auc_estimates) > 0:
@@ -343,7 +348,9 @@ class BinaryClassifierSamplingUtils(object):
         else:
             auc_estimates = []
             t0 = time.time()
-            for i in track_chunks(range(idxs_matrix.shape[0]), desc="Computing sample partition indices"):
+            for i in track_chunks(
+                range(idxs_matrix.shape[0]), desc="Computing sample partition indices"
+            ):
                 t1 = time.time()
                 if t1 - t0 > 60:
                     if len(auc_estimates) > auc_estimate_timeout:
@@ -380,7 +387,9 @@ class BinaryClassifierSamplingUtils(object):
             idxs_matrix_[i, :] = idxs_matrix[row_idx, :]
         idxs_matrix = idxs_matrix_[:]
         idxs_matrix = self.remove_redundancy_of_sampled_matrix(idxs_matrix)
-        logger.info(f"Indices matrix shape after redundancy removal: {idxs_matrix.shape}")
+        logger.info(
+            f"Indices matrix shape after redundancy removal: {idxs_matrix.shape}"
+        )
         self.idxs_matrix_report(idxs_matrix, y)
         for i in range(idxs_matrix.shape[0]):
             idxs = [int(x) for x in idxs_matrix[i, :]]
@@ -399,7 +408,9 @@ class BinaryClassifierSamplingUtils(object):
             neg = len(idxs) - pos
             n_pos += pos
             n_neg += neg
-        logger.info(f"Avg positive samples: {n_pos / n}, avg negative samples: {n_neg / n}")
+        logger.info(
+            f"Avg positive samples: {n_pos / n}, avg negative samples: {n_neg / n}"
+        )
 
 
 class KFolder(object):
@@ -421,7 +432,12 @@ class KFolder(object):
 
 class StratifiedKFolder(object):
     def __init__(
-        self, test_size=0.25, n_splits=5, max_positive_proportion=0.5, shuffle=True, random_state=None
+        self,
+        test_size=0.25,
+        n_splits=5,
+        max_positive_proportion=0.5,
+        shuffle=True,
+        random_state=None,
     ):
         self.test_size = test_size
         self.n_splits = n_splits

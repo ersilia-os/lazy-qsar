@@ -7,6 +7,7 @@ from .logging import logger
 
 logging.getLogger("joblib").setLevel(logging.CRITICAL)
 
+
 class BinaryClassifierMaxSamplesDecider(object):
     def __init__(
         self,

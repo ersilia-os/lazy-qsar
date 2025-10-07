@@ -30,7 +30,6 @@ NUM_TRIALS = 10
 
 
 class BaseEclecticBinaryClassifier(BaseEstimator, ClassifierMixin):
-
     def __init__(self, params: dict = None):
         if params is None:
             params = {}
@@ -82,7 +81,7 @@ class BaseEclecticBinaryClassifier(BaseEstimator, ClassifierMixin):
             logger.info("Finding latent variables with head MLP parameters...")
             self.lv_mlp_params = mlp.find_params(X_lv, y, num_trials)
         return self
-    
+
     def get_params(self):
         return {
             "prep_params": self.prep_params,
@@ -94,9 +93,9 @@ class BaseEclecticBinaryClassifier(BaseEstimator, ClassifierMixin):
             "fs_svc_params": self.fs_svc_params,
             "lv_lr_params": self.lv_lr_params,
             "lv_svc_params": self.lv_svc_params,
-            "lv_mlp_params": self.lv_mlp_params,            
+            "lv_mlp_params": self.lv_mlp_params,
         }
-    
+
     def clear_params(self):
         self.prep_params = None
         self.fs_params = None
@@ -108,7 +107,7 @@ class BaseEclecticBinaryClassifier(BaseEstimator, ClassifierMixin):
         self.lv_lr_params = None
         self.lv_svc_params = None
         self.lv_mlp_params = None
-    
+
     def fit(self, X, y):
         if self.prep_params is None:
             self.find_params(X, y, self.num_trials)
@@ -143,7 +142,7 @@ class BaseEclecticBinaryClassifier(BaseEstimator, ClassifierMixin):
             self.lv_svc.score,
             self.lv_mlp.score,
         ]
-        self.weights = np.clip(np.array(self.model_scores) - 0.5, 0, 1)+1e-4
+        self.weights = np.clip(np.array(self.model_scores) - 0.5, 0, 1) + 1e-4
         self.weights = self.weights / np.sum(self.weights)
         logger.info(f"Individual model scores: {self.model_scores}")
         logger.info(f"Model weights: {self.weights}")
@@ -161,14 +160,9 @@ class BaseEclecticBinaryClassifier(BaseEstimator, ClassifierMixin):
         y_lv_lr = self.lv_lr.predict_proba(X_lv)[:, 1]
         y_lv_svc = self.lv_svc.predict_proba(X_lv)[:, 1]
         y_lv_mlp = self.lv_mlp.predict_proba(X_lv)[:, 1]
-        y_hat = np.array([
-            y_lr,
-            y_svc,
-            y_fs_lr,
-            y_fs_svc,
-            y_lv_lr,
-            y_lv_svc,
-            y_lv_mlp]).T
+        y_hat = np.array(
+            [y_lr, y_svc, y_fs_lr, y_fs_svc, y_lv_lr, y_lv_svc, y_lv_mlp]
+        ).T
         y_hat = np.average(y_hat, axis=1, weights=self.weights)
         return np.vstack([1 - y_hat, y_hat]).T
 
@@ -197,7 +191,8 @@ class BaseEclecticBinaryClassifier(BaseEstimator, ClassifierMixin):
             "model_names": self.model_names,
             "model_scores": self.model_scores,
             "weights": self.weights.tolist(),
-            "num_trials": self.num_trials}
+            "num_trials": self.num_trials,
+        }
         metadata_path = os.path.join(model_dir, "metadata.json")
         logger.info("Saving metadata to {0}".format(metadata_path))
         metadata["prep_params"] = bool(metadata["prep_params"]["is_sparse"])
@@ -336,9 +331,7 @@ class LazyEclecticBinaryClassifier(object):
             else:
                 idxs = [i for i in range(len(params))]
                 params_ = params[random.choice(idxs)]
-                model = BaseEclecticBinaryClassifier(
-                    params=params_
-                )
+                model = BaseEclecticBinaryClassifier(params=params_)
                 model.num_trials = self.num_trials
                 model.fit(X_sampled, y_sampled)
             logger.info("Model has successfull been fitted!")
@@ -433,29 +426,42 @@ class LazyEclecticBinaryClassifier(object):
             model = BaseEclecticBinaryClassifier.load(partition_dir)
             obj.models += [model]
         return obj
-    
+
 
 def convert_partition_to_onnx(partition_dir: str, clean: bool = True) -> str:
-
     if not os.path.exists(partition_dir):
         raise Exception(f"Partition directory does not exist: {partition_dir}")
-    
+
     if os.path.exists(os.path.join(partition_dir, "lazy_model.onnx")):
-        logger.info(f"ONNX model already exists in {partition_dir}, skipping conversion.")
+        logger.info(
+            f"ONNX model already exists in {partition_dir}, skipping conversion."
+        )
         return os.path.join(partition_dir, "lazy_model.onnx")
 
     def _onnx_logger(model):
         logger.info("**** ONNX Model Details ****")
-        logger.info(f"ONNX model: {model.graph.name} (ir_version: {model.ir_version}, opset_import: {[opset.version for opset in model.opset_import]})")
+        logger.info(
+            f"ONNX model: {model.graph.name} (ir_version: {model.ir_version}, opset_import: {[opset.version for opset in model.opset_import]})"
+        )
         for node in model.graph.node:
-            logger.info(f"  Node: {node.name} (op_type: {node.op_type}, inputs: {list(node.input)}, outputs: {list(node.output)})")
+            logger.info(
+                f"  Node: {node.name} (op_type: {node.op_type}, inputs: {list(node.input)}, outputs: {list(node.output)})"
+            )
         for input_tensor in model.graph.input:
-            dims = [d.dim_value if d.HasField('dim_value') else (d.dim_param if d.HasField('dim_param') else '?')
-                    for d in input_tensor.type.tensor_type.shape.dim]
+            dims = [
+                d.dim_value
+                if d.HasField("dim_value")
+                else (d.dim_param if d.HasField("dim_param") else "?")
+                for d in input_tensor.type.tensor_type.shape.dim
+            ]
             logger.info(f"    Input: {input_tensor.name}, shape: {dims}")
         for output_tensor in model.graph.output:
-            dims = [d.dim_value if d.HasField('dim_value') else (d.dim_param if d.HasField('dim_param') else '?')
-                    for d in output_tensor.type.tensor_type.shape.dim]
+            dims = [
+                d.dim_value
+                if d.HasField("dim_value")
+                else (d.dim_param if d.HasField("dim_param") else "?")
+                for d in output_tensor.type.tensor_type.shape.dim
+            ]
             logger.info(f"    Output: {output_tensor.name}, shape: {dims}")
         logger.info("****************************")
 
@@ -480,10 +486,15 @@ def convert_partition_to_onnx(partition_dir: str, clean: bool = True) -> str:
                 out_name = g.output[0].name
                 last_node_out = g.node[-1].output[0]
                 if out_name != last_node_out:
-                    g.node.append(helper.make_node(
-                        "Identity", inputs=[last_node_out], outputs=[out_name], name=f"OutputFixer_{name}"
-                    ))
-        
+                    g.node.append(
+                        helper.make_node(
+                            "Identity",
+                            inputs=[last_node_out],
+                            outputs=[out_name],
+                            name=f"OutputFixer_{name}",
+                        )
+                    )
+
         model = compose.add_prefix(model, f"{name}_")
         return model
 
@@ -511,50 +522,79 @@ def convert_partition_to_onnx(partition_dir: str, clean: bool = True) -> str:
 
         g.input.remove(old_in_vi)
         g.input.extend([helper.make_tensor_value_info(input_name, elem_type, dims)])
-        g.node.insert(0, helper.make_node("Identity", inputs=[input_name], outputs=[old_in_name], name="InputAlias"))
+        g.node.insert(
+            0,
+            helper.make_node(
+                "Identity",
+                inputs=[input_name],
+                outputs=[old_in_name],
+                name="InputAlias",
+            ),
+        )
 
         del g.output[:]
-        g.output.extend([helper.make_tensor_value_info(output_name, TensorProto.FLOAT, ["batch_size"])])
+        g.output.extend(
+            [
+                helper.make_tensor_value_info(
+                    output_name, TensorProto.FLOAT, ["batch_size"]
+                )
+            ]
+        )
         return model
 
     def _add_scalar_mul_and_sum(model, weights, head_outputs):
         weighted_inputs = []
         for i, (name_i, wi) in enumerate(zip(head_outputs, weights)):
             w_name = f"w_{i}"
-            w_init = helper.make_tensor(name=w_name, data_type=onnx.TensorProto.FLOAT, dims=[], vals=[float(wi)])
+            w_init = helper.make_tensor(
+                name=w_name, data_type=onnx.TensorProto.FLOAT, dims=[], vals=[float(wi)]
+            )
             model.graph.initializer.append(w_init)
             mul_out = f"weighted_{name_i}"
             weighted_inputs.append(mul_out)
-            model.graph.node.append(helper.make_node("Mul", inputs=[name_i, w_name], outputs=[mul_out], name=f"WeightMul_{i}"))
-        model.graph.node.append(helper.make_node("Sum", inputs=weighted_inputs, outputs=["output"], name="WeightedSum"))
+            model.graph.node.append(
+                helper.make_node(
+                    "Mul",
+                    inputs=[name_i, w_name],
+                    outputs=[mul_out],
+                    name=f"WeightMul_{i}",
+                )
+            )
+        model.graph.node.append(
+            helper.make_node(
+                "Sum", inputs=weighted_inputs, outputs=["output"], name="WeightedSum"
+            )
+        )
         return model
 
     logger.info(f"Converting partition at {partition_dir} to ONNX...")
     model_dir = partition_dir
     prep_onnx_file = prep.convert_to_onnx("prep", model_dir)
-    fs_onnx_file   = fs.convert_to_onnx("fs", model_dir)
-    lv_onnx_file   = lv.convert_to_onnx("lv", model_dir)
-    lr_onnx_file   = lr.convert_to_onnx("lr", model_dir)
-    svc_onnx_file  = svc.convert_to_onnx("svc", model_dir)
-    fs_lr_onnx_file   = lr.convert_to_onnx("fs_lr", model_dir)
-    fs_svc_onnx_file  = svc.convert_to_onnx("fs_svc", model_dir)
-    lv_lr_onnx_file   = lr.convert_to_onnx("lv_lr", model_dir)
-    lv_svc_onnx_file  = svc.convert_to_onnx("lv_svc", model_dir)
-    lv_mlp_onnx_file  = mlp.convert_to_onnx("lv_mlp", model_dir)
+    fs_onnx_file = fs.convert_to_onnx("fs", model_dir)
+    lv_onnx_file = lv.convert_to_onnx("lv", model_dir)
+    lr_onnx_file = lr.convert_to_onnx("lr", model_dir)
+    svc_onnx_file = svc.convert_to_onnx("svc", model_dir)
+    fs_lr_onnx_file = lr.convert_to_onnx("fs_lr", model_dir)
+    fs_svc_onnx_file = svc.convert_to_onnx("fs_svc", model_dir)
+    lv_lr_onnx_file = lr.convert_to_onnx("lv_lr", model_dir)
+    lv_svc_onnx_file = svc.convert_to_onnx("lv_svc", model_dir)
+    lv_mlp_onnx_file = mlp.convert_to_onnx("lv_mlp", model_dir)
 
     onnx_graphs = {
-        "prep":  onnx.load(prep_onnx_file),
-        "fs":    onnx.load(fs_onnx_file),
-        "lv":    onnx.load(lv_onnx_file),
-        "lr":    onnx.load(lr_onnx_file),
-        "svc":   onnx.load(svc_onnx_file),
+        "prep": onnx.load(prep_onnx_file),
+        "fs": onnx.load(fs_onnx_file),
+        "lv": onnx.load(lv_onnx_file),
+        "lr": onnx.load(lr_onnx_file),
+        "svc": onnx.load(svc_onnx_file),
         "fs_lr": onnx.load(fs_lr_onnx_file),
         "fs_svc": onnx.load(fs_svc_onnx_file),
-        "lv_lr":  onnx.load(lv_lr_onnx_file),
+        "lv_lr": onnx.load(lv_lr_onnx_file),
         "lv_svc": onnx.load(lv_svc_onnx_file),
         "lv_mlp": onnx.load(lv_mlp_onnx_file),
     }
-    onnx_graphs = {k: _fix_graph_outputs_with_identity(v) for k, v in onnx_graphs.items()}
+    onnx_graphs = {
+        k: _fix_graph_outputs_with_identity(v) for k, v in onnx_graphs.items()
+    }
 
     for name, onnx_model in onnx_graphs.items():
         logger.info(f"Checking ONNX graph outputs for model: {name}")
@@ -562,53 +602,109 @@ def convert_partition_to_onnx(partition_dir: str, clean: bool = True) -> str:
 
     logger.info("Merging ONNX graphs...")
     model = compose.merge_models(
-        onnx_graphs["prep"], onnx_graphs["fs"],
+        onnx_graphs["prep"],
+        onnx_graphs["fs"],
         io_map=[("prep_output_prep", "fs_input_fs")],
-        outputs=["prep_output_prep", "fs_output_fs"]
+        outputs=["prep_output_prep", "fs_output_fs"],
     )
     model = compose.merge_models(
-        model, onnx_graphs["lv"],
+        model,
+        onnx_graphs["lv"],
         io_map=[("prep_output_prep", "lv_input_lv")],
-        outputs=["prep_output_prep", "fs_output_fs", "lv_output_lv"]
+        outputs=["prep_output_prep", "fs_output_fs", "lv_output_lv"],
     )
     model = compose.merge_models(
-        model, onnx_graphs["lr"],
+        model,
+        onnx_graphs["lr"],
         io_map=[("prep_output_prep", "lr_input_lr")],
-        outputs=["prep_output_prep", "fs_output_fs", "lv_output_lv", "lr_output_lr"]
+        outputs=["prep_output_prep", "fs_output_fs", "lv_output_lv", "lr_output_lr"],
     )
     model = compose.merge_models(
-        model, onnx_graphs["svc"],
+        model,
+        onnx_graphs["svc"],
         io_map=[("prep_output_prep", "svc_input_svc")],
-        outputs=["prep_output_prep", "fs_output_fs", "lv_output_lv", "lr_output_lr", "svc_output_svc"]
+        outputs=[
+            "prep_output_prep",
+            "fs_output_fs",
+            "lv_output_lv",
+            "lr_output_lr",
+            "svc_output_svc",
+        ],
     )
     model = compose.merge_models(
-        model, onnx_graphs["fs_lr"],
+        model,
+        onnx_graphs["fs_lr"],
         io_map=[("fs_output_fs", "fs_lr_input_fs_lr")],
-        outputs=["prep_output_prep", "fs_output_fs", "lv_output_lv", "lr_output_lr", "svc_output_svc", "fs_lr_output_fs_lr"]
+        outputs=[
+            "prep_output_prep",
+            "fs_output_fs",
+            "lv_output_lv",
+            "lr_output_lr",
+            "svc_output_svc",
+            "fs_lr_output_fs_lr",
+        ],
     )
     model = compose.merge_models(
-        model, onnx_graphs["fs_svc"],
+        model,
+        onnx_graphs["fs_svc"],
         io_map=[("fs_output_fs", "fs_svc_input_fs_svc")],
-        outputs=["prep_output_prep", "fs_output_fs", "lv_output_lv", "lr_output_lr", "svc_output_svc", "fs_lr_output_fs_lr", "fs_svc_output_fs_svc"]
+        outputs=[
+            "prep_output_prep",
+            "fs_output_fs",
+            "lv_output_lv",
+            "lr_output_lr",
+            "svc_output_svc",
+            "fs_lr_output_fs_lr",
+            "fs_svc_output_fs_svc",
+        ],
     )
     model = compose.merge_models(
-        model, onnx_graphs["lv_lr"],
+        model,
+        onnx_graphs["lv_lr"],
         io_map=[("lv_output_lv", "lv_lr_input_lv_lr")],
-        outputs=["prep_output_prep", "fs_output_fs", "lv_output_lv", "lr_output_lr", "svc_output_svc",
-                 "fs_lr_output_fs_lr", "fs_svc_output_fs_svc", "lv_lr_output_lv_lr"]
+        outputs=[
+            "prep_output_prep",
+            "fs_output_fs",
+            "lv_output_lv",
+            "lr_output_lr",
+            "svc_output_svc",
+            "fs_lr_output_fs_lr",
+            "fs_svc_output_fs_svc",
+            "lv_lr_output_lv_lr",
+        ],
     )
     model = compose.merge_models(
-        model, onnx_graphs["lv_svc"],
+        model,
+        onnx_graphs["lv_svc"],
         io_map=[("lv_output_lv", "lv_svc_input_lv_svc")],
-        outputs=["prep_output_prep", "fs_output_fs", "lv_output_lv", "lr_output_lr", "svc_output_svc",
-                 "fs_lr_output_fs_lr", "fs_svc_output_fs_svc", "lv_lr_output_lv_lr", "lv_svc_output_lv_svc"]
+        outputs=[
+            "prep_output_prep",
+            "fs_output_fs",
+            "lv_output_lv",
+            "lr_output_lr",
+            "svc_output_svc",
+            "fs_lr_output_fs_lr",
+            "fs_svc_output_fs_svc",
+            "lv_lr_output_lv_lr",
+            "lv_svc_output_lv_svc",
+        ],
     )
     model = compose.merge_models(
-        model, onnx_graphs["lv_mlp"],
+        model,
+        onnx_graphs["lv_mlp"],
         io_map=[("lv_output_lv", "lv_mlp_input_lv_mlp")],
-        outputs=["prep_output_prep", "fs_output_fs", "lv_output_lv", "lr_output_lr", "svc_output_svc",
-                 "fs_lr_output_fs_lr", "fs_svc_output_fs_svc", "lv_lr_output_lv_lr", "lv_svc_output_lv_svc",
-                 "lv_mlp_output_lv_mlp"]
+        outputs=[
+            "prep_output_prep",
+            "fs_output_fs",
+            "lv_output_lv",
+            "lr_output_lr",
+            "svc_output_svc",
+            "fs_lr_output_fs_lr",
+            "fs_svc_output_fs_svc",
+            "lv_lr_output_lv_lr",
+            "lv_svc_output_lv_svc",
+            "lv_mlp_output_lv_mlp",
+        ],
     )
 
     metadata_path = os.path.join(partition_dir, "metadata.json")
@@ -627,7 +723,9 @@ def convert_partition_to_onnx(partition_dir: str, clean: bool = True) -> str:
     weights = np.array(metadata.get("weights", None), dtype=np.float32)
     if weights is None or len(weights) != len(head_outputs):
         logger.warning("Weights missing or wrong length; using uniform weights.")
-        weights = np.ones(len(head_outputs), dtype=np.float32) / float(len(head_outputs))
+        weights = np.ones(len(head_outputs), dtype=np.float32) / float(
+            len(head_outputs)
+        )
     logger.info(f"Weights: {weights}")
 
     model = _add_scalar_mul_and_sum(model, weights, head_outputs)
@@ -659,7 +757,7 @@ def convert_partition_to_onnx(partition_dir: str, clean: bool = True) -> str:
 def convert_to_onnx(model_dir: str, clean: bool = True):
     if not os.path.exists(model_dir):
         raise Exception(f"Model directory does not exist: {model_dir}")
-    
+
     if clean:
         final_path = os.path.join(model_dir, "lazy_model.onnx")
         if os.path.exists(final_path):

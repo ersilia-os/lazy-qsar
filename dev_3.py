@@ -4,7 +4,7 @@ convert_to_onnx("test_dev_2")
 
 import csv
 
-from lazyqsar.descriptors.descriptors import ChemeleonDescriptor, MorganFingerprint
+from lazyqsar.descriptors.descriptors import MorganFingerprint
 from lazyqsar.utils.logging import logger
 
 prefix = "ames"

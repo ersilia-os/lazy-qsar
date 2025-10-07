@@ -10,14 +10,10 @@ from .agnostic import convert_to_onnx
 from .agnostic import NUM_TRIALS_MODES
 
 
-DESCRIPTOR_TYPES = {
-    "chemeleon": ChemeleonDescriptor,
-    "morgan": MorganFingerprint
-}
+DESCRIPTOR_TYPES = {"chemeleon": ChemeleonDescriptor, "morgan": MorganFingerprint}
 
 
 class ArtifactWrapper(object):
-
     def __init__(self, descriptor, artifact):
         self.descriptor = descriptor
         self.artifact = artifact
@@ -25,14 +21,13 @@ class ArtifactWrapper(object):
     def predict_proba(self, smiles_list):
         X = self.descriptor.transform(smiles_list)
         return self.artifact.predict_proba(X)
-    
+
     def predict(self, smiles_list):
         X = self.descriptor.transform(smiles_list)
         return self.artifact.predict(X)
 
 
 class LazyBinaryQSAR(object):
-
     def __init__(self, descriptor_type, mode):
         self.descriptor_type = descriptor_type
         self.descriptor = DESCRIPTOR_TYPES[descriptor_type]
@@ -53,7 +48,7 @@ class LazyBinaryQSAR(object):
         return np.array([y_hat_0, y_hat_1]).T
 
     def predict(self, smiles_list, threshold=0.5):
-        y_hat = self.predict_proba(smiles_list)[:,1]
+        y_hat = self.predict_proba(smiles_list)[:, 1]
         y_bin = []
         for y in y_hat:
             if y >= threshold:
@@ -64,9 +59,7 @@ class LazyBinaryQSAR(object):
 
     def save(self, model_dir: str):
         self.model.save(model_dir)
-        metadata = {
-            "descriptor_type": self.descriptor_type
-        }
+        metadata = {"descriptor_type": self.descriptor_type}
         with open(os.path.join(model_dir, "descriptor.json"), "w") as f:
             json.dump(metadata, f)
         self.is_saved = True
@@ -79,7 +72,7 @@ class LazyBinaryQSAR(object):
             metadata = json.load(f)
         num_trials = metadata["num_trials"]
         mode = None
-        for k,v in NUM_TRIALS_MODES.keys():
+        for k, v in NUM_TRIALS_MODES.keys():
             if v == num_trials:
                 mode = k
         obj = cls(descriptor_type=desc_metadata["descriptor_type"], mode=mode)

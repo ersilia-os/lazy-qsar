@@ -9,11 +9,10 @@ from ..utils.logging import logger
 
 
 class ChemeleonDescriptor(object):
-
     def __init__(self):
         """CheMeleon descriptor based on the CheMeleon foundational model.
         CheMeleon is based on ChemProp's MPNN model and provides a 2048-dimensional fingerprint (continuous).
-        
+
         Usage:
         >>> from lazyqsar.descriptors import ChemeleonDescriptor
         >>> chemeleon = ChemeleonDescriptor()
@@ -24,7 +23,7 @@ class ChemeleonDescriptor(object):
         self.n_dim = 2048
         self.features = ["dim_{0}".format(i) for i in range(self.n_dim)]
 
-    def transform(self, smiles):            
+    def transform(self, smiles):
         chunk_size = 100
         R = []
         for i in tqdm(
@@ -99,8 +98,6 @@ class MorganFingerprint(object):
             v = self._clip_sparse(v, self.n_dim)
             v_.append(v)
         return np.array(v_, dtype=int)
-
-
 
     def _mol_from_smiles(self, smiles):
         return Chem.MolFromSmiles(smiles)

@@ -44,7 +44,7 @@ def find_params(X):
 
 class Preprocessor(object):
     """
-    A class for preprocessing data, including handling sparsity, 
+    A class for preprocessing data, including handling sparsity,
     removing constant features, imputing missing values, and scaling.
 
     Attributes
@@ -99,7 +99,7 @@ class Preprocessor(object):
             self.scaler = StandardScaler()
             self.scaler.fit(X)
         return self
-    
+
     def transform(self, X):
         """
         Transforms the input data using the fitted preprocessor.
@@ -113,7 +113,7 @@ class Preprocessor(object):
         -------
         ndarray
             Transformed data.
-        
+
         Raises
         ------
         ValueError
@@ -124,9 +124,13 @@ class Preprocessor(object):
         logger.info("Transforming the data using the fitted preprocessor...")
         X = self.var_thr.transform(X)
         X = self.imputer.transform(X)
-        X = self.scaler.transform(X).toarray() if self.is_sparse else self.scaler.transform(X)
+        X = (
+            self.scaler.transform(X).toarray()
+            if self.is_sparse
+            else self.scaler.transform(X)
+        )
         return X
-    
+
     def save(self, name: str, model_dir: str):
         """
         Saves the fitted preprocessor to the specified directory.
@@ -143,7 +147,7 @@ class Preprocessor(object):
         """
         if not hasattr(self, "var_thr") or self.var_thr is None:
             raise ValueError("Preprocessor not fitted. Call `fit` first.")
-        
+
         if not os.path.exists(model_dir):
             logger.info(f"Creating directory {model_dir} for saving the preprocessor.")
             os.makedirs(model_dir)
@@ -210,17 +214,17 @@ def convert_to_onnx(name: str, model_dir: str):
     """
     Convert to ONNX format and save the preprocessor.
     It creates a file named preprocessor.onnx in the specified directory.
-    
+
     Parameters
     ----------
     model_dir : str
         Directory where the preprocessor is saved.
-    
+
     Returns
     -------
     str
         Path to the saved ONNX file.
-    
+
     Raises
     ------
     FileNotFoundError
@@ -229,23 +233,25 @@ def convert_to_onnx(name: str, model_dir: str):
         If the preprocessor has not been fitted.
     """
     preprocessor = Preprocessor.load(name, model_dir)
-    pipe = Pipeline([
-        ("varthr_preprocessor", preprocessor.var_thr),
-        ("imputer_preprocessor", preprocessor.imputer),
-        ("scaler_preprocessor", preprocessor.scaler),
-    ])
+    pipe = Pipeline(
+        [
+            ("varthr_preprocessor", preprocessor.var_thr),
+            ("imputer_preprocessor", preprocessor.imputer),
+            ("scaler_preprocessor", preprocessor.scaler),
+        ]
+    )
     initial_type = [(f"input_{name}", FloatTensorType([None, preprocessor.input_dim]))]
     onnx_model = convert_sklearn(
         pipe,
         initial_types=initial_type,
-        target_opset={'': ONNX_TARGET_OPSET, 'ai.onnx.ml': ONNX_TARGET_OPSET},
+        target_opset={"": ONNX_TARGET_OPSET, "ai.onnx.ml": ONNX_TARGET_OPSET},
     )
-    
+
     onnx_model.ir_version = ONNX_IR_VERSION
     onnx_model.graph.name = f"{name}"
     onnx_model.graph.output[0].name = f"output_{name}"
     onnx_model.graph.input[0].name = f"input_{name}"
-    
+
     for i, node in enumerate(onnx_model.graph.node):
         if name not in node.name:
             if node.name:

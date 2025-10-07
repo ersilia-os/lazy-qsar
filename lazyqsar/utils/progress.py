@@ -1,10 +1,16 @@
 from typing import Iterable, TypeVar, Optional
 from rich.progress import (
-    Progress, SpinnerColumn, TextColumn, BarColumn,
-    TaskProgressColumn, TimeElapsedColumn, TimeRemainingColumn
+    Progress,
+    SpinnerColumn,
+    TextColumn,
+    BarColumn,
+    TaskProgressColumn,
+    TimeElapsedColumn,
+    TimeRemainingColumn,
 )
 
 T = TypeVar("T")
+
 
 def make_progress(transient: bool = True) -> Progress:
     return Progress(
@@ -12,13 +18,18 @@ def make_progress(transient: bool = True) -> Progress:
         TextColumn("[bold cyan]{task.fields[desc]}[/]"),
         BarColumn(),
         TaskProgressColumn(),
-        TextColumn("{task.completed}/{task.total}" if "{task.total}" else "{task.completed}"),
+        TextColumn(
+            "{task.completed}/{task.total}" if "{task.total}" else "{task.completed}"
+        ),
         TimeElapsedColumn(),
         TimeRemainingColumn(),
         transient=transient,
     )
 
-def track_chunks(chunks: Iterable[T], desc: str, total: Optional[int] = None, transient: bool = True):
+
+def track_chunks(
+    chunks: Iterable[T], desc: str, total: Optional[int] = None, transient: bool = True
+):
     with make_progress(transient) as progress:
         task = progress.add_task("work", total=total, desc=desc)
         for chunk in chunks:

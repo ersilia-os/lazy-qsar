@@ -38,24 +38,28 @@ class HeadNN(nn.Module):
             layers.append(nn.Linear(input_dim, 1))
         elif n_hidden == 1:
             h1 = max(1, int(input_dim * scale1))
-            layers.extend([
-                nn.Linear(input_dim, h1),
-                nn.ReLU(),
-                nn.Dropout(dropout),
-                nn.Linear(h1, 1),
-            ])
+            layers.extend(
+                [
+                    nn.Linear(input_dim, h1),
+                    nn.ReLU(),
+                    nn.Dropout(dropout),
+                    nn.Linear(h1, 1),
+                ]
+            )
         else:
             h1 = max(1, int(input_dim * scale1))
             h2 = max(1, int(h1 * scale2))
-            layers.extend([
-                nn.Linear(input_dim, h1),
-                nn.ReLU(),
-                nn.Dropout(dropout),
-                nn.Linear(h1, h2),
-                nn.ReLU(),
-                nn.Dropout(dropout),
-                nn.Linear(h2, 1),
-            ])
+            layers.extend(
+                [
+                    nn.Linear(input_dim, h1),
+                    nn.ReLU(),
+                    nn.Dropout(dropout),
+                    nn.Linear(h1, h2),
+                    nn.ReLU(),
+                    nn.Dropout(dropout),
+                    nn.Linear(h2, 1),
+                ]
+            )
         self.net = nn.Sequential(*layers)
 
     def forward(self, x):
@@ -87,8 +91,7 @@ def find_params(X, y, num_trials):
         optimizer = optim.Adam(model.parameters(), lr=lr)
 
         pos_weight = torch.tensor(
-            [(len(y_train) - y_train.sum()) / y_train.sum()],
-            dtype=torch.float32
+            [(len(y_train) - y_train.sum()) / y_train.sum()], dtype=torch.float32
         )
         loss_fn = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
 
@@ -100,8 +103,8 @@ def find_params(X, y, num_trials):
         for epoch in range(epochs):
             model.train()
             for i in range(0, len(X_train_t), batch_size):
-                xb = X_train_t[i:i+batch_size]
-                yb = y_train_t[i:i+batch_size]
+                xb = X_train_t[i : i + batch_size]
+                yb = y_train_t[i : i + batch_size]
                 optimizer.zero_grad()
                 logits = model(xb)
                 loss = loss_fn(logits, yb)
@@ -116,9 +119,11 @@ def find_params(X, y, num_trials):
         return auc
 
     study = optuna.create_study(direction="maximize")
-    study.enqueue_trial({"n_hidden": 1, "scale1": 0.5, "scale2": 0.5, "dropout": 0.2, "lr": 1e-3})
+    study.enqueue_trial(
+        {"n_hidden": 1, "scale1": 0.5, "scale2": 0.5, "dropout": 0.2, "lr": 1e-3}
+    )
     study.optimize(objective, n_trials=n_trials)
-    
+
     results = {
         "n_hidden": study.best_params["n_hidden"],
         "scale1": study.best_params["scale1"],
@@ -138,8 +143,18 @@ class Head(BaseEstimator, ClassifierMixin):
     Binary classification head wrapping HeadNN, trained with BCEWithLogitsLoss and class weighting.
     """
 
-    def __init__(self, input_dim, n_hidden=1, scale1=0.5, scale2=0.5, dropout=0.0,
-                 lr=1e-3, epochs=30, batch_size=32, device=None):
+    def __init__(
+        self,
+        input_dim,
+        n_hidden=1,
+        scale1=0.5,
+        scale2=0.5,
+        dropout=0.0,
+        lr=1e-3,
+        epochs=30,
+        batch_size=32,
+        device=None,
+    ):
         self.input_dim = input_dim
         self.n_hidden = n_hidden
         self.scale1 = scale1
@@ -157,8 +172,7 @@ class Head(BaseEstimator, ClassifierMixin):
         ).to(self.device)
 
         pos_weight = torch.tensor(
-            [(len(y) - y.sum()) / y.sum()],
-            dtype=torch.float32
+            [(len(y) - y.sum()) / y.sum()], dtype=torch.float32
         ).to(self.device)
 
         loss_fn = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
@@ -170,19 +184,19 @@ class Head(BaseEstimator, ClassifierMixin):
         for _ in range(self.epochs):
             self.model.train()
             for i in range(0, len(X_t), self.batch_size):
-                xb = X_t[i:i+self.batch_size]
-                yb = y_t[i:i+self.batch_size]
+                xb = X_t[i : i + self.batch_size]
+                yb = y_t[i : i + self.batch_size]
                 optimizer.zero_grad()
                 logits = self.model(xb)
                 loss = loss_fn(logits, yb)
                 loss.backward()
                 optimizer.step()
         return self
-    
+
     def fit(self, X, y):
         self.calibrate(X, y)
         return self._fit(X, y)
-    
+
     def calibrate(self, X, y):
         logger.info("Calibrating the model using Platt scaling...")
         splitter = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
@@ -201,10 +215,12 @@ class Head(BaseEstimator, ClassifierMixin):
         logger.debug("Shape of y_true: {}".format(y_true.shape))
         self.calibrator = LogisticRegression(class_weight="balanced")
         self.calibrator.fit(y_hat.reshape(-1, 1), y_true)
-        self.score = roc_auc_score(y_true, self.calibrator.predict_proba(y_hat.reshape(-1, 1))[:, 1])
+        self.score = roc_auc_score(
+            y_true, self.calibrator.predict_proba(y_hat.reshape(-1, 1))[:, 1]
+        )
         logger.debug("Done with calibration! Score: {:.4f}".format(self.score))
         return self.score
-    
+
     def predict_raw(self, X):
         self.model.eval()
         X_t = torch.tensor(X, dtype=torch.float32).to(self.device)
@@ -240,7 +256,9 @@ class Head(BaseEstimator, ClassifierMixin):
         meta_path = os.path.join(model_dir, f"{name}_metadata.json")
         with open(meta_path, "w") as f:
             json.dump(metadata, f)
-        joblib.dump(self.calibrator, os.path.join(model_dir, f"{name}_calibrator.joblib"))
+        joblib.dump(
+            self.calibrator, os.path.join(model_dir, f"{name}_calibrator.joblib")
+        )
 
     @classmethod
     def load(cls, name: str, model_dir: str):
@@ -256,19 +274,19 @@ class Head(BaseEstimator, ClassifierMixin):
         epochs = metadata["epochs"]
         batch_size = metadata["batch_size"]
         device = metadata["device"]
-        
+
         model_path = os.path.join(model_dir, f"{name}.pth")
-        model = HeadNN(
-            input_dim, n_hidden, scale1, scale2, dropout
-        ).to(device)
+        model = HeadNN(input_dim, n_hidden, scale1, scale2, dropout).to(device)
         model.load_state_dict(torch.load(model_path, map_location=device))
 
         obj = cls(
             input_dim, n_hidden, scale1, scale2, dropout, lr, epochs, batch_size, device
-            )
+        )
         obj.model = model
 
-        obj.calibrator = joblib.load(os.path.join(model_dir, f"{name}_calibrator.joblib"))
+        obj.calibrator = joblib.load(
+            os.path.join(model_dir, f"{name}_calibrator.joblib")
+        )
         obj.score = metadata.get("score", None)
 
         return obj
@@ -293,23 +311,31 @@ def convert_to_onnx(name: str, model_dir: str):
         onnx_path,
         input_names=[f"input_{name}"],
         output_names=[f"logits_{name}"],
-        dynamic_axes={f"input_{name}": {0: "batch_size"},
-                      f"logits_{name}": {0: "batch_size"}},
+        dynamic_axes={
+            f"input_{name}": {0: "batch_size"},
+            f"logits_{name}": {0: "batch_size"},
+        },
         opset_version=ONNX_TARGET_OPSET,
     )
 
     # 2) Patch ONNX: add Platt = Mul + Add + Sigmoid (+ Reshape to 1D)
     onnx_model = onnx.load(onnx_path)
 
-    coef = np.asarray(head.calibrator.coef_, dtype=np.float32).reshape(1,)       # scalar
-    intercept = np.asarray(head.calibrator.intercept_, dtype=np.float32).reshape(1,)
+    coef = np.asarray(head.calibrator.coef_, dtype=np.float32).reshape(
+        1,
+    )  # scalar
+    intercept = np.asarray(head.calibrator.intercept_, dtype=np.float32).reshape(
+        1,
+    )
     shape1d = np.array([-1], dtype=np.int64)
 
-    onnx_model.graph.initializer.extend([
-        numpy_helper.from_array(coef, name=f"calib_coef_{name}"),
-        numpy_helper.from_array(intercept, name=f"calib_intercept_{name}"),
-        numpy_helper.from_array(shape1d, name=f"shape1d_{name}"),
-    ])
+    onnx_model.graph.initializer.extend(
+        [
+            numpy_helper.from_array(coef, name=f"calib_coef_{name}"),
+            numpy_helper.from_array(intercept, name=f"calib_intercept_{name}"),
+            numpy_helper.from_array(shape1d, name=f"shape1d_{name}"),
+        ]
+    )
 
     mul_node = helper.make_node(
         "Mul",
@@ -340,9 +366,13 @@ def convert_to_onnx(name: str, model_dir: str):
 
     # Replace graph outputs with our final 1D tensor
     del onnx_model.graph.output[:]
-    onnx_model.graph.output.extend([
-        helper.make_tensor_value_info(f"output_{name}", TensorProto.FLOAT, ["batch_size"])
-    ])
+    onnx_model.graph.output.extend(
+        [
+            helper.make_tensor_value_info(
+                f"output_{name}", TensorProto.FLOAT, ["batch_size"]
+            )
+        ]
+    )
 
     onnx_model.graph.name = f"{name}"
     onnx_model.ir_version = ONNX_IR_VERSION
@@ -351,5 +381,3 @@ def convert_to_onnx(name: str, model_dir: str):
     onnx.save(onnx_model, onnx_path)
     logger.info(f"ONNX model with calibrator saved to {onnx_path}")
     return onnx_path
-
-

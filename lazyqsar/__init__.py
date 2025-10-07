@@ -1,4 +1,5 @@
 from .utils.logging import logger
+
 try:
     from .qsar_v1 import LazyBinaryQSAR
 except Exception as e:

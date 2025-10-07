@@ -4,12 +4,11 @@ import onnxruntime as ort
 
 
 class LazyBinaryClassifierArtifact(object):
-
     def __init__(self, sessions=None):
         self.sessions = sessions
 
     def predict_proba(self, X):
-        X = X.astype('float32')
+        X = X.astype("float32")
         if self.sessions is None:
             raise ValueError("Model not loaded. Call `load` first.")
         R = []

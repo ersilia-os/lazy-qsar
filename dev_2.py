@@ -1,10 +1,10 @@
 import csv
 
-from lazyqsar.descriptors.descriptors import ChemeleonDescriptor, MorganFingerprint
+from lazyqsar.descriptors.descriptors import ChemeleonDescriptor
 from lazyqsar.utils.logging import logger
 
 prefix = "ames"
-#descriptor_class = MorganFingerprint
+# descriptor_class = MorganFingerprint
 descriptor_class = ChemeleonDescriptor
 
 with open("benchmark/data/{0}_train.csv".format(prefix), "r") as f:
@@ -36,6 +36,7 @@ X_test = descriptor.transform(smiles_test)
 print("Shape of testing descriptors: ", X_test.shape)
 
 import numpy as np
+
 X = X_train
 y = np.array(y_train)
 
@@ -54,6 +55,7 @@ y_pred = clf.predict(X=X_test)
 print(y_pred)
 
 from sklearn.metrics import roc_auc_score
+
 print("ROC-AUC: ", roc_auc_score(y_test, y_pred))
 
 from lazyqsar.assemblers.eclectic_binary_classifier import convert_to_onnx
@@ -68,5 +70,3 @@ y_pred = model.predict(X_test)
 print(y_pred)
 
 print("ROC-AUC: ", roc_auc_score(y_test, y_pred))
-
-

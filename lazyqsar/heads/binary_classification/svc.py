@@ -39,9 +39,7 @@ def find_params(X, y, num_trials):
 
         oof = np.full(len(y), np.nan, dtype=np.float32)
         for tr, va in kf.split(X, y):
-            clf = LinearSVC(
-                C=C
-            )
+            clf = LinearSVC(C=C)
             clf.fit(X[tr], y[tr])
             oof[va] = clf.decision_function(X[va]).astype(np.float32)
 
@@ -50,7 +48,9 @@ def find_params(X, y, num_trials):
 
         return roc_auc_score(y, oof)
 
-    study = optuna.create_study(direction="maximize", pruner=optuna.pruners.MedianPruner())
+    study = optuna.create_study(
+        direction="maximize", pruner=optuna.pruners.MedianPruner()
+    )
     study.enqueue_trial({"C": 1.0})
     study.optimize(objective, n_trials=n_trials)
 
@@ -58,7 +58,6 @@ def find_params(X, y, num_trials):
 
 
 class Head(BaseEstimator, ClassifierMixin):
-
     def __init__(self, C):
         self.C = C
 
@@ -79,7 +78,9 @@ class Head(BaseEstimator, ClassifierMixin):
             y_hat_fold = self.model.decision_function(X[test_idx]).astype(np.float32)
             y_hat += list(y_hat_fold)
             y_true += list(y[test_idx])
-        self.calibrator = LogisticRegression().fit(np.array(y_hat).reshape(-1, 1), np.array(y_true))
+        self.calibrator = LogisticRegression().fit(
+            np.array(y_hat).reshape(-1, 1), np.array(y_true)
+        )
         self.score = roc_auc_score(y_true, y_hat)
 
     def predict_proba(self, X):
@@ -89,7 +90,7 @@ class Head(BaseEstimator, ClassifierMixin):
 
     def predict(self, X):
         return self.model.predict_proba(X)[:, 1]
-    
+
     def save(self, name: str, model_dir: str):
         if not os.path.exists(model_dir):
             os.makedirs(model_dir)
@@ -101,7 +102,9 @@ class Head(BaseEstimator, ClassifierMixin):
         with open(os.path.join(model_dir, f"{name}_metadata.json"), "w") as f:
             json.dump(metadata, f)
         joblib.dump(self.model, os.path.join(model_dir, f"{name}_model.joblib"))
-        joblib.dump(self.calibrator, os.path.join(model_dir, f"{name}_calibrator.joblib"))
+        joblib.dump(
+            self.calibrator, os.path.join(model_dir, f"{name}_calibrator.joblib")
+        )
 
     @classmethod
     def load(cls, name: str, model_dir: str):
@@ -115,7 +118,7 @@ class Head(BaseEstimator, ClassifierMixin):
         head.score = metadata["score"]
         head.input_dim = metadata["input_dim"]
         return head
-    
+
 
 def convert_to_onnx(name: str, model_dir: str):
     """
@@ -134,24 +137,36 @@ def convert_to_onnx(name: str, model_dir: str):
 
     # ---- Extract parameters and collapse them ----
     # Linear SVC decision: z = w^T x + b
-    w = np.asarray(svc.coef_, dtype=np.float32).reshape(1, input_dim)     # (1, F)
-    b = np.asarray(svc.intercept_, dtype=np.float32).reshape(1,)          # (1,)
+    w = np.asarray(svc.coef_, dtype=np.float32).reshape(1, input_dim)  # (1, F)
+    b = np.asarray(svc.intercept_, dtype=np.float32).reshape(
+        1,
+    )  # (1,)
 
     # Platt: p = sigmoid(a * z + c)
-    a = float(np.asarray(cal.coef_, dtype=np.float32).reshape(1, 1)[0, 0])   # scalar
-    c = float(np.asarray(cal.intercept_, dtype=np.float32).reshape(1,)[0])   # scalar
+    a = float(np.asarray(cal.coef_, dtype=np.float32).reshape(1, 1)[0, 0])  # scalar
+    c = float(
+        np.asarray(cal.intercept_, dtype=np.float32).reshape(
+            1,
+        )[0]
+    )  # scalar
 
     # Collapse to single affine
-    W2 = (a * w).T.astype(np.float32)                # (F, 1) for Gemm
+    W2 = (a * w).T.astype(np.float32)  # (F, 1) for Gemm
     b2 = np.array([a * b[0] + c], dtype=np.float32)  # (1,)
 
     # ---- Build ONNX graph ----
-    X = helper.make_tensor_value_info(f"input_{name}", TensorProto.FLOAT, ["batch_size", input_dim])
-    Y = helper.make_tensor_value_info(f"output_{name}", TensorProto.FLOAT, ["batch_size"])  # 1D output
+    X = helper.make_tensor_value_info(
+        f"input_{name}", TensorProto.FLOAT, ["batch_size", input_dim]
+    )
+    Y = helper.make_tensor_value_info(
+        f"output_{name}", TensorProto.FLOAT, ["batch_size"]
+    )  # 1D output
 
-    W_init = numpy_helper.from_array(W2, name=f"W2_{name}")                  # (F,1)
-    b_init = numpy_helper.from_array(b2, name=f"b2_{name}")                  # (1,)
-    shape1d_init = numpy_helper.from_array(np.array([-1], np.int64), name=f"shape_out_{name}")
+    W_init = numpy_helper.from_array(W2, name=f"W2_{name}")  # (F,1)
+    b_init = numpy_helper.from_array(b2, name=f"b2_{name}")  # (1,)
+    shape1d_init = numpy_helper.from_array(
+        np.array([-1], np.int64), name=f"shape_out_{name}"
+    )
 
     # Gemm: (N,F) @ (F,1) + (1,) -> (N,1)
     gemm = helper.make_node(
@@ -159,20 +174,23 @@ def convert_to_onnx(name: str, model_dir: str):
         inputs=[f"input_{name}", f"W2_{name}", f"b2_{name}"],
         outputs=[f"affine_out_{name}"],
         name=f"{name}_LinearSVC_Gemm",
-        alpha=1.0, beta=1.0, transA=0, transB=0
+        alpha=1.0,
+        beta=1.0,
+        transA=0,
+        transB=0,
     )
     sigm = helper.make_node(
         "Sigmoid",
         inputs=[f"affine_out_{name}"],
         outputs=[f"probs_2d_{name}"],
-        name=f"{name}_Sigmoid"
+        name=f"{name}_Sigmoid",
     )
     # (N,1) -> (N,)
     reshape = helper.make_node(
         "Reshape",
         inputs=[f"probs_2d_{name}", f"shape_out_{name}"],
         outputs=[f"output_{name}"],
-        name=f"{name}_Reshape1D"
+        name=f"{name}_Reshape1D",
     )
 
     graph = helper.make_graph(
