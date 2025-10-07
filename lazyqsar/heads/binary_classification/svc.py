@@ -104,6 +104,7 @@ class Head(BaseEstimator, ClassifierMixin):
             os.makedirs(model_dir)
         metadata = {
             "C": self.C,
+            "dual": bool(self.dual),
             "score": self.score,
             "input_dim": self.input_dim,
         }
@@ -120,7 +121,7 @@ class Head(BaseEstimator, ClassifierMixin):
             metadata = json.load(f)
         model = joblib.load(os.path.join(model_dir, f"{name}_model.joblib"))
         calibrator = joblib.load(os.path.join(model_dir, f"{name}_calibrator.joblib"))
-        head = cls(C=metadata["C"])
+        head = cls(C=metadata["C"], dual=bool(metadata["dual"]))
         head.model = model
         head.calibrator = calibrator
         head.score = metadata["score"]

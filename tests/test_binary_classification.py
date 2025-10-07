@@ -34,7 +34,7 @@ def fit_and_evaluate():
     logger.info("Binary classification task")
     smiles_train, y_train, smiles_test, y_test = load_dataset("ames")
     logger.info("Using featurizer")
-    model = LazyBinaryQSAR(descriptor_type="chemeleon", mode="fast")
+    model = LazyBinaryQSAR(descriptor_type="morgan", mode="fast")
     model.fit(smiles_list=smiles_train, y=y_train)
     model.save("test_binary_classification")
     model = LazyBinaryQSAR.load("test_binary_classification")
