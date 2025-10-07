@@ -23,12 +23,17 @@ SPARSITY_THRESHOLD = 0.9
 
 
 def _is_sparse(X):
-    """Return True if ≥90% of entries in X are zero."""
-    if hasattr(X, "toarray"):  # sparse matrix
+    if hasattr(X, "toarray"):
         zero_fraction = 1.0 - (X.count_nonzero() / np.prod(X.shape))
     else:
         zero_fraction = np.mean(X == 0)
     return zero_fraction >= SPARSITY_THRESHOLD
+
+def use_full(X):
+    if X.shape[1] <= 512:
+        return True
+    else:
+        return _is_sparse(X)
 
 
 def find_params(X, y, num_trials):
@@ -42,12 +47,11 @@ def find_params(X, y, num_trials):
     X = np.asarray(X)
     y = np.asarray(y)
 
-    sparse = _is_sparse(X)
+    do_full = use_full(X)
     cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)
 
-    if sparse:
+    if do_full:
         logger.info(
-            f"Sparse input detected (≥{SPARSITY_THRESHOLD * 100:.0f}% zeros). "
             f"Running Optuna for LinearSVC with {num_trials} trials..."
         )
 

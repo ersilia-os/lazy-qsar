@@ -28,6 +28,13 @@ def _is_sparse(X):
     return zero_fraction >= SPARSITY_THRESHOLD
 
 
+def use_full(X):
+    if X.shape[1] <= 512:
+        return True
+    else:
+        return _is_sparse(X)
+
+
 def find_params(X, y, num_trials):
     """
     Tune either alpha (= 1/C) for SGDClassifier or C for LogisticRegression
@@ -38,14 +45,13 @@ def find_params(X, y, num_trials):
     X = np.asarray(X)
     y = np.asarray(y)
 
-    sparse = _is_sparse(X)
+    do_full = use_full(X)
     n_splits = 5
     random_state = 42
     cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
 
-    if sparse:
+    if do_full:
         logger.info(
-            f"Detected sparse fingerprint matrix (≥{SPARSITY_THRESHOLD * 100:.0f}% zeros). "
             f"Running Optuna for LogisticRegression with {num_trials} trials..."
         )
 

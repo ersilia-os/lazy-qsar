@@ -23,13 +23,13 @@ LazyQSAR's binary classifier can run either with default descriptors or with cus
 
 ### Built-in descriptors
 
-Instantiate the LazyBinaryQSAR class with either of the available descriptors (Chemeleon or Morgan fingerprints) and estimators (Logistic Regression, Random Forest or Tune Tables) and simply fit and predict results:
+Instantiate the LazyBinaryQSAR class with either of the available descriptors (`chemeleon` or `morgan`) and mode (`fast`, `default`):
 
 ```python
 import lazyqsar
 
 model = lazyqsar.LazyBinaryQSAR(
-    descriptor_type="chemeleon", model_type="logistic_regression"
+    descriptor_type="chemeleon", mode="default"
     )
 model.fit(smiles_train, y_train)
 model.save_model(model_path)
