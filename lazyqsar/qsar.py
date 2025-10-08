@@ -89,7 +89,10 @@ class LazyBinaryQSAR(object):
 
     @classmethod
     def load_onnx(cls, model_dir: str):
-        descriptor = self.descriptor.load(model_dir)
+        with open(os.path.join(model_dir, "featurizer.json"), "r") as f:
+            desc_metadata = json.load(f)
+        descriptor = DESCRIPTOR_TYPES[desc_metadata["featurizer"]]
+        descriptor = descriptor.load(model_dir)
         art = LazyBinaryClassifierArtifact.load(model_dir=model_dir)
         return ArtifactWrapper(descriptor=descriptor, artifact=art)
 
