@@ -23,14 +23,14 @@ LazyQSAR's binary classifier can run either with default descriptors or with cus
 
 ### Built-in descriptors
 
-Instantiate the LazyBinaryQSAR class with either of the available descriptors (`chemeleon` or `morgan`) and mode (`fast`, `default`):
+Instantiate the LazyBinaryQSAR class with either of the available descriptors (`chemeleon` or `morgan`) and mode (`fast`, `default`, `slow`):
 
 ```python
 from lazyqsar.qsar import LazyBinaryQSAR
 
 model = LazyBinaryQSAR(descriptor_type="chemeleon")
 model.fit(smiles_train, y_train)
-model.save(model_path)
+model.save(model_dir)
 y_hat = model.predict_proba(smiles_test)[:,1]
 ```
 
@@ -42,7 +42,7 @@ from lazyqsar.agnostic import LazyBinaryClassifier
 
 model = LazyBinaryClassifier()
 model.fit(X_train, y_train)
-model.save(model_path)
+model.save(model_dir)
 y_hat = model.predict_proba(X_test)[:,1]
 ```
 
