@@ -28,9 +28,7 @@ Instantiate the LazyBinaryQSAR class with either of the available descriptors (`
 ```python
 from lazyqsar.qsar import LazyBinaryQSAR
 
-model = LazyBinaryQSAR(
-    descriptor_type="chemeleon", mode="default"
-    )
+model = LazyBinaryQSAR(descriptor_type="chemeleon")
 model.fit(smiles_train, y_train)
 model.save(model_path)
 y_hat = model.predict_proba(smiles_test)[:,1]
