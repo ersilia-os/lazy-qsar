@@ -58,7 +58,7 @@ class LazyBinaryQSAR(object):
                 y_bin.append(0)
         return np.array(y_bin, dtype=int)
 
-    def save(self, model_dir: str):
+    def save_raw(self, model_dir: str):
         logger.debug(f"Saving model to {model_dir}")
         self.model.save(model_dir)
         logger.debug(f"Saving descriptor to {model_dir}")
@@ -66,7 +66,7 @@ class LazyBinaryQSAR(object):
         self.is_saved = True
 
     @classmethod
-    def load(cls, model_dir: str):
+    def load_raw(cls, model_dir: str):
         with open(os.path.join(model_dir, "featurizer.json"), "r") as f:
             desc_metadata = json.load(f)
         with open(os.path.join(model_dir, "metadata.json"), "r") as f:
@@ -87,7 +87,20 @@ class LazyBinaryQSAR(object):
             self.save(model_dir)
         convert_to_onnx(model_dir, clean=clean)
 
-    def load_onnx(self, model_dir: str):
+    @classmethod
+    def load_onnx(cls, model_dir: str):
         descriptor = self.descriptor.load(model_dir)
         art = LazyBinaryClassifierArtifact.load(model_dir=model_dir)
         return ArtifactWrapper(descriptor=descriptor, artifact=art)
+
+    def save(self, model_dir: str, onnx=True):
+        self.save_raw(model_dir=model_dir)
+        if onnx:
+            self.save_onnx(model_dir=model_dir, clean=True)
+
+    @classmethod
+    def load(cls, model_dir: str):
+        for fn in os.listdir(model_dir):
+            if fn.endswith(".onnx"):
+                return cls.load_onnx(model_dir=model_dir)
+        return cls.load_raw(model_dir=model_dir)

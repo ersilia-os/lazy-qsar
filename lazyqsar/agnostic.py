@@ -41,12 +41,12 @@ class LazyBinaryClassifier(object):
                 y_bin.append(0)
         return np.array(y_bin, dtype=int)
 
-    def save(self, model_dir: str):
+    def save_raw(self, model_dir: str):
         self.model.save(model_dir=model_dir)
         self.is_saved = True
 
     @classmethod
-    def load(cls, model_dir: str):
+    def load_raw(cls, model_dir: str):
         with open(os.path.join(model_dir, "metadata.json"), "r") as f:
             metadata = json.load(f)
         num_trials = metadata["num_trials"]
@@ -68,3 +68,15 @@ class LazyBinaryClassifier(object):
     @classmethod
     def load_onnx(cls, model_dir: str):
         return LazyBinaryClassifierArtifact.load(model_dir=model_dir)
+    
+    def save(self, model_dir: str, onnx=True):
+        self.save_raw(model_dir=model_dir)
+        if onnx:
+            self.save_onnx(model_dir=model_dir, clean=True)
+
+    @classmethod
+    def load(cls, model_dir: str):
+        for fn in os.listdir(model_dir):
+            if fn.endswith(".onnx"):
+                return cls.load_onnx(model_dir=model_dir)
+        return cls.load_raw(model_dir=model_dir)
