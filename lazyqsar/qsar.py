@@ -93,8 +93,8 @@ class LazyBinaryQSAR(object):
             desc_metadata = json.load(f)
         descriptor = DESCRIPTOR_TYPES[desc_metadata["featurizer"]]
         descriptor = descriptor.load(model_dir)
-        art = LazyBinaryClassifierArtifact.load(model_dir=model_dir)
-        return ArtifactWrapper(descriptor=descriptor, artifact=art)
+        artifact = LazyBinaryClassifierArtifact.load(model_dir=model_dir)
+        return ArtifactWrapper(descriptor=descriptor, artifact=artifact)
 
     def save(self, model_dir: str, onnx=True):
         self.save_raw(model_dir=model_dir)
