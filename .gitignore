@@ -4,6 +4,7 @@ benchmark/data/admet_group.zip
 benchmark/data/admet_group/
 benchmark/data/ersilia_preds/
 benchmark/preds/
+benchmark
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

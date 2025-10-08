@@ -46,7 +46,10 @@ def fit_and_evaluate():
     )
     shutil.rmtree("test_binary_classification")
 
-def load_descriptors(dataset_name): #precalculated using Ersilia by each user individually
+
+def load_descriptors(
+    dataset_name,
+):  # precalculated using Ersilia by each user individually
     X_train = f"../benchmark/data/ersilia_preds/{dataset_name}_train.h5"
     X_test = f"../benchmark/data/ersilia_preds/{dataset_name}_test.h5"
     return X_train, X_test
@@ -56,16 +59,19 @@ def fit_and_evaluate_agnostic():
     model = LazyBinaryClassifier()
     smiles_train, y_train, smiles_test, y_test = load_dataset("ames")
     X_train, X_test = load_descriptors("ames")
-    model.fit(h5_file=X_train, y= y_train)
+    model.fit(h5_file=X_train, y=y_train)
     model.save("test_binary_agnostic_classification")
     model = LazyBinaryClassifier.load("test_binary_agnostic_classification")
-    y_pred = model.predict_proba(h5_file = X_test)[:,1]
+    y_pred = model.predict_proba(h5_file=X_test)[:, 1]
     logger.info("ROC-AUC: {0}".format(roc_auc_score(y_test, y_pred)))
     logger.info(
-        "Removing temporary files from {0}".format("test_binary_agnostic_classification")
+        "Removing temporary files from {0}".format(
+            "test_binary_agnostic_classification"
+        )
     )
     shutil.rmtree("test_binary_agnostic_classification")
 
+
 if __name__ == "__main__":
-    #fit_and_evaluate()
+    # fit_and_evaluate()
     fit_and_evaluate_agnostic()
