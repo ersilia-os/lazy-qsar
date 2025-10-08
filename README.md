@@ -32,7 +32,7 @@ model = LazyBinaryQSAR(
     descriptor_type="chemeleon", mode="default"
     )
 model.fit(smiles_train, y_train)
-model.save_model(model_path)
+model.save(model_path)
 y_hat = model.predict_proba(smiles_test)
 ```
 
@@ -44,7 +44,7 @@ import lazyqsar.agnostic import LazyBinaryClassifier
 
 model = LazyBinaryClassifier()
 model.fit(X_train, y_train)
-model.save_model(model_path)
+model.save(model_path)
 y_hat = model.predict_proba(X_test)
 ```
 
