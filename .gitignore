@@ -1,5 +1,8 @@
 .DS_Store
 tests/test_model/
+benchmark/data/admet_group.zip
+benchmark/data/admet_group/
+benchmark/preds/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
