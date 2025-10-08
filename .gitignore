@@ -2,6 +2,7 @@
 tests/test_model/
 benchmark/data/admet_group.zip
 benchmark/data/admet_group/
+benchmark/data/ersilia_preds/
 benchmark/preds/
 
 # Byte-compiled / optimized / DLL files
