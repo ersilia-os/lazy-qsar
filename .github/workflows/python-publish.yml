@@ -37,7 +37,7 @@ jobs:
           echo "Publishing version $VERSION"
       - name: Configure PyPI credentials
         run: |
-          poetry config pypi-token.pypi "${{ secrets.PYPI_PASSWORD }}"
+          poetry config pypi-token.pypi "${{ secrets.ALL_PYPI_PROJECTS_API_TOKEN }}"
       - name: Build and publish to PyPI
         env:
           VERSION: ${{ steps.get_version.outputs.version }}
