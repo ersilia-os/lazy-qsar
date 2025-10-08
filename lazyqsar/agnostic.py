@@ -14,6 +14,10 @@ NUM_TRIALS_MODES = {"default": 10, "fast": 1, "slow": 30}
 
 class LazyBinaryClassifier(object):
     def __init__(self, mode: str = "default"):
+        if mode not in NUM_TRIALS_MODES:
+            raise ValueError(
+                f"Mode {mode} not recognized. Available modes: {list(NUM_TRIALS_MODES.keys())}"
+            )
         self.num_trials = NUM_TRIALS_MODES[mode]
         self.is_saved = False
 
