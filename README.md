@@ -29,9 +29,9 @@ Instantiate the LazyBinaryQSAR class with either of the available descriptors (`
 from lazyqsar.qsar import LazyBinaryQSAR
 
 model = LazyBinaryQSAR(descriptor_type="chemeleon")
-model.fit(smiles_train, y_train)
+model.fit(smiles_list=smiles_train, y=y_train)
 model.save(model_dir)
-y_hat = model.predict_proba(smiles_test)[:,1]
+y_hat = model.predict_proba(smiles_list=smiles_test)[:,1]
 ```
 
 ### Custom-made descriptors
@@ -41,9 +41,9 @@ Pre-calculate your descriptors using the preferred method. We recommend using th
 from lazyqsar.agnostic import LazyBinaryClassifier
 
 model = LazyBinaryClassifier()
-model.fit(X_train, y_train)
+model.fit(X=X_train, y=y_train)
 model.save(model_dir)
-y_hat = model.predict_proba(X_test)[:,1]
+y_hat = model.predict_proba(X=X_test)[:,1]
 ```
 
 ### Using saved models at inference time
@@ -53,7 +53,7 @@ By default, models are saved as ONNX files. When a model is trained, you can sim
 from lazyqsar.artifacts import LazyBinaryClassifierArtifact
 
 model = LazyBinaryClassifier.load(model_dir)
-y_hat = model.predict_proba(X)[:,1]
+y_hat = model.predict_proba(X=X)[:,1]
 ```
 
 ## Tests and benchmarks
