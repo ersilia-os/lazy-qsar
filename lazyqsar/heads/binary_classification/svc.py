@@ -29,6 +29,7 @@ def _is_sparse(X):
         zero_fraction = np.mean(X == 0)
     return zero_fraction >= SPARSITY_THRESHOLD
 
+
 def use_full(X):
     if X.shape[1] <= 512:
         return True
@@ -51,9 +52,7 @@ def find_params(X, y, num_trials):
     cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)
 
     if do_full:
-        logger.info(
-            f"Running Optuna for LinearSVC with {num_trials} trials..."
-        )
+        logger.info(f"Running Optuna for LinearSVC with {num_trials} trials...")
 
         def objective(trial):
             C = trial.suggest_float("C", 1e-4, 1e2, log=True)

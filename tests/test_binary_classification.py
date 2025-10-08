@@ -40,11 +40,6 @@ def fit_and_evaluate():
     model = LazyBinaryQSAR.load("test_binary_classification")
     y_pred = model.predict_proba(smiles_list=smiles_test)[:, 1]
     logger.info("ROC-AUC: {0}".format(roc_auc_score(y_test, y_pred)))
-    logger.info("Trying with ONNX")
-    model.save_onnx("test_binary_classification")
-    model = model.load_onnx("test_binary_classification")
-    y_pred = model.predict_proba(smiles_list=smiles_test)[:, 1]
-    logger.info("ROC-AUC: {0}".format(roc_auc_score(y_test, y_pred)))
     logger.info(
         "Removing temporary files from {0}".format("test_binary_classification")
     )

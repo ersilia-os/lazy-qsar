@@ -68,7 +68,7 @@ class LazyBinaryClassifier(object):
     @classmethod
     def load_onnx(cls, model_dir: str):
         return LazyBinaryClassifierArtifact.load(model_dir=model_dir)
-    
+
     def save(self, model_dir: str, onnx=True):
         self.save_raw(model_dir=model_dir)
         if onnx:
