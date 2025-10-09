@@ -58,7 +58,7 @@ y_hat = model.predict_proba(X=X)[:,1]
 
 ## Tests and benchmarks
 
-In the `/benchmark` folder you will find the performance of the default estimators and descriptors on the TDCommons ADMET dataset. In the `/tests` folder you can find a quick implementation of the methods described for easily checking any change in the code. The Bioavailability dataset is used as an example. 
+In the benchmark repository you will find the performance of the default estimators and descriptors on the TDCommons ADMET dataset. In the `/tests` folder you can find a quick implementation of the methods described for easily checking any change in the code. The Bioavailability dataset and chemeleon descriptors are used as an example. 
 
 ## Disclaimer
 

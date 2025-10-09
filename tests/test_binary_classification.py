@@ -9,7 +9,7 @@ from lazyqsar.utils.logging import logger
 
 
 def load_dataset(dataset_name):
-    with open("../benchmark/data/{0}_train.csv".format(dataset_name), "r") as f:
+    with open("data/{0}_train.csv".format(dataset_name), "r") as f:
         reader = csv.reader(f)
         smiles_train = []
         y_train = []
@@ -19,7 +19,7 @@ def load_dataset(dataset_name):
             y_train += [int(row[1])]
     logger.info("Number of training samples: {0}".format(len(y_train)))
 
-    with open("../benchmark/data/{0}_test.csv".format(dataset_name), "r") as f:
+    with open("data/{0}_test.csv".format(dataset_name), "r") as f:
         reader = csv.reader(f)
         smiles_test = []
         y_test = []
@@ -33,7 +33,7 @@ def load_dataset(dataset_name):
 
 def fit_and_evaluate():
     logger.info("Binary classification task")
-    smiles_train, y_train, smiles_test, y_test = load_dataset("ames")
+    smiles_train, y_train, smiles_test, y_test = load_dataset("bioavailability_ma")
     logger.info("Using featurizer")
     model = LazyBinaryQSAR(descriptor_type="chemeleon", mode="fast")
     model.fit(smiles_list=smiles_train, y=y_train)
@@ -49,16 +49,16 @@ def fit_and_evaluate():
 
 def load_descriptors(
     dataset_name,
-):  # precalculated using Ersilia by each user individually
-    X_train = f"../benchmark/data/ersilia_preds/{dataset_name}_train.h5"
-    X_test = f"../benchmark/data/ersilia_preds/{dataset_name}_test.h5"
+    ):  # precalculated using Ersilia by each user individually
+    X_train = f"data/{dataset_name}_train.h5"
+    X_test = f"data/{dataset_name}_test.h5"
     return X_train, X_test
 
 
 def fit_and_evaluate_agnostic():
     model = LazyBinaryClassifier()
-    smiles_train, y_train, smiles_test, y_test = load_dataset("ames")
-    X_train, X_test = load_descriptors("ames")
+    smiles_train, y_train, smiles_test, y_test = load_dataset("bioavailability_ma")
+    X_train, X_test = load_descriptors("bioavailability_ma")
     model.fit(h5_file=X_train, y=y_train)
     model.save("test_binary_agnostic_classification")
     model = LazyBinaryClassifier.load("test_binary_agnostic_classification")
@@ -73,5 +73,5 @@ def fit_and_evaluate_agnostic():
 
 
 if __name__ == "__main__":
-    # fit_and_evaluate()
-    fit_and_evaluate_agnostic()
+    fit_and_evaluate()
+    #fit_and_evaluate_agnostic()
