@@ -394,11 +394,13 @@ class LazyEclecticBinaryClassifier(object):
             logger.debug(f"Saving model to {partition_dir}")
             model.save(partition_dir)
             partition_idx += 1
+
         metadata = {
             "num_partitions": len(self.models),
             "random_state": self.random_state,
             "num_trials": self.num_trials,
             "fit_time": self.fit_time,
+            "score": float(np.mean([np.mean(m.model_scores) for m in self.models])),
         }
         metadata_path = os.path.join(model_dir, "metadata.json")
         with open(metadata_path, "w") as f:
