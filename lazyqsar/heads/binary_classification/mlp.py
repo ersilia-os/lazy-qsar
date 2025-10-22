@@ -3,11 +3,12 @@ import json
 import joblib
 import numpy as np
 import optuna
+import time
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from sklearn.base import BaseEstimator, ClassifierMixin
-from sklearn.model_selection import train_test_split, StratifiedKFold
+from sklearn.model_selection import train_test_split, StratifiedShuffleSplit
 from sklearn.metrics import roc_auc_score
 from sklearn.linear_model import LogisticRegression
 
@@ -166,6 +167,7 @@ class Head(BaseEstimator, ClassifierMixin):
         self.model = None
 
     def _fit(self, X, y):
+        logger.info("Fitting the HeadNN model...")
         self.model = HeadNN(
             self.input_dim, self.n_hidden, self.scale1, self.scale2, self.dropout
         ).to(self.device)
@@ -192,15 +194,12 @@ class Head(BaseEstimator, ClassifierMixin):
                 optimizer.step()
         return self
 
-    def fit(self, X, y):
-        self.calibrate(X, y)
-        return self._fit(X, y)
-
-    def calibrate(self, X, y):
+    def _calibrate(self, X, y):
         logger.info("Calibrating the model using Platt scaling...")
-        splitter = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+        splitter = StratifiedShuffleSplit(n_splits=10, test_size=0.2, random_state=42)
         y_hat = []
         y_true = []
+        t0 = time.time()
         for train_idx, val_idx in splitter.split(X, y):
             X_train, X_val = X[train_idx], X[val_idx]
             y_train, y_val = y[train_idx], y[val_idx]
@@ -208,6 +207,9 @@ class Head(BaseEstimator, ClassifierMixin):
             logits_val = self.predict_raw(X_val)
             y_hat += list(logits_val)
             y_true += list(y_val)
+            t1 = time.time()
+            if (t1 - t0) > 60:
+                break
         y_hat = np.array(y_hat)
         logger.debug("Shape of y_hat: {}".format(y_hat.shape))
         y_true = np.array(y_true)
@@ -219,6 +221,11 @@ class Head(BaseEstimator, ClassifierMixin):
         )
         logger.debug("Done with calibration! Score: {:.4f}".format(self.score))
         return self.score
+
+    def fit(self, X, y):
+        self._calibrate(X, y)
+        self._fit(X, y)
+        return self
 
     def predict_raw(self, X):
         self.model.eval()

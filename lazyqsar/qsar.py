@@ -22,7 +22,7 @@ DESCRIPTOR_TYPES = {
 
 DESCRIPTORS_MODE = {
     "default": ["chemeleon", "rdkit"],
-    "fast": ["morgan", "rdkit"],
+    "fast": ["chemeleon", "rdkit"],
     "slow": ["chemeleon", "morgan", "rdkit"]
 }
 
@@ -40,7 +40,7 @@ class ArtifactWrapper(object):
         for descriptor, artifact in zip(self.descriptors, self.artifacts):
             X = descriptor.transform(smiles_list)
             y_hat_1 = np.array(artifact.predict_proba(X))[:, 1]
-        R += [y_hat_1]
+            R += [y_hat_1]
         y_hat_1 = np.average(np.array(R), axis=0, weights=self.weights)
         y_hat_0 = 1 - y_hat_1
         return np.vstack((y_hat_0, y_hat_1)).T
@@ -67,7 +67,7 @@ class LazyBinaryQSAR(object):
         scores = []
         for m in self.models:
             scores += [m.score]
-        weights = np.clip(np.array(scores) - 0.5, a_min=0, a_max=1)
+        weights = np.clip(np.array(scores) - 0.5, a_min=0, a_max=1) + 1e-4
         weights = weights / np.sum(weights)
         self.weights = weights
 
@@ -88,6 +88,8 @@ class LazyBinaryQSAR(object):
             X = descriptor.transform(smiles_list)
             y_hat_1 = np.array(self.models[i].predict(X=X))
             R += [y_hat_1]
+        print(self.weights)
+        print(np.array(R).shape)
         y_hat_1 = np.average(np.array(R), axis=0, weights=self.weights)
         y_hat_0 = 1 - y_hat_1
         return np.vstack((y_hat_0, y_hat_1)).T
@@ -184,7 +186,7 @@ class LazyBinaryQSAR(object):
             with open(os.path.join(model_subdir, "metadata.json"), "r") as f:
                 metadata = json.load(f)
                 scores += [metadata["score"]]
-        weights = np.clip(np.array(scores) - 0.5, a_min=0, a_max=1)
+        weights = np.clip(np.array(scores) - 0.5, a_min=0, a_max=1) + 1e-4
         weights = weights / np.sum(weights)
         return ArtifactWrapper(descriptors=descriptors, artifacts=artifacts, weights=weights)
     

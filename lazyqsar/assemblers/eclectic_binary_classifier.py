@@ -10,7 +10,7 @@ from tqdm import tqdm
 from sklearn.base import BaseEstimator, ClassifierMixin
 
 from ..preprocess import prep
-from ..feature_selection.binary_classification import fs
+from ..feature_selection.binary_classification import fs, mfs
 from ..latent_variables.binary_classification import lv
 from ..heads.binary_classification import mlp, lr, svc
 
@@ -36,6 +36,7 @@ class BaseEclecticBinaryClassifier(BaseEstimator, ClassifierMixin):
         logger.info("Initializing BaseEclecticBinaryClassifier...")
         self.prep_params = params.get("prep", None)
         self.fs_params = params.get("fs", None)
+        self.mfs_params = params.get("mfs", None)
         self.lv_params = params.get("lv", None)
         self.lr_params = params.get("lr", None)
         self.svc_params = params.get("svc", None)
@@ -55,6 +56,10 @@ class BaseEclecticBinaryClassifier(BaseEstimator, ClassifierMixin):
             logger.info("Finding feature selector parameters...")
             self.fs_params = fs.find_params(X, y, num_trials)
         X_fs = fs.FeatureSelector(**self.fs_params).fit(X, y).transform(X)
+        if self.mfs_params is None:
+            logger.info("Finding model feature selector parameters...")
+            self.mfs_params = mfs.find_params(X, y, num_trials)
+        X_mfs = mfs.ModelFeatureSelector(**self.mfs_params).fit(X, y).transform(X)
         if self.lv_params is None:
             logger.info("Finding latent variable parameters...")
             self.lv_params = lv.find_params(X, y, num_trials)
@@ -71,6 +76,12 @@ class BaseEclecticBinaryClassifier(BaseEstimator, ClassifierMixin):
         if self.fs_svc_params is None:
             logger.info("Finding feature selection with head SVC parameters...")
             self.fs_svc_params = svc.find_params(X_fs, y, num_trials)
+        if self.mfs_lr_params is None:
+            logger.info("Finding model feature selection with head LR parameters...")
+            self.mfs_lr_params = lr.find_params(X_mfs, y, num_trials)
+        if self.mfs_svc_params is None:
+            logger.info("Finding model feature selection with head SVC parameters...")
+            self.mfs_svc_params = svc.find_params(X_mfs, y, num_trials)
         if self.lv_lr_params is None:
             logger.info("Finding latent variables with head LR parameters...")
             self.lv_lr_params = lr.find_params(X_lv, y, num_trials)
@@ -86,11 +97,14 @@ class BaseEclecticBinaryClassifier(BaseEstimator, ClassifierMixin):
         return {
             "prep_params": self.prep_params,
             "fs_params": self.fs_params,
+            "mfs_params": self.mfs_params,
             "lv_params": self.lv_params,
             "lr_params": self.lr_params,
             "svc_params": self.svc_params,
             "fs_lr_params": self.fs_lr_params,
             "fs_svc_params": self.fs_svc_params,
+            "mfs_lr_params": self.mfs_lr_params,
+            "mfs_svc_params": self.mfs_svc_params,
             "lv_lr_params": self.lv_lr_params,
             "lv_svc_params": self.lv_svc_params,
             "lv_mlp_params": self.lv_mlp_params,
@@ -99,11 +113,14 @@ class BaseEclecticBinaryClassifier(BaseEstimator, ClassifierMixin):
     def clear_params(self):
         self.prep_params = None
         self.fs_params = None
+        self.mfs_params = None
         self.lv_params = None
         self.lr_params = None
         self.svc_params = None
         self.fs_lr_params = None
         self.fs_svc_params = None
+        self.mfs_lr_params = None
+        self.mfs_svc_params = None
         self.lv_lr_params = None
         self.lv_svc_params = None
         self.lv_mlp_params = None
@@ -119,6 +136,10 @@ class BaseEclecticBinaryClassifier(BaseEstimator, ClassifierMixin):
         self.fs = fs.FeatureSelector(**self.fs_params)
         self.fs.fit(X, y)
         X_fs = self.fs.transform(X)
+        logger.info("Fitting model feature selector...")
+        self.mfs = mfs.ModelFeatureSelector(**self.mfs_params)
+        self.mfs.fit(X, y)
+        X_mfs = self.mfs.transform(X)
         logger.info("Fitting latent variable reducer...")
         self.lv = lv.LatentVariables(**self.lv_params)
         self.lv.fit(X, y)
@@ -128,16 +149,20 @@ class BaseEclecticBinaryClassifier(BaseEstimator, ClassifierMixin):
         self.svc = svc.Head(**self.svc_params).fit(X, y)
         self.fs_lr = lr.Head(**self.fs_lr_params).fit(X_fs, y)
         self.fs_svc = svc.Head(**self.fs_svc_params).fit(X_fs, y)
+        self.mfs_lr = lr.Head(**self.mfs_lr_params).fit(X_mfs, y)
+        self.mfs_svc = svc.Head(**self.mfs_svc_params).fit(X_mfs, y)
         self.lv_lr = lr.Head(**self.lv_lr_params).fit(X_lv, y)
         self.lv_svc = svc.Head(**self.lv_svc_params).fit(X_lv, y)
         self.lv_mlp = mlp.Head(**self.lv_mlp_params).fit(X_lv, y)
         logger.info("Fitting completed")
-        self.model_names = ["lr", "svc", "fs_lr", "fs_svc", "lv_lr", "lv_svc", "lv_mlp"]
+        self.model_names = ["lr", "svc", "fs_lr", "fs_svc", "mfs_lr", "mfs_svc", "lv_lr", "lv_svc", "lv_mlp"]
         self.model_scores = [
             self.lr.score,
             self.svc.score,
             self.fs_lr.score,
             self.fs_svc.score,
+            self.mfs_lr.score,
+            self.mfs_svc.score,
             self.lv_lr.score,
             self.lv_svc.score,
             self.lv_mlp.score,
@@ -264,6 +289,7 @@ class LazyEclecticBinaryClassifier(object):
         self.fit_time = None
         self.models = None
         self.indices = None
+        self.score = None
 
     def fit(self, X=None, y=None, h5_file=None, h5_idxs=None):
         t0 = time.time()
@@ -337,6 +363,7 @@ class LazyEclecticBinaryClassifier(object):
             logger.info("Model has successfull been fitted!")
             models += [model]
         self.models = models
+        self.score = float(np.mean([np.mean(m.model_scores) for m in self.models]))
         t1 = time.time()
         self.fit_time = t1 - t0
         logger.info(f"Fitting completed in {self.fit_time:.2f} seconds.")

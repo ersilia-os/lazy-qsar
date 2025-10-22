@@ -1,11 +1,12 @@
 import json
 import joblib
 import os
+import time
 import numpy as np
 import optuna
 from sklearn.svm import LinearSVC
 from sklearn.linear_model import SGDClassifier, LogisticRegression
-from sklearn.model_selection import StratifiedKFold
+from sklearn.model_selection import StratifiedKFold, StratifiedShuffleSplit
 from sklearn.metrics import roc_auc_score
 from sklearn.base import BaseEstimator, ClassifierMixin
 
@@ -122,7 +123,7 @@ class Head(BaseEstimator, ClassifierMixin):
         self.C = C
         self.use_linearsvc = use_linearsvc
 
-    def fit(self, X, y):
+    def _fit(self, X, y):
         X = np.asarray(X)
         if self.use_linearsvc:
             logger.info("Fitting LinearSVC head...")
@@ -143,18 +144,40 @@ class Head(BaseEstimator, ClassifierMixin):
                 random_state=42,
             )
         self.model.fit(X, y)
-        self.calibrate(X, y)
         self.input_dim = X.shape[1]
         return self
 
-    def calibrate(self, X, y):
+    def _calibrate(self, X, y):
         logger.info("Calibrating decision function with LogisticRegression...")
-        y_hat = self.model.decision_function(X).astype(np.float32)
+
+        X = np.asarray(X)
+        splitter = StratifiedShuffleSplit(n_splits=10, test_size=0.2, random_state=42)
+        t0 = time.time()
+        y_hat = []
+        y_cal = []
+
+        for train_idxs, test_idxs in splitter.split(X, y):
+            X_train, y_train = X[train_idxs], y[train_idxs]
+            X_test, y_test = X[test_idxs], y[test_idxs]
+            self._fit(X_train, y_train)
+            t1 = time.time()
+            y_hat += list(self.model.decision_function(X_test).astype(np.float32))
+            y_cal += list(y_test)
+            if (t1 - t0) > 60:
+                break
+
+        y_hat = np.array(y_hat)
+        y_cal = np.array(y_cal)
         self.calibrator = LogisticRegression(class_weight="balanced", solver="lbfgs")
-        self.calibrator.fit(y_hat.reshape(-1, 1), y)
-        self.score = roc_auc_score(y, y_hat)
+        self.calibrator.fit(y_hat.reshape(-1, 1), y_cal)
+        self.score = roc_auc_score(y_cal, y_hat)
         logger.info(f"ROC-AUC (pre-calibration): {self.score:.4f}")
         return self.score
+    
+    def fit(self, X, y):
+        self._calibrate(X, y)
+        self._fit(X, y)
+        return self
 
     def predict_proba(self, X):
         y_hat = self.model.decision_function(X).astype(np.float32)
