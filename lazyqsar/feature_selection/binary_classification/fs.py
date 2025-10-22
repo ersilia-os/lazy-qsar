@@ -3,6 +3,7 @@ import numpy as np
 import optuna
 import json
 import joblib
+import warnings
 from sklearn.feature_selection import SelectKBest, f_classif
 from sklearn.linear_model import SGDClassifier
 from sklearn.metrics import roc_auc_score
@@ -13,6 +14,9 @@ from skl2onnx.common.data_types import FloatTensorType
 
 from ...utils.logging import logger
 from ... import ONNX_TARGET_OPSET, ONNX_IR_VERSION
+
+warnings.filterwarnings("ignore", category=UserWarning)
+warnings.filterwarnings("ignore", category=RuntimeWarning)
 
 
 MIN_FEATURES = 4
