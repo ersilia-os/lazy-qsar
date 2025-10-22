@@ -417,6 +417,7 @@ class LazyEclecticBinaryClassifier(object):
         obj.random_state = metadata.get("random_state", None)
         obj.num_trials = metadata.get("num_trials", None)
         obj.fit_time = metadata.get("fit_time", None)
+        obj.score = metadata.get("score", None)
         num_partitions = metadata.get("num_partitions", None)
         if num_partitions <= 0:
             raise Exception("No partitions found in metadata.")

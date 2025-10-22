@@ -30,9 +30,10 @@ DESCRIPTORS_MODE = {k: sorted(v) for k, v in DESCRIPTORS_MODE.items()}
 
 
 class ArtifactWrapper(object):
-    def __init__(self, descriptors, artifacts):
+    def __init__(self, descriptors, artifacts, weights):
         self.descriptors = descriptors
         self.artifacts = artifacts
+        self.weights = weights
 
     def predict_proba(self, smiles_list):
         R = []
@@ -40,7 +41,7 @@ class ArtifactWrapper(object):
             X = descriptor.transform(smiles_list)
             y_hat_1 = np.array(artifact.predict_proba(X))[:, 1]
         R += [y_hat_1]
-        y_hat_1 = np.mean(np.array(R), axis=0)
+        y_hat_1 = np.average(np.array(R), axis=0, weights=self.weights)
         y_hat_0 = 1 - y_hat_1
         return np.vstack((y_hat_0, y_hat_1)).T
 
@@ -60,6 +61,15 @@ class LazyBinaryQSAR(object):
         self.descriptors = [DESCRIPTOR_TYPES[descriptor_type]() for descriptor_type in descriptor_types]
         self.num_trials = NUM_TRIALS_MODES[mode]
         self.is_saved = False
+        self.weights = None
+
+    def _assign_weights(self):
+        scores = []
+        for m in self.models:
+            scores += [m.score]
+        weights = np.clip(np.array(scores) - 0.5, a_min=0, a_max=1)
+        weights = weights / np.sum(weights)
+        self.weights = weights
 
     def fit(self, smiles_list, y):
         y = np.array(y, dtype=int)
@@ -70,6 +80,7 @@ class LazyBinaryQSAR(object):
             model = LazyEclecticBinaryClassifier(num_trials=self.num_trials)
             model.fit(X=X, y=y)
             self.models += [model]
+        self._assign_weights()
 
     def predict_proba(self, smiles_list):
         R = []
@@ -77,7 +88,7 @@ class LazyBinaryQSAR(object):
             X = descriptor.transform(smiles_list)
             y_hat_1 = np.array(self.models[i].predict(X=X))
             R += [y_hat_1]
-        y_hat_1 = np.mean(np.array(R), axis=0)
+        y_hat_1 = np.average(np.array(R), axis=0, weights=self.weights)
         y_hat_0 = 1 - y_hat_1
         return np.vstack((y_hat_0, y_hat_1)).T
 
@@ -137,6 +148,7 @@ class LazyBinaryQSAR(object):
         obj = cls(mode=mode)
         obj.descriptors = descriptors
         obj.models = models
+        obj._assign_weights()
         obj.is_saved = True
         return obj
 
@@ -161,13 +173,20 @@ class LazyBinaryQSAR(object):
         descriptor_types = sorted(descriptor_types)
         descriptors = []
         artifacts = []
+        scores = []
         for descriptor_type in descriptor_types:
             model_subdir = os.path.join(model_dir, descriptor_type)
             if not os.path.exists(model_subdir):
                 raise FileNotFoundError(f"Descriptor directory {model_subdir} does not exist.")
             descriptors += [DESCRIPTOR_TYPES[descriptor_type].load(model_subdir)]
             artifacts += [LazyBinaryClassifierArtifact.load(model_dir=model_subdir)]
-        return ArtifactWrapper(descriptors=descriptors, artifacts=artifacts)
+            metadata = {}
+            with open(os.path.join(model_subdir, "metadata.json"), "r") as f:
+                metadata = json.load(f)
+                scores += [metadata["score"]]
+        weights = np.clip(np.array(scores) - 0.5, a_min=0, a_max=1)
+        weights = weights / np.sum(weights)
+        return ArtifactWrapper(descriptors=descriptors, artifacts=artifacts, weights=weights)
     
     def save(self, model_dir: str, onnx: bool = True):
         self.save_raw(model_dir)
