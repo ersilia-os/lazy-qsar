@@ -42,16 +42,17 @@ def load_h5_dataset(dataset_name):
     with h5py.File(
         os.path.join(root, "data/{0}_train.h5".format(dataset_name)), "r"
     ) as f:
-        X_train = f["X"][:]
-        y_train = f["y"][:]
-    logger.info("Number of training samples: {0}".format(len(y_train)))
+        X_train = f["Values"][:]
+    logger.info("Number of training samples: {0}".format(len(X_train)))
 
     with h5py.File(
         os.path.join(root, "data/{0}_test.h5".format(dataset_name)), "r"
     ) as f:
-        X_test = f["X"][:]
-        y_test = f["y"][:]
-    logger.info("Number of testing samples: {0}".format(len(y_test)))
+        X_test = f["Values"][:]
+    logger.info("Number of testing samples: {0}".format(len(X_test)))
+
+    _, y_train, _, y_test = load_dataset(dataset_name)
+
     return X_train, y_train, X_test, y_test
 
 
@@ -92,6 +93,9 @@ def fit_and_evaluate_agnostic(mode="fast", clean=False):
 if __name__ == "__main__":
 
     import argparse
+
+    if os.path.exists(output_dir):
+        shutil.rmtree(output_dir)
 
     parser = argparse.ArgumentParser()
 

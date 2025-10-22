@@ -73,10 +73,19 @@ def find_params(X, y, num_trials):
         n_components = min(X_tr.shape[1], X_tr.shape[0]) - 1
         n_components = min(n_components, MAX_FEATURES)
         logger.debug(f"Using n_components={n_components} for PCA.")
+        if X_tr.shape[1] < 500:
+            svd_solver = "full"
+        else:
+            if n_components < 0.8 * min(X_tr.shape[0], X_tr.shape[1]):
+                svd_solver = "randomized"
+            else:
+                svd_solver = "full"
         reducer = PCA(
-            n_components=n_components, svd_solver="randomized", random_state=42
+            n_components=n_components, svd_solver=svd_solver, random_state=42
         )
-        reducer.fit(X_tr)
+        logger.debug("Fitting PCA reducer on training data... shape {0}, {1}".format(X_tr.shape[0], X_tr.shape[1]))
+        reducer.fit(np.array(X_tr))
+        logger.debug("Transforming data using fitted PCA reducer...")
         X_tr = reducer.transform(X_tr)
         X_te = reducer.transform(X_te)
         folds += [(X_tr, X_te, y_tr, y_te)]

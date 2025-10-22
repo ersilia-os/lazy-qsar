@@ -5,6 +5,7 @@ benchmark/data/admet_group/
 benchmark/data/ersilia_preds/
 benchmark/preds/
 benchmark
+lazyqsar_test_output
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

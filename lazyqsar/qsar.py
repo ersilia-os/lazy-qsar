@@ -21,13 +21,12 @@ DESCRIPTOR_TYPES = {
 }
 
 DESCRIPTORS_MODE = {
-    "default": ["chemeleon"],
-    "fast": ["morgan"],
+    "default": ["chemeleon", "rdkit"],
+    "fast": ["morgan", "rdkit"],
     "slow": ["chemeleon", "morgan", "rdkit"]
 }
 
 DESCRIPTORS_MODE = {k: sorted(v) for k, v in DESCRIPTORS_MODE.items()}
-
 
 
 class ArtifactWrapper(object):
@@ -92,7 +91,7 @@ class LazyBinaryQSAR(object):
                 y_bin.append(0)
         return np.array(y_bin, dtype=int)
 
-    def save(self, model_dir: str):
+    def save_raw(self, model_dir: str):
         for i, descriptor_name in enumerate(self.descriptor_types):
             model_subdir = os.path.join(model_dir, descriptor_name)
             if not os.path.exists(model_subdir):
@@ -104,7 +103,7 @@ class LazyBinaryQSAR(object):
         self.is_saved = True
 
     @classmethod
-    def load(cls, model_dir: str):
+    def load_raw(cls, model_dir: str):
         descriptor_types = []
         for fn in os.listdir(model_dir):
             if fn in DESCRIPTOR_TYPES.keys():
@@ -153,7 +152,8 @@ class LazyBinaryQSAR(object):
             model_subdir = os.path.join(model_dir, descriptor_type)
             convert_to_onnx(model_subdir, clean=clean)
 
-    def load_onnx(self, model_dir: str):
+    @classmethod
+    def load_onnx(cls, model_dir: str):
         descriptor_types = []
         for fn in os.listdir(model_dir):
             if fn in DESCRIPTOR_TYPES.keys():
@@ -168,3 +168,22 @@ class LazyBinaryQSAR(object):
             descriptors += [DESCRIPTOR_TYPES[descriptor_type].load(model_subdir)]
             artifacts += [LazyBinaryClassifierArtifact.load(model_dir=model_subdir)]
         return ArtifactWrapper(descriptors=descriptors, artifacts=artifacts)
+    
+    def save(self, model_dir: str, onnx: bool = True):
+        self.save_raw(model_dir)
+        if onnx:
+            self.save_onnx(model_dir)
+
+    @classmethod
+    def load(cls, model_dir: str):
+        descriptor_types = []
+        for fn in os.listdir(model_dir):
+            if fn in DESCRIPTOR_TYPES.keys():
+                descriptor_types += [fn]
+        descriptor_types = sorted(descriptor_types)
+        for descriptor_type in descriptor_types:
+            model_subdir = os.path.join(model_dir, descriptor_type)
+            for fn in os.listdir(model_subdir):
+                if fn.endswith(".onnx"):
+                    return cls.load_onnx(model_dir=model_dir)
+        return cls.load_raw(model_dir=model_dir)
