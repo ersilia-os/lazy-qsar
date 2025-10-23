@@ -70,7 +70,12 @@ class LazyBinaryClassifier(object):
     def load_onnx(cls, model_dir: str):
         return LazyBinaryClassifierArtifact.load(model_dir=model_dir)
 
-    def save(self, model_dir: str, onnx=True, zip: bool = True):
+    def save(self, model_dir: str, onnx=True):
+        if model_dir.endswith(".zip"):
+            zip = True
+            model_dir = model_dir[:-4]
+        else:
+            zip = False
         self.save_raw(model_dir=model_dir)
         if onnx:
             self.save_onnx(model_dir=model_dir, clean=True)
@@ -86,10 +91,6 @@ class LazyBinaryClassifier(object):
         if model_dir.endswith(".zip"):
             zip = True
         else:
-            if not os.path.exists(model_dir):
-                if os.path.exists(model_dir + ".zip"):
-                    model_dir = model_dir + ".zip"
-                    zip = True
             zip = False
         if zip:
             base_dir = model_dir[:-4]

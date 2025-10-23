@@ -72,7 +72,7 @@ class BaseEclecticBinaryClassifier(BaseEstimator, ClassifierMixin):
         if self.mfs_params is None:
             logger.info("Finding model feature selector parameters...")
             self.mfs_params = mfs.find_params(X, y, num_trials)
-        X_mfs = mfs.ModelFeatureSelector(**self.mfs_params).fit(X, y).transform(X)
+        X_mfs = mfs.FeatureSelector(**self.mfs_params).fit(X, y).transform(X)
         if self.lv_params is None:
             logger.info("Finding latent variable parameters...")
             self.lv_params = lv.find_params(X, y, num_trials)
@@ -168,7 +168,7 @@ class BaseEclecticBinaryClassifier(BaseEstimator, ClassifierMixin):
         self.fs.fit(X, y)
         X_fs = self.fs.transform(X)
         logger.info("Fitting model feature selector...")
-        self.mfs = mfs.ModelFeatureSelector(**self.mfs_params)
+        self.mfs = mfs.FeatureSelector(**self.mfs_params)
         self.mfs.fit(X, y)
         X_mfs = self.mfs.transform(X)
         logger.info("Fitting latent variable reducer...")
@@ -329,7 +329,7 @@ class BaseEclecticBinaryClassifier(BaseEstimator, ClassifierMixin):
         obj.prep = prep.Preprocessor.load("prep", model_dir)
         
         obj.fs = fs.FeatureSelector.load("fs", model_dir)
-        obj.mfs = mfs.ModelFeatureSelector.load("mfs", model_dir)
+        obj.mfs = mfs.FeatureSelector.load("mfs", model_dir)
         obj.lv = lv.LatentVariables.load("lv", model_dir)
 
         obj.lr = lr.Head.load("lr", model_dir)
@@ -960,7 +960,7 @@ def convert_partition_to_onnx(partition_dir: str, clean: bool = True) -> str:
     head_outputs = [
         "lr_output_lr",
         "svc_output_svc",
-        #"et_output_et", # TODO: Exclude ET for now due to performance issues in ONNX
+        "et_output_et",
         "fs_lr_output_fs_lr",
         "fs_svc_output_fs_svc",
         "mfs_lr_output_mfs_lr",
@@ -970,7 +970,6 @@ def convert_partition_to_onnx(partition_dir: str, clean: bool = True) -> str:
         "lv_mlp_output_lv_mlp",
     ]
     weights = np.array(metadata.get("weights", None), dtype=np.float32)
-    weights = np.array(list(weights[:2]) + list(weights[3:]))  # TODO: Exclude ET weight
     if weights is None or len(weights) != len(head_outputs):
         logger.warning("Weights missing or wrong length; using uniform weights.")
         weights = np.ones(len(head_outputs), dtype=np.float32) / float(

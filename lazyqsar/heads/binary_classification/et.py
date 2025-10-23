@@ -188,6 +188,7 @@ def convert_to_onnx(name: str, model_dir: str) -> str:
 
     logger.info("Converting ExtraTrees and Calibrator separately to ONNX...")
 
+    # --- Convert ExtraTrees ---
     et_onnx_path = os.path.join(model_dir, f"{name}_et.onnx")
     et_initial_type = [('input', FloatTensorType([None, input_dim]))]
     et_onnx = convert_sklearn(
@@ -198,6 +199,7 @@ def convert_to_onnx(name: str, model_dir: str) -> str:
     )
     onnx.save(et_onnx, et_onnx_path)
 
+    # --- Convert Calibrator ---
     calib_onnx_path = os.path.join(model_dir, f"{name}_calib.onnx")
     calib_initial_type = [("input", FloatTensorType([None, 1]))]
     calib_onnx = convert_sklearn(
@@ -206,12 +208,13 @@ def convert_to_onnx(name: str, model_dir: str) -> str:
         target_opset=ONNX_TARGET_OPSET,
         options={id(calibrator): {"zipmap": False}},
     )
-    calib_onnx.graph.output[0].name = f"{name}_calib_output"
     onnx.save(calib_onnx, calib_onnx_path)
 
+    # --- Merge both models ---
     et_model = compose.add_prefix(onnx.load(et_onnx_path), f"{name}_et_")
     calib_model = compose.add_prefix(onnx.load(calib_onnx_path), f"{name}_calib_")
 
+    # Identify the probability output of ExtraTrees
     et_probs_output = None
     for out in et_model.graph.output:
         if "prob" in out.name.lower():
@@ -220,17 +223,8 @@ def convert_to_onnx(name: str, model_dir: str) -> str:
     if et_probs_output is None:
         et_probs_output = et_model.graph.output[-1].name
 
-    calib_input_name = f"{name}_calib_input"
-    calib_model.graph.input[0].name = calib_input_name
-    calib_output_name = f"{name}_calib_output"
-    calib_model.graph.output[0].name = calib_output_name
-
-    for o in list(et_model.graph.output):
-        if o.name not in {out for node in et_model.graph.node for out in node.output}:
-            et_model.graph.output.remove(o)
-    for o in list(calib_model.graph.output):
-        if o.name not in {out for node in calib_model.graph.node for out in node.output}:
-            calib_model.graph.output.remove(o)
+    calib_input_name = calib_model.graph.input[0].name
+    calib_output_name = calib_model.graph.output[0].name
 
     merged = compose.merge_models(
         et_model,
@@ -238,20 +232,59 @@ def convert_to_onnx(name: str, model_dir: str) -> str:
         io_map=[(et_probs_output, calib_input_name)]
     )
 
-    orig_output_name = None
-    for node in merged.graph.node:
-        if node.op_type.lower() in ("linearclassifier", "identity"):
-            if node.output:
-                orig_output_name = node.output[-1]
-    if orig_output_name is None and merged.graph.output:
-        orig_output_name = merged.graph.output[-1].name
-    if orig_output_name is None:
-        raise RuntimeError("Could not find calibrator output in merged graph.")
+    logger.info("Merged ExtraTrees + Calibrator into single ONNX graph.")
 
+    # --- Slice positive-class probability [:, 1] ---
+    orig_output_name = merged.graph.output[-1].name
+    slice_output_name = f"{name}_pos_prob"
+
+    slice_starts = np.array([1], dtype=np.int64)
+    slice_ends = np.array([2], dtype=np.int64)
+    slice_axes = np.array([1], dtype=np.int64)
+
+    merged.graph.initializer.extend([
+        helper.make_tensor(f"{name}_slice_starts", TensorProto.INT64, [1], slice_starts),
+        helper.make_tensor(f"{name}_slice_ends", TensorProto.INT64, [1], slice_ends),
+        helper.make_tensor(f"{name}_slice_axes", TensorProto.INT64, [1], slice_axes),
+    ])
+
+    slice_node = helper.make_node(
+        "Slice",
+        inputs=[
+            orig_output_name,
+            f"{name}_slice_starts",
+            f"{name}_slice_ends",
+            f"{name}_slice_axes",
+        ],
+        outputs=[slice_output_name],
+        name=f"{name}_SlicePositiveClass",
+    )
+    merged.graph.node.append(slice_node)
+
+    # --- Proper Reshape to 1D (-1) ---
+    flatten_output = f"{name}_flat_output"
+    flatten_shape_name = f"{name}_flatten_shape"
+    flatten_shape = np.array([-1], dtype=np.int64)
+
+    merged.graph.initializer.append(
+        helper.make_tensor(flatten_shape_name, TensorProto.INT64, [1], flatten_shape)
+    )
+
+    flatten_node = helper.make_node(
+        "Reshape",
+        inputs=[slice_output_name, flatten_shape_name],
+        outputs=[flatten_output],
+        name=f"{name}_FlattenOutput",
+    )
+    merged.graph.node.append(flatten_node)
+
+    # --- Replace input/output definitions ---
     orig_input_name = merged.graph.input[0].name
-
     input_alias = f"input_{name}"
     output_alias = f"output_{name}"
+
+    # Use symbolic dimension names
+    batch_dim = "batch_size"
 
     input_node = helper.make_node(
         "Identity",
@@ -261,22 +294,26 @@ def convert_to_onnx(name: str, model_dir: str) -> str:
     )
     output_node = helper.make_node(
         "Identity",
-        inputs=[orig_output_name],
+        inputs=[flatten_output],
         outputs=[output_alias],
         name=f"OutputFixer_{name}",
     )
 
-    merged.graph.input.clear()
-    merged.graph.input.append(helper.make_tensor_value_info(input_alias, TensorProto.FLOAT, [None, input_dim]))
+    del merged.graph.input[:]
+    merged.graph.input.append(
+        helper.make_tensor_value_info(input_alias, TensorProto.FLOAT, [batch_dim, input_dim])
+    )
 
-    merged.graph.output.clear()
-    merged.graph.output.append(helper.make_tensor_value_info(output_alias, TensorProto.FLOAT, [None, 1]))
+    # Final output is 1D: [batch_size]
+    del merged.graph.output[:]
+    merged.graph.output.append(
+        helper.make_tensor_value_info(output_alias, TensorProto.FLOAT, [batch_dim])
+    )
 
     merged.graph.node.insert(0, input_node)
     merged.graph.node.append(output_node)
 
-    merged.graph.name = f"{name}"
-
+    merged.graph.name = name
     merged.ir_version = ONNX_IR_VERSION
 
     onnx.checker.check_model(merged)
@@ -286,7 +323,12 @@ def convert_to_onnx(name: str, model_dir: str) -> str:
     logger.info(f"Successfully merged ONNX model: {onnx_path}")
     logger.info(f"Inputs: {[i.name for i in merged.graph.input]}")
     logger.info(f"Outputs: {[o.name for o in merged.graph.output]}")
-
     logger.info(f"ONNX output shape: {[dim for dim in merged.graph.output[0].type.tensor_type.shape.dim]}")
 
     return onnx_path
+
+
+
+
+
+

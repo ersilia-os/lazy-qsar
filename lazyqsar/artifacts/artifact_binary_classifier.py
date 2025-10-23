@@ -1,5 +1,6 @@
 import os
 import h5py
+import shutil
 import numpy as np
 import onnxruntime as ort
 
@@ -55,6 +56,16 @@ class LazyBinaryClassifierArtifact(object):
 
     @classmethod
     def load(cls, model_dir: str):
+        if model_dir.endswith(".zip"):
+            zip = True
+        else:
+            zip = False
+        if zip:
+            base_dir = model_dir[:-4]
+            if os.path.exists(base_dir):
+                shutil.rmtree(base_dir)
+            shutil.unpack_archive(model_dir, base_dir)
+            model_dir = base_dir
         onnx_files = []
         for fn in os.listdir(model_dir):
             if fn.endswith(".onnx"):

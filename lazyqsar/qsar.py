@@ -23,7 +23,7 @@ DESCRIPTOR_TYPES = {
 
 DESCRIPTORS_MODE = {
     "default": ["chemeleon", "rdkit"],
-    "fast": ["morgan", "rdkit"],
+    "fast": ["chemeleon"],
     "slow": ["chemeleon", "morgan", "rdkit"]
 }
 
@@ -189,7 +189,12 @@ class LazyBinaryQSAR(object):
         weights = weights / np.sum(weights)
         return ArtifactWrapper(descriptors=descriptors, artifacts=artifacts, weights=weights)
 
-    def save(self, model_dir: str, onnx: bool = True, zip: bool = True):
+    def save(self, model_dir: str, onnx: bool = True):
+        if model_dir.endswith(".zip"):
+            zip = True
+            model_dir = model_dir[:-4]
+        else:
+            zip = False
         self.save_raw(model_dir)
         if onnx:
             self.save_onnx(model_dir)
@@ -205,10 +210,6 @@ class LazyBinaryQSAR(object):
         if model_dir.endswith(".zip"):
             zip = True
         else:
-            if not os.path.exists(model_dir):
-                if os.path.exists(model_dir + ".zip"):
-                    model_dir = model_dir + ".zip"
-                    zip = True
             zip = False
         if zip:
             base_dir = model_dir[:-4]

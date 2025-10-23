@@ -1,6 +1,7 @@
 import csv
 import os
 import shutil
+import random
 import h5py
 
 from lazyqsar.qsar import LazyBinaryQSAR
@@ -56,39 +57,54 @@ def load_h5_dataset(dataset_name):
     return X_train, y_train, X_test, y_test
 
 
-def fit_and_evaluate(mode="fast", clean=False):
+def fit_and_evaluate(mode="fast", clean=False, onnx=True, zip=True):
+    if zip:
+        output_dir_ = output_dir + ".zip"
+    else:
+        output_dir_ = output_dir
     logger.info("Binary classification task")
     smiles_train, y_train, smiles_test, y_test = load_dataset("bioavailability_ma")
     logger.info("Using featurizer")
     model = LazyBinaryQSAR(mode=mode)
     model.fit(smiles_list=smiles_train, y=y_train)
-    output_loc = model.save(output_dir, onnx=False)
-    model = LazyBinaryQSAR.load(output_loc)
+    model.save(output_dir_, onnx=onnx)
+    model = LazyBinaryQSAR.load(output_dir_)
     y_pred = model.predict_proba(smiles_list=smiles_test)[:, 1]
+    y_pred_train = model.predict_proba(smiles_list=smiles_train)[:,1]
+    logger.info("ROC-AUC train: {0}".format(roc_auc_score(y_train, y_pred_train)))
+    logger.info("Y pred train samples: {0}".format(random.sample(list(y_pred_train), 10)))
+
     logger.info("ROC-AUC: {0}".format(roc_auc_score(y_test, y_pred)))
+    logger.info("Y pred samples: {0}".format(random.sample(list(y_pred), 10)))
+    y_pred_train = model.predict_proba(smiles_list=smiles_train)[:,1]
     if clean:
         logger.info(
-            "Removing temporary files from {0}".format(output_loc)
+            "Removing temporary files from {0}".format(output_dir_)
         )
-        shutil.rmtree(output_loc)
+        shutil.rmtree(output_dir_)
 
 
-def fit_and_evaluate_agnostic(mode="fast", clean=False):
+def fit_and_evaluate_agnostic(mode="fast", clean=False, onnx=True, zip=True):
+    if zip:
+        output_dir_ = output_dir + ".zip"
+    else:
+        output_dir_ = output_dir
     logger.info("Binary classification task")
     X_train, y_train, X_test, y_test = load_h5_dataset("bioavailability_ma")
     logger.info("Using agnostic model")
     model = LazyBinaryClassifier(mode=mode)
     model.fit(X=X_train, y=y_train)
-    output_loc = model.save(output_dir, onnx=True)
-    print("Saved model to {0}".format(output_loc))
-    model = LazyBinaryClassifier.load(output_loc)
+    model.save(output_dir_, onnx=onnx)
+    print("Saved model to {0}".format(output_dir))
+    model = LazyBinaryClassifier.load(output_dir_)
     y_pred = model.predict_proba(X=X_test)[:, 1]
     logger.info("ROC-AUC: {0}".format(roc_auc_score(y_test, y_pred)))
+    logger.info("Y-test pred samples: {0}".format(random.sample(list(y_pred), 10)))
     if clean:
         logger.info(
-            "Removing temporary files from {0}".format(output_loc)
+            "Removing temporary files from {0}".format(output_dir_)
         )
-        shutil.rmtree(output_loc)
+        shutil.rmtree(output_dir_)
 
 
 if __name__ == "__main__":
@@ -119,9 +135,24 @@ if __name__ == "__main__":
         default=False,
         help="Remove temporary files after evaluation",
     )
+
+    parser.add_argument(
+        "--no-onnx",
+        action="store_true",
+        default=False,
+        help="Do not use ONNX storing"
+    )
+
+    parser.add_argument(
+        "--no-zip",
+        action="store_true",
+        default=False,
+        help="Do not compress the output folder"
+    )
+
     args = parser.parse_args()
 
     if args.agnostic:
-        fit_and_evaluate_agnostic(mode=args.mode, clean=args.clean)
+        fit_and_evaluate_agnostic(mode=args.mode, clean=args.clean, onnx=not args.no_onnx, zip=not args.no_zip)
     else:
-        fit_and_evaluate(mode=args.mode, clean=args.clean)
+        fit_and_evaluate(mode=args.mode, clean=args.clean, onnx=not args.no_onnx, zip=not args.no_zip)

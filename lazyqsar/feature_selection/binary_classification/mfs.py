@@ -83,7 +83,7 @@ from ...utils.logging import logger
 N_TREES = 100
 
 
-class ModelFeatureSelector:
+class FeatureSelector:
     def __init__(self, threshold: str = None):
         self.threshold = threshold
 
