@@ -77,11 +77,11 @@ python test/test_binary_classification.py --agnostic
 
 ### Benchmarking
 
-In the benchmark repository you will find the performance of the default estimators and descriptors on the TDCommons ADMET dataset.  
+In the [benchmark repository](https://github.com/ersilia-os/zaira-chem-tdc-benchmark) you will find the performance of the default estimators and descriptors on the TDCommons ADMET dataset. This is a provisional benchmark. The team is working on a more exhaustive one.
 
 ## Disclaimer
 
-This library is only intended for quick-and-dirty QSAR modeling. For a more complete automated QSAR modeling, please refer to [Zaira Chem](https://github.com/ersilia-os/zaira-chem)
+This library is only intended for quick-and-dirty QSAR modeling. For a more complete automated QSAR modeling, please refer to [Zaira Chem](https://github.com/ersilia-os/zaira-chem).
 
 ## About us
 
