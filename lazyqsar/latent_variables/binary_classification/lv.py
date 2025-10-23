@@ -1,6 +1,7 @@
 import json
 import os
 
+
 import joblib
 import numpy as np
 import optuna
@@ -15,10 +16,12 @@ from sklearn.random_projection import SparseRandomProjection
 import onnx
 from onnx import helper
 from onnx import numpy_helper
+from onnx import TensorProto
 
 from ...utils.logging import logger
 from ... import ONNX_TARGET_OPSET, ONNX_IR_VERSION
 
+from scipy import sparse
 
 MAX_NUM_TRIALS = 10
 MIN_FEATURES = 4
@@ -206,10 +209,9 @@ class LatentVariables(object):
             "Fitting latent reducer with {0} components...".format(self.n_components)
         )
         n_components = min(self.n_components, X.shape[1])
-        self.reducer = SparseRandomProjection(
-            n_components=n_components, random_state=42
-        )
+        self.reducer = SparseRandomProjection(n_components=n_components, random_state=42)
         self.reducer.fit(X)
+        
         return self
 
     def transform(self, X, y=None):
@@ -322,121 +324,92 @@ class LatentVariables(object):
         return obj
 
 
-class DenseProjectionLayer(nn.Module):
-    """Dense wrapper for sklearn SparseRandomProjection so ONNX export succeeds."""
-
-    def __init__(self, components):
+class SparseRandomProjectionTorch(nn.Module):
+    """Torch implementation of SparseRandomProjection using fixed projection matrix."""
+    def __init__(self, W: np.ndarray):
         super().__init__()
-        n_components, n_features = components.shape
-        self.encoder = nn.Linear(n_features, n_components, bias=False)
-        self.encoder.weight.data = torch.tensor(components, dtype=torch.float32)
-        for p in self.parameters():
-            p.requires_grad = False
+        assert W.ndim == 2, "Projection matrix must be 2D"
+        self.register_buffer("W", torch.tensor(W, dtype=torch.float32))
 
-    def forward(self, x):
-        return self.encoder(x)
+    def forward(self, X):
+        return torch.matmul(X, self.W.t())
+
 
 
 def convert_to_onnx(name: str, model_dir: str):
     """
-    Converts a latent variable reducer for binary classification into an ONNX model
-    with sparse storage. The function first exports a dense ONNX model and then patches
-    it to replace the dense weight matrix with a sparse initializer.
-
-        Path to the directory containing the latent variable reducer model
-        (`latent_reducer.joblib`).
-
-    Returns
-    -------
-    str
-        The file path to the generated sparse ONNX model.
-
-    Raises
-    ------
-    RuntimeError
-        If the latent reducer is not found in the specified directory, or if the
-        projection matrix initializer cannot be located in the ONNX export.
-
-    Notes
-    -----
-    - The function assumes that the latent reducer is stored as a `LatentVariablesForBinaryClassification`
-      object and that its `reducer` attribute contains a trained projection matrix.
-    - The ONNX model is first exported in dense format using PyTorch's `torch.onnx.export`
-      and then modified to use sparse storage by replacing the dense initializer with a
-      sparse tensor.
-    - The intermediate dense ONNX file is removed after the sparse ONNX model is created.
+    Export a trained sklearn SparseRandomProjection into ONNX format via PyTorch.
+    Automatically densifies sparse matrices and warns the user.
     """
-    latent_reducer = LatentVariables.load(name, model_dir)
-    if latent_reducer.reducer is None:
-        logger.info("No latent reducer found, skipping ONNX conversion.")
-        return None
-    reducer = latent_reducer.reducer
-    input_dim = latent_reducer.input_dim
-    opset_version = ONNX_TARGET_OPSET
 
-    logger.info("Converting latent reducer to ONNX with sparse storage")
+    lv = LatentVariables.load(name, model_dir)
 
-    components = reducer.components_.toarray()
-    model = DenseProjectionLayer(components)
-    dummy_input = torch.randn(1, input_dim, dtype=torch.float32)
+    srp = lv.reducer
 
-    dense_path = os.path.join(model_dir, f"{name}_dense.onnx")
+    # --- Validation ---
+    if not hasattr(srp, "components_"):
+        raise ValueError("SparseRandomProjection must be fitted before conversion.")
+
+    onnx_path = os.path.join(model_dir, f"{name}.onnx")
+
+    # --- Handle sparse projection matrix ---
+    W = srp.components_
+    if sparse.issparse(W):
+        print(f"[INFO] Projection matrix is sparse ({W.nnz} non-zeros). Densifying for ONNX export.")
+        W = W.toarray().astype(np.float32)
+    else:
+        W = np.asarray(W, dtype=np.float32)
+
+    # --- Build Torch model ---
+    model = SparseRandomProjectionTorch(W)
+    model.eval()
+
+    # --- Create dummy input ---
+    n_features = W.shape[1]
+    dummy_input = torch.randn(1, n_features, dtype=torch.float32)
+
+    # --- Export base ONNX model ---
     torch.onnx.export(
         model,
         dummy_input,
-        dense_path,
+        onnx_path,
         input_names=[f"input_{name}"],
-        output_names=[f"output_{name}"],
+        output_names=[f"projected_{name}"],
         dynamic_axes={
             f"input_{name}": {0: "batch_size"},
-            f"output_{name}": {0: "batch_size"},
+            f"projected_{name}": {0: "batch_size"},
         },
-        opset_version=opset_version,
+        opset_version=ONNX_TARGET_OPSET,
     )
 
-    model_onnx = onnx.load(dense_path)
+    # --- Post-process ONNX graph ---
+    onnx_model = onnx.load(onnx_path)
+    output_name = f"output_{name}"
 
-    dense_init = None
-    dense_array = None
-    for init in model_onnx.graph.initializer:
-        arr = numpy_helper.to_array(init)
-        if arr.ndim == 2:
-            dense_init = init
-            dense_array = arr
-            break
-    if dense_init is None:
-        raise RuntimeError(
-            "Could not find 2D projection matrix initializer in ONNX export"
-        )
-
-    nz_rows, nz_cols = np.nonzero(dense_array)
-    values = dense_array[nz_rows, nz_cols].astype(np.float32)
-    indices = np.stack([nz_rows, nz_cols], axis=1).astype(np.int64)
-
-    values_proto = numpy_helper.from_array(values)
-    indices_proto = numpy_helper.from_array(indices)
-
-    sparse_init = helper.make_sparse_tensor(
-        values=values_proto,
-        indices=indices_proto,
-        dims=dense_array.shape,
+    shape1d = np.array([-1], dtype=np.int64)
+    onnx_model.graph.initializer.extend(
+        [numpy_helper.from_array(shape1d, name=f"shape1d_{name}")]
     )
 
-    sparse_init.values.name = dense_init.name
+    reshape_node = helper.make_node(
+        "Reshape",
+        inputs=[f"projected_{name}", f"shape1d_{name}"],
+        outputs=[output_name],
+        name=f"Output_Reshape1D_{name}",
+    )
 
-    model_onnx.graph.sparse_initializer.append(sparse_init)
-    model_onnx.graph.initializer.remove(dense_init)
+    onnx_model.graph.node.extend([reshape_node])
+    del onnx_model.graph.output[:]
+    onnx_model.graph.output.extend(
+        [helper.make_tensor_value_info(output_name, TensorProto.FLOAT, ["batch_size"])]
+    )
 
-    model_onnx.ir_version = ONNX_IR_VERSION
-    model_onnx.graph.name = f"{name}"
-    for node in model_onnx.graph.node:
-        if node.name:
-            node.name = f"{node.name}_{name}"
+    onnx_model.graph.name = f"{name}"
+    onnx_model.ir_version = ONNX_IR_VERSION
 
-    onnx_path = os.path.join(model_dir, f"{name}.onnx")
-    onnx.checker.check_model(model_onnx)
-    onnx.save(model_onnx, onnx_path)
+    # --- Validate and save ---
+    onnx.checker.check_model(onnx_model)
+    onnx.save(onnx_model, onnx_path)
 
-    os.remove(dense_path)
-
+    print(f"✅ SparseRandomProjection ONNX model saved to {onnx_path}")
     return onnx_path

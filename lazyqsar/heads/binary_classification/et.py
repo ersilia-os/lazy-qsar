@@ -10,13 +10,10 @@ from sklearn.model_selection import StratifiedKFold, StratifiedShuffleSplit, cro
 from sklearn.metrics import roc_auc_score
 from sklearn.base import BaseEstimator, ClassifierMixin
 
-
+import onnx
 from skl2onnx import convert_sklearn
 from skl2onnx.common.data_types import FloatTensorType
 import onnx
-import os
-import joblib
-import json
 from onnx import compose
 from onnx import helper, TensorProto
 
@@ -188,7 +185,6 @@ def convert_to_onnx(name: str, model_dir: str) -> str:
 
     logger.info("Converting ExtraTrees and Calibrator separately to ONNX...")
 
-    # --- Convert ExtraTrees ---
     et_onnx_path = os.path.join(model_dir, f"{name}_et.onnx")
     et_initial_type = [('input', FloatTensorType([None, input_dim]))]
     et_onnx = convert_sklearn(
@@ -197,9 +193,33 @@ def convert_to_onnx(name: str, model_dir: str) -> str:
         target_opset=ONNX_TARGET_OPSET,
         options={id(base_model): {"zipmap": False}},
     )
+
+    prob_output_name = et_onnx.graph.output[-1].name
+    logger.info(f"Detected probability output: {prob_output_name}")
+
+    gather_idx = helper.make_tensor(
+        f"{name}_gather_idx",
+        TensorProto.INT64,
+        dims=[1],
+        vals=np.array([1], dtype=np.int64),
+    )
+    gather_node = helper.make_node(
+        "Gather",
+        inputs=[prob_output_name, f"{name}_gather_idx"],
+        outputs=[f"{name}_prob_pos"],
+        axis=1,
+        name=f"{name}_Gather_PositiveClass",
+    )
+
+    et_onnx.graph.initializer.append(gather_idx)
+    et_onnx.graph.node.append(gather_node)
+
+    et_onnx.graph.output.append(
+        helper.make_tensor_value_info(f"{name}_prob_pos", TensorProto.FLOAT, [None, 1])
+    )
+
     onnx.save(et_onnx, et_onnx_path)
 
-    # --- Convert Calibrator ---
     calib_onnx_path = os.path.join(model_dir, f"{name}_calib.onnx")
     calib_initial_type = [("input", FloatTensorType([None, 1]))]
     calib_onnx = convert_sklearn(
@@ -210,21 +230,12 @@ def convert_to_onnx(name: str, model_dir: str) -> str:
     )
     onnx.save(calib_onnx, calib_onnx_path)
 
-    # --- Merge both models ---
     et_model = compose.add_prefix(onnx.load(et_onnx_path), f"{name}_et_")
     calib_model = compose.add_prefix(onnx.load(calib_onnx_path), f"{name}_calib_")
 
-    # Identify the probability output of ExtraTrees
-    et_probs_output = None
-    for out in et_model.graph.output:
-        if "prob" in out.name.lower():
-            et_probs_output = out.name
-            break
-    if et_probs_output is None:
-        et_probs_output = et_model.graph.output[-1].name
+    et_probs_output = et_model.graph.output[-1].name
 
     calib_input_name = calib_model.graph.input[0].name
-    calib_output_name = calib_model.graph.output[0].name
 
     merged = compose.merge_models(
         et_model,
@@ -234,7 +245,6 @@ def convert_to_onnx(name: str, model_dir: str) -> str:
 
     logger.info("Merged ExtraTrees + Calibrator into single ONNX graph.")
 
-    # --- Slice positive-class probability [:, 1] ---
     orig_output_name = merged.graph.output[-1].name
     slice_output_name = f"{name}_pos_prob"
 
@@ -261,7 +271,6 @@ def convert_to_onnx(name: str, model_dir: str) -> str:
     )
     merged.graph.node.append(slice_node)
 
-    # --- Proper Reshape to 1D (-1) ---
     flatten_output = f"{name}_flat_output"
     flatten_shape_name = f"{name}_flatten_shape"
     flatten_shape = np.array([-1], dtype=np.int64)
@@ -278,12 +287,10 @@ def convert_to_onnx(name: str, model_dir: str) -> str:
     )
     merged.graph.node.append(flatten_node)
 
-    # --- Replace input/output definitions ---
     orig_input_name = merged.graph.input[0].name
     input_alias = f"input_{name}"
     output_alias = f"output_{name}"
 
-    # Use symbolic dimension names
     batch_dim = "batch_size"
 
     input_node = helper.make_node(
@@ -304,7 +311,6 @@ def convert_to_onnx(name: str, model_dir: str) -> str:
         helper.make_tensor_value_info(input_alias, TensorProto.FLOAT, [batch_dim, input_dim])
     )
 
-    # Final output is 1D: [batch_size]
     del merged.graph.output[:]
     merged.graph.output.append(
         helper.make_tensor_value_info(output_alias, TensorProto.FLOAT, [batch_dim])
@@ -326,9 +332,3 @@ def convert_to_onnx(name: str, model_dir: str) -> str:
     logger.info(f"ONNX output shape: {[dim for dim in merged.graph.output[0].type.tensor_type.shape.dim]}")
 
     return onnx_path
-
-
-
-
-
-

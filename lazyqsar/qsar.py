@@ -23,7 +23,7 @@ DESCRIPTOR_TYPES = {
 
 DESCRIPTORS_MODE = {
     "default": ["chemeleon", "rdkit"],
-    "fast": ["chemeleon"],
+    "fast": ["rdkit"],
     "slow": ["chemeleon", "morgan", "rdkit"]
 }
 
