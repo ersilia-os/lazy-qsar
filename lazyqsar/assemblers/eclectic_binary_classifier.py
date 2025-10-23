@@ -10,9 +10,9 @@ from tqdm import tqdm
 from sklearn.base import BaseEstimator, ClassifierMixin
 
 from ..preprocess import prep
-from ..feature_selection.binary_classification import mfs
-from ..latent_variables.binary_classification import lv as fs
-from ..heads.binary_classification import lr as lr
+from ..feature_selection.binary_classification import fs, mfs
+from ..latent_variables.binary_classification import lv
+from ..heads.binary_classification import mlp, lr, svc, et
 
 from ..utils.deciders import BinaryClassifierMaxSamplesDecider
 from ..utils.io import InputUtils
@@ -36,10 +36,24 @@ class BaseEclecticBinaryClassifier(BaseEstimator, ClassifierMixin):
         logger.info("Initializing BaseEclecticBinaryClassifier...")
         
         self.prep_params = params.get("prep", None)
-
+        
         self.fs_params = params.get("fs", None)
+        self.mfs_params = params.get("mfs", None)
+        self.lv_params = params.get("lv", None)
 
         self.lr_params = params.get("lr", None)
+        self.svc_params = params.get("svc", None)
+        self.et_params = params.get("et", None)
+        
+        self.fs_lr_params = params.get("fs_lr", None)
+        self.fs_svc_params = params.get("fs_svc", None)
+        
+        self.mfs_lr_params = params.get("mfs_lr", None)
+        self.mfs_svc_params = params.get("mfs_svc", None)
+        
+        self.lv_lr_params = params.get("lv_lr", None)
+        self.lv_svc_params = params.get("lv_svc", None)
+        self.lv_mlp_params = params.get("lv_mlp", None)
         
         self.num_trials = NUM_TRIALS
 
@@ -54,26 +68,92 @@ class BaseEclecticBinaryClassifier(BaseEstimator, ClassifierMixin):
         if self.fs_params is None:
             logger.info("Finding feature selector parameters...")
             self.fs_params = fs.find_params(X, y, num_trials)
-
-        X = fs.LatentVariables(**self.fs_params).fit(X, y).transform(X)
-
+        X_fs = fs.FeatureSelector(**self.fs_params).fit(X, y).transform(X)
+        if self.mfs_params is None:
+            logger.info("Finding model feature selector parameters...")
+            self.mfs_params = mfs.find_params(X, y, num_trials)
+        X_mfs = mfs.FeatureSelector(**self.mfs_params).fit(X, y).transform(X)
+        if self.lv_params is None:
+            logger.info("Finding latent variable parameters...")
+            self.lv_params = lv.find_params(X, y, num_trials)
+        X_lv = lv.LatentVariables(**self.lv_params).fit(X, y).transform(X)
+        
         if self.lr_params is None:
             logger.info("Finding raw head LR parameters...")
             self.lr_params = lr.find_params(X, y, num_trials)
-
+        if self.svc_params is None:
+            logger.info("Finding raw head SVC parameters...")
+            self.svc_params = svc.find_params(X, y, num_trials)
+        if self.et_params is None:
+            logger.info("Finding raw head ET parameters...")
+            self.et_params = et.find_params(X, y, num_trials)
+        
+        if self.fs_lr_params is None:
+            logger.info("Finding feature selection with head LR parameters...")
+            self.fs_lr_params = lr.find_params(X_fs, y, num_trials)
+        if self.fs_svc_params is None:
+            logger.info("Finding feature selection with head SVC parameters...")
+            self.fs_svc_params = svc.find_params(X_fs, y, num_trials)
+        if self.mfs_lr_params is None:
+            logger.info("Finding model feature selection with head LR parameters...")
+            self.mfs_lr_params = lr.find_params(X_mfs, y, num_trials)
+        if self.mfs_svc_params is None:
+            logger.info("Finding model feature selection with head SVC parameters...")
+            self.mfs_svc_params = svc.find_params(X_mfs, y, num_trials)
+        if self.lv_lr_params is None:
+            logger.info("Finding latent variables with head LR parameters...")
+            self.lv_lr_params = lr.find_params(X_lv, y, num_trials)
+        if self.lv_svc_params is None:
+            logger.info("Finding latent variables with head SVC parameters...")
+            self.lv_svc_params = svc.find_params(X_lv, y, num_trials)
+        if self.lv_mlp_params is None:
+            logger.info("Finding latent variables with head MLP parameters...")
+            self.lv_mlp_params = mlp.find_params(X_lv, y, num_trials)
         return self
 
     def get_params(self):
         return {
             "prep_params": self.prep_params,
+
             "fs_params": self.fs_params,
+            "mfs_params": self.mfs_params,
+            "lv_params": self.lv_params,
+
             "lr_params": self.lr_params,
+            "svc_params": self.svc_params,
+            "et_params": self.et_params,
+
+            "fs_lr_params": self.fs_lr_params,
+            "fs_svc_params": self.fs_svc_params,
+
+            "mfs_lr_params": self.mfs_lr_params,
+            "mfs_svc_params": self.mfs_svc_params,
+
+            "lv_lr_params": self.lv_lr_params,
+            "lv_svc_params": self.lv_svc_params,
+            "lv_mlp_params": self.lv_mlp_params,
         }
 
     def clear_params(self):
         self.prep_params = None
+
         self.fs_params = None
+        self.mfs_params = None
+        self.lv_params = None
+
         self.lr_params = None
+        self.svc_params = None
+        self.et_params = None
+
+        self.fs_lr_params = None
+        self.fs_svc_params = None
+
+        self.mfs_lr_params = None
+        self.mfs_svc_params = None
+
+        self.lv_lr_params = None
+        self.lv_svc_params = None
+        self.lv_mlp_params = None
 
     def fit(self, X, y):
         if self.prep_params is None:
@@ -82,18 +162,54 @@ class BaseEclecticBinaryClassifier(BaseEstimator, ClassifierMixin):
         self.prep = prep.Preprocessor(**self.prep_params)
         self.prep.fit(X)
         X = self.prep.transform(X)
-
-        self.fs = fs.LatentVariables(**self.fs_params)
+        
+        logger.info("Fitting feature selector...")
+        self.fs = fs.FeatureSelector(**self.fs_params)
         self.fs.fit(X, y)
-        X = self.fs.transform(X)
+        X_fs = self.fs.transform(X)
+        logger.info("Fitting model feature selector...")
+        self.mfs = mfs.FeatureSelector(**self.mfs_params)
+        self.mfs.fit(X, y)
+        X_mfs = self.mfs.transform(X)
+        logger.info("Fitting latent variable reducer...")
+        self.lv = lv.LatentVariables(**self.lv_params)
+        self.lv.fit(X, y)
+        X_lv = self.lv.transform(X)
         
         logger.info("Fitting raw heads...")
         self.lr = lr.Head(**self.lr_params).fit(X, y)
+        self.svc = svc.Head(**self.svc_params).fit(X, y)
+        self.et = et.Head(**self.et_params).fit(X, y)
+        
+        logger.info("Fitting feature selection heads...")
+        self.fs_lr = lr.Head(**self.fs_lr_params).fit(X_fs, y)
+        self.fs_svc = svc.Head(**self.fs_svc_params).fit(X_fs, y)
+
+        logger.info("Fitting model feature selection heads...")
+        self.mfs_lr = lr.Head(**self.mfs_lr_params).fit(X_mfs, y)
+        self.mfs_svc = svc.Head(**self.mfs_svc_params).fit(X_mfs, y)
+
+        logger.info("Fitting latent variable heads...")
+        self.lv_lr = lr.Head(**self.lv_lr_params).fit(X_lv, y)
+        self.lv_svc = svc.Head(**self.lv_svc_params).fit(X_lv, y)
+        self.lv_mlp = mlp.Head(**self.lv_mlp_params).fit(X_lv, y)
         
         logger.info("Fitting completed")
-        self.model_names = ["lr"]
+        self.model_names = ["lr", "svc", "et",
+                            "fs_lr", "fs_svc",
+                            "mfs_lr", "mfs_svc",
+                            "lv_lr", "lv_svc", "lv_mlp"]
         self.model_scores = [
-            self.lr.score
+            self.lr.score,
+            self.svc.score,
+            self.et.score,
+            self.fs_lr.score,
+            self.fs_svc.score,
+            self.mfs_lr.score,
+            self.mfs_svc.score,
+            self.lv_lr.score,
+            self.lv_svc.score,
+            self.lv_mlp.score,
         ]
         self.weights = np.clip(np.array(self.model_scores) - 0.5, 0, 1) + 1e-4
         self.weights = self.weights / np.sum(self.weights)
@@ -104,25 +220,74 @@ class BaseEclecticBinaryClassifier(BaseEstimator, ClassifierMixin):
     def predict_proba(self, X):
         logger.debug("Predicting probabilities")
         X = self.prep.transform(X)
-        X = self.fs.transform(X)
+
+        X_fs = self.fs.transform(X)
+        X_mfs = self.mfs.transform(X)
+        X_lv = self.lv.transform(X)
         
         y_lr = self.lr.predict_proba(X)[:, 1]
+        y_svc = self.svc.predict_proba(X)[:, 1]
+        y_et = self.et.predict_proba(X)[:, 1]
+        
+        y_fs_lr = self.fs_lr.predict_proba(X_fs)[:, 1]
+        y_fs_svc = self.fs_svc.predict_proba(X_fs)[:, 1]
+        
+        y_mfs_lr = self.mfs_lr.predict_proba(X_mfs)[:, 1]
+        y_mfs_svc = self.mfs_svc.predict_proba(X_mfs)[:, 1]
+        
+        y_lv_lr = self.lv_lr.predict_proba(X_lv)[:, 1]
+        y_lv_svc = self.lv_svc.predict_proba(X_lv)[:, 1]
+        y_lv_mlp = self.lv_mlp.predict_proba(X_lv)[:, 1]
         
         y_hat = np.array(
-            [y_lr]
+            [y_lr, y_svc, y_et,
+             y_fs_lr, y_fs_svc,
+             y_mfs_lr, y_mfs_svc,
+             y_lv_lr, y_lv_svc, y_lv_mlp]
         ).T
         y_hat = np.average(y_hat, axis=1, weights=self.weights)
         return np.vstack([1 - y_hat, y_hat]).T
 
     def save(self, model_dir: str):
         self.prep.save("prep", model_dir)
+        
         self.fs.save("fs", model_dir)
-        self.lr.save("fs_lr", model_dir)
+        self.mfs.save("mfs", model_dir)
+        self.lv.save("lv", model_dir)
+        
+        self.lr.save("lr", model_dir)
+        self.svc.save("svc", model_dir)
+        self.et.save("et", model_dir)
+        
+        self.fs_lr.save("fs_lr", model_dir)
+        self.fs_svc.save("fs_svc", model_dir)
+        
+        self.mfs_lr.save("mfs_lr", model_dir)
+        self.mfs_svc.save("mfs_svc", model_dir)
+        
+        self.lv_lr.save("lv_lr", model_dir)
+        self.lv_svc.save("lv_svc", model_dir)
+        self.lv_mlp.save("lv_mlp", model_dir)
         
         metadata = {
             "prep_params": self.prep_params,
+            
             "fs_params": self.fs_params,
-            "fs_lr_params": self.lr_params,
+            "mfs_params": self.mfs_params,
+            "lv_params": self.lv_params,
+
+            "lr_params": self.lr_params,
+            "svc_params": self.svc_params,
+            "et_params": self.et_params,
+
+            "fs_lr_params": self.fs_lr_params,
+            "fs_svc_params": self.fs_svc_params,
+            "mfs_lr_params": self.mfs_lr_params,
+            "mfs_svc_params": self.mfs_svc_params,
+
+            "lv_lr_params": self.lv_lr_params,
+            "lv_svc_params": self.lv_svc_params,
+            "lv_mlp_params": self.lv_mlp_params,
             
             "model_names": self.model_names,
             "model_scores": self.model_scores,
@@ -141,14 +306,45 @@ class BaseEclecticBinaryClassifier(BaseEstimator, ClassifierMixin):
             metadata = json.load(f)
         params = {
             "prep": metadata.get("prep_params", None),
+            
             "fs": metadata.get("fs_params", None),
-            "fs_lr": metadata.get("fs_lr_params", None),
+            "mfs": metadata.get("mfs_params", None),
+            "lv": metadata.get("lv_params", None),
 
+            "lr": metadata.get("lr_params", None),
+            "svc": metadata.get("svc_params", None),
+            "et": metadata.get("et_params", None),
+
+            "fs_lr": metadata.get("fs_lr_params", None),
+            "fs_svc": metadata.get("fs_svc_params", None),
+            
+            "mfs_lr": metadata.get("mfs_lr_params", None),
+            "mfs_svc": metadata.get("mfs_svc_params", None),
+            
+            "lv_lr": metadata.get("lv_lr_params", None),
+            "lv_svc": metadata.get("lv_svc_params", None),
+            "lv_mlp": metadata.get("lv_mlp_params", None),
         }
         obj = cls(params)
         obj.prep = prep.Preprocessor.load("prep", model_dir)
-        obj.fs = fs.LatentVariables.load("fs", model_dir)
-        obj.lr = lr.Head.load("fs_lr", model_dir)
+        
+        obj.fs = fs.FeatureSelector.load("fs", model_dir)
+        obj.mfs = mfs.FeatureSelector.load("mfs", model_dir)
+        obj.lv = lv.LatentVariables.load("lv", model_dir)
+
+        obj.lr = lr.Head.load("lr", model_dir)
+        obj.svc = svc.Head.load("svc", model_dir)
+        obj.et = et.Head.load("et", model_dir)
+        
+        obj.fs_lr = lr.Head.load("fs_lr", model_dir)
+        obj.fs_svc = svc.Head.load("fs_svc", model_dir)
+        
+        obj.mfs_lr = lr.Head.load("mfs_lr", model_dir)
+        obj.mfs_svc = svc.Head.load("mfs_svc", model_dir)
+
+        obj.lv_lr = lr.Head.load("lv_lr", model_dir)
+        obj.lv_svc = svc.Head.load("lv_svc", model_dir)
+        obj.lv_mlp = mlp.Head.load("lv_mlp", model_dir)
 
         obj.scores = metadata.get("model_scores", None)
         obj.model_names = metadata.get("model_names", None)
@@ -512,15 +708,46 @@ def convert_partition_to_onnx(partition_dir: str, clean: bool = True) -> str:
     model_dir = partition_dir
 
     prep_onnx_file = prep.convert_to_onnx("prep", model_dir)
+    
     fs_onnx_file = fs.convert_to_onnx("fs", model_dir)
+    mfs_onnx_file = mfs.convert_to_onnx("mfs", model_dir)
+    lv_onnx_file = lv.convert_to_onnx("lv", model_dir)
+    
+    lr_onnx_file = lr.convert_to_onnx("lr", model_dir)
+    svc_onnx_file = svc.convert_to_onnx("svc", model_dir)
+    et_onnx_file = et.convert_to_onnx("et", model_dir)
+    
     fs_lr_onnx_file = lr.convert_to_onnx("fs_lr", model_dir)
+    fs_svc_onnx_file = svc.convert_to_onnx("fs_svc", model_dir)
+
+    mfs_lr_onnx_file = lr.convert_to_onnx("mfs_lr", model_dir)
+    mfs_svc_onnx_file = svc.convert_to_onnx("mfs_svc", model_dir)
+
+    lv_lr_onnx_file = lr.convert_to_onnx("lv_lr", model_dir)
+    lv_svc_onnx_file = svc.convert_to_onnx("lv_svc", model_dir)
+    lv_mlp_onnx_file = mlp.convert_to_onnx("lv_mlp", model_dir)
 
     onnx_graphs = {
         "prep": onnx.load(prep_onnx_file),
+
         "fs": onnx.load(fs_onnx_file),
+        "mfs": onnx.load(mfs_onnx_file),
+        "lv": onnx.load(lv_onnx_file),
+
+        "lr": onnx.load(lr_onnx_file),
+        "svc": onnx.load(svc_onnx_file),
+        "et": onnx.load(et_onnx_file),
+        
         "fs_lr": onnx.load(fs_lr_onnx_file),
+        "fs_svc": onnx.load(fs_svc_onnx_file),
+        
+        "mfs_lr": onnx.load(mfs_lr_onnx_file),
+        "mfs_svc": onnx.load(mfs_svc_onnx_file),
+
+        "lv_lr": onnx.load(lv_lr_onnx_file),
+        "lv_svc": onnx.load(lv_svc_onnx_file),
+        "lv_mlp": onnx.load(lv_mlp_onnx_file),
     }
-    
     onnx_graphs = {
         k: _fix_graph_outputs_with_identity(v) for k, v in onnx_graphs.items()
     }
@@ -543,12 +770,182 @@ def convert_partition_to_onnx(partition_dir: str, clean: bool = True) -> str:
 
     model = compose.merge_models(
         model,
+        onnx_graphs["mfs"],
+        io_map=[("prep_output_prep", "mfs_input_mfs")],
+        outputs=["prep_output_prep", "fs_output_fs", "mfs_output_mfs"],
+    )
+
+    model = compose.merge_models(
+        model,
+        onnx_graphs["lv"],
+        io_map=[("prep_output_prep", "lv_input_lv")],
+        outputs=["prep_output_prep", "fs_output_fs", "mfs_output_mfs", "lv_output_lv"],
+    )
+
+    model = compose.merge_models(
+        model,
+        onnx_graphs["lr"],
+        io_map=[("prep_output_prep", "lr_input_lr")],
+        outputs=["prep_output_prep", "fs_output_fs", "mfs_output_mfs", "lv_output_lv", "lr_output_lr"],
+    )
+
+    model = compose.merge_models(
+        model,
+        onnx_graphs["svc"],
+        io_map=[("prep_output_prep", "svc_input_svc")],
+        outputs=[
+            "prep_output_prep",
+            "fs_output_fs",
+            "mfs_output_mfs",
+            "lv_output_lv",
+            "lr_output_lr",
+            "svc_output_svc",
+        ],
+    )
+
+    model = compose.merge_models(
+        model,
+        onnx_graphs["et"],
+        io_map=[("prep_output_prep", "et_input_et")],
+        outputs=[
+            "prep_output_prep",
+            "fs_output_fs",
+            "mfs_output_mfs",
+            "lv_output_lv",
+            "lr_output_lr",
+            "svc_output_svc",
+            "et_output_et",
+        ],
+    )
+
+    model = compose.merge_models(
+        model,
         onnx_graphs["fs_lr"],
         io_map=[("fs_output_fs", "fs_lr_input_fs_lr")],
         outputs=[
             "prep_output_prep",
             "fs_output_fs",
+            "mfs_output_mfs",
+            "lv_output_lv",
+            "lr_output_lr",
+            "svc_output_svc",
+            "et_output_et",
             "fs_lr_output_fs_lr",
+        ],
+    )
+    model = compose.merge_models(
+        model,
+        onnx_graphs["fs_svc"],
+        io_map=[("fs_output_fs", "fs_svc_input_fs_svc")],
+        outputs=[
+            "prep_output_prep",
+            "fs_output_fs",
+            "mfs_output_mfs",
+            "lv_output_lv",
+            "lr_output_lr",
+            "svc_output_svc",
+            "et_output_et",
+            "fs_lr_output_fs_lr",
+            "fs_svc_output_fs_svc",
+        ],
+    )
+
+    model = compose.merge_models(
+        model,
+        onnx_graphs["mfs_lr"],
+        io_map=[("mfs_output_mfs", "mfs_lr_input_mfs_lr")],
+        outputs=[
+            "prep_output_prep",
+            "fs_output_fs",
+            "mfs_output_mfs",
+            "lv_output_lv",
+            "lr_output_lr",
+            "svc_output_svc",
+            "et_output_et",
+            "fs_lr_output_fs_lr",
+            "fs_svc_output_fs_svc",
+            "mfs_lr_output_mfs_lr",
+        ],
+    )
+    model = compose.merge_models(
+        model,
+        onnx_graphs["mfs_svc"],
+        io_map=[("mfs_output_mfs", "mfs_svc_input_mfs_svc")],
+        outputs=[
+            "prep_output_prep",
+            "fs_output_fs",
+            "mfs_output_mfs",
+            "lv_output_lv",
+            "lr_output_lr",
+            "svc_output_svc",
+            "et_output_et",
+            "fs_lr_output_fs_lr",
+            "fs_svc_output_fs_svc",
+            "mfs_lr_output_mfs_lr",
+            "mfs_svc_output_mfs_svc",
+        ],
+    )
+
+    model = compose.merge_models(
+        model,
+        onnx_graphs["lv_lr"],
+        io_map=[("lv_output_lv", "lv_lr_input_lv_lr")],
+        outputs=[
+            "prep_output_prep",
+            "fs_output_fs",
+            "mfs_output_mfs",
+            "lv_output_lv",
+            "lr_output_lr",
+            "svc_output_svc",
+            "et_output_et",
+            "fs_lr_output_fs_lr",
+            "fs_svc_output_fs_svc",
+            "mfs_lr_output_mfs_lr",
+            "mfs_svc_output_mfs_svc",
+            "lv_lr_output_lv_lr",
+        ],
+    )
+
+    model = compose.merge_models(
+        model,
+        onnx_graphs["lv_svc"],
+        io_map=[("lv_output_lv", "lv_svc_input_lv_svc")],
+        outputs=[
+            "prep_output_prep",
+            "fs_output_fs",
+            "mfs_output_mfs",
+            "lv_output_lv",
+            "lr_output_lr",
+            "svc_output_svc",
+            "et_output_et",
+            "fs_lr_output_fs_lr",
+            "fs_svc_output_fs_svc",
+            "mfs_lr_output_mfs_lr",
+            "mfs_svc_output_mfs_svc",
+            "lv_lr_output_lv_lr",
+            "lv_svc_output_lv_svc",
+        ],
+    )
+
+    model = compose.merge_models(
+        model,
+        onnx_graphs["lv_mlp"],
+        io_map=[("lv_output_lv", "lv_mlp_input_lv_mlp")],
+        outputs=[
+            "prep_output_prep",
+            "fs_output_fs",
+            "mfs_output_mfs",
+            "lv_output_lv",
+            "lr_output_lr",
+            "svc_output_svc",
+            "et_output_et",
+            "fs_lr_output_fs_lr",
+            "fs_svc_output_fs_svc",
+            "mfs_lr_output_mfs_lr",
+            "mfs_svc_output_mfs_svc",
+            "lv_lr_output_lv_lr",
+            "lv_svc_output_lv_svc",
+            "lv_mlp_output_lv_mlp",
         ],
     )
 
@@ -557,7 +954,16 @@ def convert_partition_to_onnx(partition_dir: str, clean: bool = True) -> str:
         metadata = json.load(f)
 
     head_outputs = [
+        "lr_output_lr",
+        "svc_output_svc",
+        "et_output_et",
         "fs_lr_output_fs_lr",
+        "fs_svc_output_fs_svc",
+        "mfs_lr_output_mfs_lr",
+        "mfs_svc_output_mfs_svc",
+        "lv_lr_output_lv_lr",
+        "lv_svc_output_lv_svc",
+        "lv_mlp_output_lv_mlp",
     ]
     weights = np.array(metadata.get("weights", None), dtype=np.float32)
     if weights is None or len(weights) != len(head_outputs):
@@ -619,6 +1025,3 @@ def convert_to_onnx(model_dir: str, clean: bool = True):
         shutil.copy(onnx_file, final_onnx_path)
         logger.info(f"Copied partition ONNX model to {final_onnx_path}")
         shutil.rmtree(onnx_file.split("/lazy_model")[0])
-
-
-
