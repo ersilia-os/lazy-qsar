@@ -335,40 +335,29 @@ class SparseRandomProjectionTorch(nn.Module):
         return torch.matmul(X, self.W.t())
 
 
-
-def convert_to_onnx(name: str, model_dir: str):
-    """
-    Export a trained sklearn SparseRandomProjection into ONNX format via PyTorch.
-    Automatically densifies sparse matrices and warns the user.
-    """
+def convert_to_onnx(name: str, model_dir: str) -> str:
 
     lv = LatentVariables.load(name, model_dir)
-
     srp = lv.reducer
 
-    # --- Validation ---
     if not hasattr(srp, "components_"):
         raise ValueError("SparseRandomProjection must be fitted before conversion.")
 
     onnx_path = os.path.join(model_dir, f"{name}.onnx")
 
-    # --- Handle sparse projection matrix ---
     W = srp.components_
     if sparse.issparse(W):
-        print(f"[INFO] Projection matrix is sparse ({W.nnz} non-zeros). Densifying for ONNX export.")
+        logger.info(f"Sparse projection matrix detected ({W.nnz} non-zeros). Densifying for ONNX export.")
         W = W.toarray().astype(np.float32)
     else:
         W = np.asarray(W, dtype=np.float32)
 
-    # --- Build Torch model ---
     model = SparseRandomProjectionTorch(W)
     model.eval()
 
-    # --- Create dummy input ---
     n_features = W.shape[1]
     dummy_input = torch.randn(1, n_features, dtype=torch.float32)
 
-    # --- Export base ONNX model ---
     torch.onnx.export(
         model,
         dummy_input,
@@ -382,34 +371,37 @@ def convert_to_onnx(name: str, model_dir: str):
         opset_version=ONNX_TARGET_OPSET,
     )
 
-    # --- Post-process ONNX graph ---
     onnx_model = onnx.load(onnx_path)
     output_name = f"output_{name}"
 
-    shape1d = np.array([-1], dtype=np.int64)
+    shape2d = np.array([-1, W.shape[0]], dtype=np.int64)
     onnx_model.graph.initializer.extend(
-        [numpy_helper.from_array(shape1d, name=f"shape1d_{name}")]
+        [numpy_helper.from_array(shape2d, name=f"shape2d_{name}")]
     )
 
     reshape_node = helper.make_node(
         "Reshape",
-        inputs=[f"projected_{name}", f"shape1d_{name}"],
+        inputs=[f"projected_{name}", f"shape2d_{name}"],
         outputs=[output_name],
-        name=f"Output_Reshape1D_{name}",
+        name=f"Output_Reshape2D_{name}",
     )
 
     onnx_model.graph.node.extend([reshape_node])
+
     del onnx_model.graph.output[:]
-    onnx_model.graph.output.extend(
-        [helper.make_tensor_value_info(output_name, TensorProto.FLOAT, ["batch_size"])]
-    )
+    onnx_model.graph.output.extend([
+        helper.make_tensor_value_info(
+            output_name, TensorProto.FLOAT, ["batch_size", W.shape[0]]
+        )
+    ])
 
     onnx_model.graph.name = f"{name}"
     onnx_model.ir_version = ONNX_IR_VERSION
 
-    # --- Validate and save ---
     onnx.checker.check_model(onnx_model)
     onnx.save(onnx_model, onnx_path)
 
-    print(f"✅ SparseRandomProjection ONNX model saved to {onnx_path}")
+    logger.info(f"✅ SparseRandomProjection ONNX model saved to {onnx_path}")
+    logger.info(f"   Input shape: [batch_size, {n_features}] → Output shape: [batch_size, {W.shape[0]}]")
+
     return onnx_path
