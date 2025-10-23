@@ -165,7 +165,7 @@ class Head(BaseEstimator, ClassifierMixin):
         logger.info("Calibrating probabilities with logistic regression...")
         logger.debug("Performing cross-validation for calibration...")
         X = np.asarray(X)
-        splitter = StratifiedShuffleSplit(n_splits=10, test_size=0.2, random_state=42)
+        splitter = StratifiedShuffleSplit(n_splits=5, test_size=0.2, random_state=42)
         t0 = time.time()
         y_hat = []
         y_cal = []

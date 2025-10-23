@@ -62,15 +62,15 @@ def fit_and_evaluate(mode="fast", clean=False):
     logger.info("Using featurizer")
     model = LazyBinaryQSAR(mode=mode)
     model.fit(smiles_list=smiles_train, y=y_train)
-    model.save(output_dir)
-    model = LazyBinaryQSAR.load(output_dir)
+    output_loc = model.save(output_dir, onnx=False)
+    model = LazyBinaryQSAR.load(output_loc)
     y_pred = model.predict_proba(smiles_list=smiles_test)[:, 1]
     logger.info("ROC-AUC: {0}".format(roc_auc_score(y_test, y_pred)))
     if clean:
         logger.info(
-            "Removing temporary files from {0}".format(output_dir)
+            "Removing temporary files from {0}".format(output_loc)
         )
-        shutil.rmtree(output_dir)
+        shutil.rmtree(output_loc)
 
 
 def fit_and_evaluate_agnostic(mode="fast", clean=False):
@@ -79,15 +79,16 @@ def fit_and_evaluate_agnostic(mode="fast", clean=False):
     logger.info("Using agnostic model")
     model = LazyBinaryClassifier(mode=mode)
     model.fit(X=X_train, y=y_train)
-    model.save(output_dir)
-    model = LazyBinaryClassifier.load(output_dir)
+    output_loc = model.save(output_dir, onnx=True)
+    print("Saved model to {0}".format(output_loc))
+    model = LazyBinaryClassifier.load(output_loc)
     y_pred = model.predict_proba(X=X_test)[:, 1]
     logger.info("ROC-AUC: {0}".format(roc_auc_score(y_test, y_pred)))
     if clean:
         logger.info(
-            "Removing temporary files from {0}".format(output_dir)
+            "Removing temporary files from {0}".format(output_loc)
         )
-        shutil.rmtree(output_dir)
+        shutil.rmtree(output_loc)
 
 
 if __name__ == "__main__":

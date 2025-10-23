@@ -6,6 +6,9 @@ benchmark/data/ersilia_preds/
 benchmark/preds/
 benchmark
 lazyqsar_test_output
+lazyqsar_test_output.zip
+development.py
+
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

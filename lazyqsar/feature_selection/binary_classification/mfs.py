@@ -2,15 +2,14 @@ import os
 import numpy as np
 import optuna
 import json
-import joblib
 import warnings
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.feature_selection import SelectFromModel
-from sklearn.metrics import roc_auc_score
-from sklearn.model_selection import StratifiedShuffleSplit
+from sklearn.model_selection import StratifiedKFold, cross_val_score
+from sklearn.pipeline import Pipeline
 
-import skl2onnx
-from skl2onnx.common.data_types import FloatTensorType
+import onnx
+from onnx import helper, numpy_helper, TensorProto
 
 from ...utils.logging import logger
 from ... import ONNX_TARGET_OPSET, ONNX_IR_VERSION
@@ -24,92 +23,181 @@ MAX_FEATURES = 2048
 
 MAX_NUM_TRIALS = 10
 
+N_TREES = 100
+
 
 def find_params(X, y, num_trials):
 
-    results = {"threshold": 0.5}
+    num_trials = min(num_trials, MAX_NUM_TRIALS)
 
-    return results
+    options = ["mean", "median", "1.25*mean", "1.5*mean", "2*mean"]
+
+    num_trials = min(num_trials, len(options))
+
+    logger.info("Starting hyperparameter optimization for SelectFromModel threshold.")
+
+    def objective(trial):
+
+        threshold = trial.suggest_categorical("threshold", options)
+
+        model = RandomForestClassifier(
+            n_estimators=N_TREES,
+            random_state=42,
+            n_jobs=-1,
+            class_weight="balanced"
+        )
+
+        selector = SelectFromModel(model, threshold=threshold, prefit=False)
+
+        pipe = Pipeline([
+            ('select', selector),
+            ('clf', RandomForestClassifier(
+                n_estimators=N_TREES,
+                random_state=42,
+                n_jobs=-1,
+                class_weight="balanced"
+            ))
+        ])
+
+        cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+        scores = cross_val_score(pipe, X, y, cv=cv, scoring="roc_auc", n_jobs=-1)
+
+        return np.mean(scores)
+
+    study = optuna.create_study(direction="maximize")
+    study.optimize(objective, n_trials=num_trials, show_progress_bar=True)
+
+    best_params = study.best_params
+    logger.info(f"Best threshold found: {best_params['threshold']}")
+
+    return best_params
 
 
-class ModelFeatureSelector(object):
+import os
+import json
+import numpy as np
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.feature_selection import SelectFromModel
+from ...utils.logging import logger
 
-    def __init__(self, threshold: float = None):
+N_TREES = 100
+
+
+class ModelFeatureSelector:
+    def __init__(self, threshold: str = None):
         self.threshold = threshold
-        
+
     def fit(self, X, y):
         if self.threshold is None:
-            self.selector = None
+            self.selected_idx_ = np.arange(X.shape[1])
+            logger.info("No feature selection performed, using all features.")
             return self
-        model = RandomForestClassifier(n_estimators=100, random_state=42, n_jobs=-1, class_weight="balanced")
-        self.selector = SelectFromModel(model, threshold=self.threshold, prefit=False)
-        self.selector.fit(X, y)
+
+        model = RandomForestClassifier(
+            n_estimators=N_TREES,
+            random_state=42,
+            n_jobs=-1,
+            class_weight="balanced"
+        )
+        selector = SelectFromModel(model, threshold=self.threshold, prefit=False)
+        selector.fit(X, y)
+
+        mask = selector.get_support()
+        self.selected_idx_ = np.where(mask)[0].tolist()
+        self.input_dim = X.shape[1]
+        self.output_dim = len(self.selected_idx_)
+        logger.info(f"Selected {self.output_dim}/{self.input_dim} features.")
         return self
 
-    def transform(self, X, y=None):
-        if not hasattr(self, "selector"):
-            raise ValueError("The model feature selector has not been fitted yet.")
-        if self.selector is None:
-            return X
-        X = self.selector.transform(X)
-        return X
+    def transform(self, X):
+        if not hasattr(self, "selected_idx_"):
+            raise ValueError("Selector not fitted yet.")
+        return X[:, self.selected_idx_]
 
     def save(self, name: str, model_dir: str):
+        os.makedirs(model_dir, exist_ok=True)
         metadata = {
             "threshold": self.threshold,
+            "input_dim": self.input_dim,
+            "output_dim": self.output_dim,
+            "selected_idx": self.selected_idx_,
         }
-        meta_path = os.path.join(model_dir, f"{name}_metadata.json")
-        with open(meta_path, "w") as f:
-            json.dump(metadata, f)
-        joblib_path = os.path.join(model_dir, f"{name}.joblib")
-        joblib.dump(self.selector, joblib_path)
+        with open(os.path.join(model_dir, f"{name}_metadata.json"), "w") as f:
+            json.dump(metadata, f, indent=2)
+        logger.info(f"Saved selected feature indices to {model_dir}/{name}_metadata.json")
 
     @classmethod
     def load(cls, name: str, model_dir: str):
-        if not os.path.exists(model_dir):
-            raise ValueError(f"Model directory {model_dir} does not exist.")
-        meta_path = os.path.join(model_dir, f"{name}_metadata.json")
-        if not os.path.exists(meta_path):
-            raise ValueError(f"Metadata file {meta_path} does not exist.")
-        with open(meta_path, "r") as f:
+        path = os.path.join(model_dir, f"{name}_metadata.json")
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"Metadata file not found: {path}")
+
+        with open(path, "r") as f:
             metadata = json.load(f)
-        threshold = metadata.get("threshold", None)
-        selector_path = os.path.join(model_dir, f"{name}.joblib")
-        if not os.path.exists(selector_path):
-            raise ValueError(f"Selector file {selector_path} does not exist.")
-        selector = joblib.load(selector_path)
-        obj = cls(k_features=threshold)
-        obj.selector = selector
+
+        obj = cls(threshold=metadata.get("threshold"))
+        obj.input_dim = metadata.get("input_dim")
+        obj.output_dim = metadata.get("output_dim")
+        obj.selected_idx_ = metadata.get("selected_idx", [])
+        logger.info(f"Loaded feature selector: {len(obj.selected_idx_)} selected features.")
         return obj
 
 
-def convert_to_onnx(name, model_dir: str):
+def convert_to_onnx(name: str, model_dir: str):
 
-    feature_selector = ModelFeatureSelector.load(name, model_dir)
-    if feature_selector.selector is None:
-        logger.info("No model feature selection was performed. Skipping ONNX conversion.")
+    meta_path = os.path.join(model_dir, f"{name}_metadata.json")
+    if not os.path.exists(meta_path):
+        raise FileNotFoundError(f"Metadata file not found: {meta_path}")
+
+    with open(meta_path, "r") as f:
+        metadata = json.load(f)
+
+    selected_idx = metadata.get("selected_idx", [])
+    input_dim = int(metadata.get("input_dim", 0))
+    output_dim = int(metadata.get("output_dim", len(selected_idx)))
+
+    if not selected_idx:
+        logger.info("No feature selection performed; skipping ONNX export.")
         return None
 
-    selector = feature_selector.selector
-    initial_type = [
-        (f"input_{name}", FloatTensorType([None, selector.scores_.shape[0]]))
-    ]
-    onnx_model = skl2onnx.convert_sklearn(
-        selector, initial_types=initial_type, target_opset=ONNX_TARGET_OPSET
+    logger.info(f"Converting feature selector with {output_dim}/{input_dim} features to ONNX...")
+
+    # Create ONNX constants and nodes
+    indices_init = numpy_helper.from_array(
+        np.array(selected_idx, dtype=np.int64),
+        name=f"{name}_indices"
     )
 
-    onnx_model.graph.name = f"{name}"
-    onnx_model.ir_version = ONNX_IR_VERSION
-    onnx_model.graph.input[0].name = f"input_{name}"
-    onnx_model.graph.output[0].name = f"output_{name}"
+    X = helper.make_tensor_value_info(f"input_{name}", TensorProto.FLOAT, ["batch_size", input_dim])
+    Y = helper.make_tensor_value_info(f"output_{name}", TensorProto.FLOAT, ["batch_size", output_dim])
 
-    for node in onnx_model.graph.node:
-        if f"_{name}" not in node.name:
-            node.name = f"{node.name}_{name}"
+    node = helper.make_node(
+        "Gather",
+        inputs=[f"input_{name}", f"{name}_indices"],
+        outputs=[f"output_{name}"],
+        name=f"{name}_feature_selector",
+        axis=1,
+    )
+
+    graph = helper.make_graph(
+        nodes=[node],
+        name=f"{name}",
+        inputs=[X],
+        outputs=[Y],
+        initializer=[indices_init]
+    )
+
+    model = helper.make_model(
+        graph,
+        producer_name="ModelFeatureSelector",
+        opset_imports=[helper.make_operatorsetid("", ONNX_TARGET_OPSET)]
+    )
+    model.ir_version = ONNX_IR_VERSION
+
+    onnx.checker.check_model(model)
 
     onnx_path = os.path.join(model_dir, f"{name}.onnx")
-    with open(onnx_path, "wb") as f:
-        f.write(onnx_model.SerializeToString())
+    onnx.save(model, onnx_path)
+    logger.info(f"Feature selector exported to ONNX using Gather: {onnx_path}")
 
-    logger.info(f"Model based feature selector converted to ONNX and saved at {onnx_path}.")
     return onnx_path

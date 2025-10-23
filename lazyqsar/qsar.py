@@ -1,5 +1,6 @@
 import os
 import json
+import shutil
 import numpy as np
 
 from .descriptors.chemeleon import ChemeleonDescriptor
@@ -21,9 +22,9 @@ DESCRIPTOR_TYPES = {
 }
 
 DESCRIPTORS_MODE = {
-    "default": ["chemeleon", "rdkit"],
-    "fast": ["chemeleon", "rdkit"],
-    "slow": ["chemeleon", "morgan", "rdkit"]
+    "default": ["chemeleon"],
+    "fast": ["rdkit"],
+    "slow": ["chemeleon", "rdkit"]
 }
 
 DESCRIPTORS_MODE = {k: sorted(v) for k, v in DESCRIPTORS_MODE.items()}
@@ -88,8 +89,6 @@ class LazyBinaryQSAR(object):
             X = descriptor.transform(smiles_list)
             y_hat_1 = np.array(self.models[i].predict(X=X))
             R += [y_hat_1]
-        print(self.weights)
-        print(np.array(R).shape)
         y_hat_1 = np.average(np.array(R), axis=0, weights=self.weights)
         y_hat_0 = 1 - y_hat_1
         return np.vstack((y_hat_0, y_hat_1)).T
@@ -189,14 +188,34 @@ class LazyBinaryQSAR(object):
         weights = np.clip(np.array(scores) - 0.5, a_min=0, a_max=1) + 1e-4
         weights = weights / np.sum(weights)
         return ArtifactWrapper(descriptors=descriptors, artifacts=artifacts, weights=weights)
-    
-    def save(self, model_dir: str, onnx: bool = True):
+
+    def save(self, model_dir: str, onnx: bool = True, zip: bool = True):
         self.save_raw(model_dir)
         if onnx:
             self.save_onnx(model_dir)
-
+        if zip:
+            shutil.make_archive(model_dir, 'zip', model_dir)
+            if os.path.exists(model_dir):
+                shutil.rmtree(model_dir)
+            return model_dir + ".zip"
+        return model_dir
+        
     @classmethod
     def load(cls, model_dir: str):
+        if model_dir.endswith(".zip"):
+            zip = True
+        else:
+            if not os.path.exists(model_dir):
+                if os.path.exists(model_dir + ".zip"):
+                    model_dir = model_dir + ".zip"
+                    zip = True
+            zip = False
+        if zip:
+            base_dir = model_dir[:-4]
+            if os.path.exists(base_dir):
+                shutil.rmtree(base_dir)
+            shutil.unpack_archive(model_dir, base_dir)
+            model_dir = base_dir
         descriptor_types = []
         for fn in os.listdir(model_dir):
             if fn in DESCRIPTOR_TYPES.keys():
@@ -207,4 +226,7 @@ class LazyBinaryQSAR(object):
             for fn in os.listdir(model_subdir):
                 if fn.endswith(".onnx"):
                     return cls.load_onnx(model_dir=model_dir)
-        return cls.load_raw(model_dir=model_dir)
+        obj = cls.load_raw(model_dir=model_dir)
+        if zip:
+            shutil.rmtree(base_dir)
+        return obj

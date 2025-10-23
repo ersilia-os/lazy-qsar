@@ -151,7 +151,7 @@ class Head(BaseEstimator, ClassifierMixin):
         logger.info("Calibrating decision function with LogisticRegression...")
 
         X = np.asarray(X)
-        splitter = StratifiedShuffleSplit(n_splits=10, test_size=0.2, random_state=42)
+        splitter = StratifiedShuffleSplit(n_splits=5, test_size=0.2, random_state=42)
         t0 = time.time()
         y_hat = []
         y_cal = []

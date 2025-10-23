@@ -196,7 +196,7 @@ class Head(BaseEstimator, ClassifierMixin):
 
     def _calibrate(self, X, y):
         logger.info("Calibrating the model using Platt scaling...")
-        splitter = StratifiedShuffleSplit(n_splits=10, test_size=0.2, random_state=42)
+        splitter = StratifiedShuffleSplit(n_splits=5, test_size=0.2, random_state=42)
         y_hat = []
         y_true = []
         t0 = time.time()
