@@ -22,9 +22,9 @@ DESCRIPTOR_TYPES = {
 }
 
 DESCRIPTORS_MODE = {
-    "default": ["chemeleon"],
-    "fast": ["rdkit"],
-    "slow": ["chemeleon", "rdkit"]
+    "default": ["chemeleon", "rdkit"],
+    "fast": ["morgan", "rdkit"],
+    "slow": ["chemeleon", "morgan", "rdkit"]
 }
 
 DESCRIPTORS_MODE = {k: sorted(v) for k, v in DESCRIPTORS_MODE.items()}
