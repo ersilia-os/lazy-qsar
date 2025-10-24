@@ -18,13 +18,13 @@ from .utils.logging import logger
 DESCRIPTOR_TYPES = {
     "chemeleon": ChemeleonDescriptor,
     "morgan": MorganFingerprint,
-    "rdkit": RDKitDescriptor
+    "rdkit": RDKitDescriptor,
 }
 
 DESCRIPTORS_MODE = {
     "default": ["chemeleon", "rdkit"],
     "fast": ["rdkit"],
-    "slow": ["chemeleon", "morgan", "rdkit"]
+    "slow": ["chemeleon", "morgan", "rdkit"],
 }
 
 DESCRIPTORS_MODE = {k: sorted(v) for k, v in DESCRIPTORS_MODE.items()}
@@ -52,14 +52,17 @@ class ArtifactWrapper(object):
 
 
 class LazyBinaryQSAR(object):
-    def __init__(self, mode: str="default"):
-
-        assert mode in ["default", "fast", "slow"], f"Mode {mode} not recognized. Choose from 'default', 'fast', or 'slow'."
+    def __init__(self, mode: str = "default"):
+        assert mode in ["default", "fast", "slow"], (
+            f"Mode {mode} not recognized. Choose from 'default', 'fast', or 'slow'."
+        )
 
         descriptor_types = DESCRIPTORS_MODE[mode]
 
         self.descriptor_types = descriptor_types
-        self.descriptors = [DESCRIPTOR_TYPES[descriptor_type]() for descriptor_type in descriptor_types]
+        self.descriptors = [
+            DESCRIPTOR_TYPES[descriptor_type]() for descriptor_type in descriptor_types
+        ]
         self.num_trials = NUM_TRIALS_MODES[mode]
         self.is_saved = False
         self.weights = None
@@ -122,18 +125,22 @@ class LazyBinaryQSAR(object):
                 descriptor_types += [fn]
         descriptor_types = sorted(descriptor_types)
         mode = None
-        for k,v in DESCRIPTORS_MODE.items():
+        for k, v in DESCRIPTORS_MODE.items():
             if set(v) == set(descriptor_types):
                 mode = k
                 break
         if mode is None:
-            raise Exception("Could not infer mode from descriptor types found in the model directory.")
+            raise Exception(
+                "Could not infer mode from descriptor types found in the model directory."
+            )
         descriptors = []
         models = []
         for descriptor_type in descriptor_types:
             model_subdir = os.path.join(model_dir, descriptor_type)
             if not os.path.exists(model_subdir):
-                raise FileNotFoundError(f"Descriptor directory {model_subdir} does not exist.")
+                raise FileNotFoundError(
+                    f"Descriptor directory {model_subdir} does not exist."
+                )
             with open(os.path.join(model_subdir, "metadata.json"), "r") as f:
                 metadata = json.load(f)
             num_trials = metadata["num_trials"]
@@ -178,7 +185,9 @@ class LazyBinaryQSAR(object):
         for descriptor_type in descriptor_types:
             model_subdir = os.path.join(model_dir, descriptor_type)
             if not os.path.exists(model_subdir):
-                raise FileNotFoundError(f"Descriptor directory {model_subdir} does not exist.")
+                raise FileNotFoundError(
+                    f"Descriptor directory {model_subdir} does not exist."
+                )
             descriptors += [DESCRIPTOR_TYPES[descriptor_type].load(model_subdir)]
             artifacts += [LazyBinaryClassifierArtifact.load(model_dir=model_subdir)]
             metadata = {}
@@ -187,7 +196,9 @@ class LazyBinaryQSAR(object):
                 scores += [metadata["score"]]
         weights = np.clip(np.array(scores) - 0.5, a_min=0, a_max=1) + 1e-4
         weights = weights / np.sum(weights)
-        return ArtifactWrapper(descriptors=descriptors, artifacts=artifacts, weights=weights)
+        return ArtifactWrapper(
+            descriptors=descriptors, artifacts=artifacts, weights=weights
+        )
 
     def save(self, model_dir: str, onnx: bool = True):
         if model_dir.endswith(".zip"):
@@ -199,12 +210,12 @@ class LazyBinaryQSAR(object):
         if onnx:
             self.save_onnx(model_dir)
         if zip:
-            shutil.make_archive(model_dir, 'zip', model_dir)
+            shutil.make_archive(model_dir, "zip", model_dir)
             if os.path.exists(model_dir):
                 shutil.rmtree(model_dir)
             return model_dir + ".zip"
         return model_dir
-        
+
     @classmethod
     def load(cls, model_dir: str):
         if model_dir.endswith(".zip"):

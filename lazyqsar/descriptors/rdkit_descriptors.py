@@ -7,11 +7,12 @@ from rdkit.Chem import Descriptors
 
 
 class RDKitDescriptor(object):
-
     def __init__(self):
         self.featurizer_name = "rdkit"
         descriptor_names = sorted([desc_name for desc_name, _ in Descriptors._descList])
-        self.calculator = MoleculeDescriptors.MolecularDescriptorCalculator(descriptor_names)
+        self.calculator = MoleculeDescriptors.MolecularDescriptorCalculator(
+            descriptor_names
+        )
         self.features = [n.lower() for n in descriptor_names]
 
     def transform(self, smiles_list):
@@ -22,7 +23,9 @@ class RDKitDescriptor(object):
                 mol = Chem.MolFromSmiles(smiles)
                 if mol is None:
                     raise ValueError("Invalid molecule")
-                desc_values = np.array(self.calculator.CalcDescriptors(mol), dtype=float)
+                desc_values = np.array(
+                    self.calculator.CalcDescriptors(mol), dtype=float
+                )
                 desc_values[~np.isfinite(desc_values)] = 0.0
             except Exception:
                 desc_values = np.zeros(n_desc, dtype=float)

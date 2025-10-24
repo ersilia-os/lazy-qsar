@@ -27,7 +27,6 @@ N_TREES = 100
 
 
 def find_params(X, y, num_trials):
-
     num_trials = min(num_trials, MAX_NUM_TRIALS)
 
     options = ["mean", "median", "1.25*mean", "1.5*mean", "2*mean"]
@@ -37,27 +36,28 @@ def find_params(X, y, num_trials):
     logger.info("Starting hyperparameter optimization for SelectFromModel threshold.")
 
     def objective(trial):
-
         threshold = trial.suggest_categorical("threshold", options)
 
         model = RandomForestClassifier(
-            n_estimators=N_TREES,
-            random_state=42,
-            n_jobs=-1,
-            class_weight="balanced"
+            n_estimators=N_TREES, random_state=42, n_jobs=-1, class_weight="balanced"
         )
 
         selector = SelectFromModel(model, threshold=threshold, prefit=False)
 
-        pipe = Pipeline([
-            ('select', selector),
-            ('clf', RandomForestClassifier(
-                n_estimators=N_TREES,
-                random_state=42,
-                n_jobs=-1,
-                class_weight="balanced"
-            ))
-        ])
+        pipe = Pipeline(
+            [
+                ("select", selector),
+                (
+                    "clf",
+                    RandomForestClassifier(
+                        n_estimators=N_TREES,
+                        random_state=42,
+                        n_jobs=-1,
+                        class_weight="balanced",
+                    ),
+                ),
+            ]
+        )
 
         cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
         scores = cross_val_score(pipe, X, y, cv=cv, scoring="roc_auc", n_jobs=-1)
@@ -71,7 +71,6 @@ def find_params(X, y, num_trials):
     logger.info(f"Best threshold found: {best_params['threshold']}")
 
     return best_params
-
 
 
 N_TREES = 100
@@ -88,10 +87,7 @@ class FeatureSelector:
             return self
 
         model = RandomForestClassifier(
-            n_estimators=N_TREES,
-            random_state=42,
-            n_jobs=-1,
-            class_weight="balanced"
+            n_estimators=N_TREES, random_state=42, n_jobs=-1, class_weight="balanced"
         )
         selector = SelectFromModel(model, threshold=self.threshold, prefit=False)
         selector.fit(X, y)
@@ -118,7 +114,9 @@ class FeatureSelector:
         }
         with open(os.path.join(model_dir, f"{name}_metadata.json"), "w") as f:
             json.dump(metadata, f, indent=2)
-        logger.info(f"Saved selected feature indices to {model_dir}/{name}_metadata.json")
+        logger.info(
+            f"Saved selected feature indices to {model_dir}/{name}_metadata.json"
+        )
 
     @classmethod
     def load(cls, name: str, model_dir: str):
@@ -133,12 +131,13 @@ class FeatureSelector:
         obj.input_dim = metadata.get("input_dim")
         obj.output_dim = metadata.get("output_dim")
         obj.selected_idx_ = metadata.get("selected_idx", [])
-        logger.info(f"Loaded feature selector: {len(obj.selected_idx_)} selected features.")
+        logger.info(
+            f"Loaded feature selector: {len(obj.selected_idx_)} selected features."
+        )
         return obj
 
 
 def convert_to_onnx(name: str, model_dir: str):
-
     meta_path = os.path.join(model_dir, f"{name}_metadata.json")
     if not os.path.exists(meta_path):
         raise FileNotFoundError(f"Metadata file not found: {meta_path}")
@@ -154,16 +153,21 @@ def convert_to_onnx(name: str, model_dir: str):
         logger.info("No feature selection performed; skipping ONNX export.")
         return None
 
-    logger.info(f"Converting feature selector with {output_dim}/{input_dim} features to ONNX...")
+    logger.info(
+        f"Converting feature selector with {output_dim}/{input_dim} features to ONNX..."
+    )
 
     # Create ONNX constants and nodes
     indices_init = numpy_helper.from_array(
-        np.array(selected_idx, dtype=np.int64),
-        name=f"{name}_indices"
+        np.array(selected_idx, dtype=np.int64), name=f"{name}_indices"
     )
 
-    X = helper.make_tensor_value_info(f"input_{name}", TensorProto.FLOAT, ["batch_size", input_dim])
-    Y = helper.make_tensor_value_info(f"output_{name}", TensorProto.FLOAT, ["batch_size", output_dim])
+    X = helper.make_tensor_value_info(
+        f"input_{name}", TensorProto.FLOAT, ["batch_size", input_dim]
+    )
+    Y = helper.make_tensor_value_info(
+        f"output_{name}", TensorProto.FLOAT, ["batch_size", output_dim]
+    )
 
     node = helper.make_node(
         "Gather",
@@ -178,13 +182,13 @@ def convert_to_onnx(name: str, model_dir: str):
         name=f"{name}",
         inputs=[X],
         outputs=[Y],
-        initializer=[indices_init]
+        initializer=[indices_init],
     )
 
     model = helper.make_model(
         graph,
         producer_name="ModelFeatureSelector",
-        opset_imports=[helper.make_operatorsetid("", ONNX_TARGET_OPSET)]
+        opset_imports=[helper.make_operatorsetid("", ONNX_TARGET_OPSET)],
     )
     model.ir_version = ONNX_IR_VERSION
 

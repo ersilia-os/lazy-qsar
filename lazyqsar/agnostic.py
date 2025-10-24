@@ -80,12 +80,12 @@ class LazyBinaryClassifier(object):
         if onnx:
             self.save_onnx(model_dir=model_dir, clean=True)
         if zip:
-            shutil.make_archive(model_dir, 'zip', model_dir)
+            shutil.make_archive(model_dir, "zip", model_dir)
             if os.path.exists(model_dir):
                 shutil.rmtree(model_dir)
             return model_dir + ".zip"
         return model_dir
- 
+
     @classmethod
     def load(cls, model_dir: str):
         if model_dir.endswith(".zip"):

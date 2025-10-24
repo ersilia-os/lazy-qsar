@@ -43,7 +43,9 @@ def find_params(X, y, num_trials):
     cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
 
     if do_full:
-        logger.info(f"Running Optuna for LogisticRegression with {num_trials} trials...")
+        logger.info(
+            f"Running Optuna for LogisticRegression with {num_trials} trials..."
+        )
 
         def objective(trial):
             C = trial.suggest_float("C", 1e-4, 1e2, log=True)
@@ -61,7 +63,9 @@ def find_params(X, y, num_trials):
                 oof[va] = clf.predict_proba(X[va])[:, 1]
             return roc_auc_score(y, oof) if not np.isnan(oof).any() else 0.5
 
-        study = optuna.create_study(direction="maximize", pruner=optuna.pruners.MedianPruner())
+        study = optuna.create_study(
+            direction="maximize", pruner=optuna.pruners.MedianPruner()
+        )
         study.enqueue_trial({"C": 1.0})
         study.optimize(objective, n_trials=num_trials, n_jobs=-1)
         best_C = float(study.best_params["C"])
@@ -70,7 +74,9 @@ def find_params(X, y, num_trials):
 
     else:
         num_trials = max(MIN_NUM_TRIALS, num_trials)
-        logger.info(f"Running Optuna for SGD logistic regression head with {num_trials} trials...")
+        logger.info(
+            f"Running Optuna for SGD logistic regression head with {num_trials} trials..."
+        )
 
         def objective(trial):
             C = trial.suggest_float("C", 1e-4, 1e2, log=True)
@@ -90,7 +96,9 @@ def find_params(X, y, num_trials):
                 oof[va] = clf.predict_proba(X[va])[:, 1]
             return roc_auc_score(y, oof) if not np.isnan(oof).any() else 0.5
 
-        study = optuna.create_study(direction="maximize", pruner=optuna.pruners.MedianPruner())
+        study = optuna.create_study(
+            direction="maximize", pruner=optuna.pruners.MedianPruner()
+        )
         study.enqueue_trial({"C": 1.0})
         study.optimize(objective, n_trials=num_trials, n_jobs=-1)
         best_C = float(study.best_params["C"])
@@ -177,19 +185,26 @@ class Head(BaseEstimator, ClassifierMixin):
         with open(os.path.join(model_dir, f"{name}_metadata.json"), "w") as f:
             json.dump(metadata, f)
         joblib.dump(self.model, os.path.join(model_dir, f"{name}_model.joblib"))
-        joblib.dump(self.calibrator, os.path.join(model_dir, f"{name}_calibrator.joblib"))
+        joblib.dump(
+            self.calibrator, os.path.join(model_dir, f"{name}_calibrator.joblib")
+        )
 
     @classmethod
     def load(cls, name: str, model_dir: str):
         with open(os.path.join(model_dir, f"{name}_metadata.json")) as f:
             metadata = json.load(f)
         model = joblib.load(os.path.join(model_dir, f"{name}_model.joblib"))
-        head = cls(alpha=metadata.get("alpha"), C=metadata.get("C"),
-                   use_logreg=bool(metadata.get("use_logreg", False)))
+        head = cls(
+            alpha=metadata.get("alpha"),
+            C=metadata.get("C"),
+            use_logreg=bool(metadata.get("use_logreg", False)),
+        )
         head.model = model
         head.score = metadata["score"]
         head.input_dim = metadata["input_dim"]
-        head.calibrator = joblib.load(os.path.join(model_dir, f"{name}_calibrator.joblib"))
+        head.calibrator = joblib.load(
+            os.path.join(model_dir, f"{name}_calibrator.joblib")
+        )
         return head
 
 
@@ -202,7 +217,9 @@ def convert_to_onnx(name: str, model_dir: str) -> str:
     input_dim = int(head.input_dim)
 
     w = np.asarray(base.coef_, dtype=np.float32).reshape(1, input_dim)
-    b = np.asarray(base.intercept_, dtype=np.float32).reshape(1,)
+    b = np.asarray(base.intercept_, dtype=np.float32).reshape(
+        1,
+    )
     a = float(np.asarray(cal.coef_, dtype=np.float32).ravel()[0])
     c = float(np.asarray(cal.intercept_, dtype=np.float32).ravel()[0])
 
@@ -210,16 +227,26 @@ def convert_to_onnx(name: str, model_dir: str) -> str:
     b_init = numpy_helper.from_array(b, name=f"{name}_b")
     a_init = numpy_helper.from_array(np.array([a], dtype=np.float32), name=f"{name}_a")
     c_init = numpy_helper.from_array(np.array([c], dtype=np.float32), name=f"{name}_c")
-    shape_init = numpy_helper.from_array(np.array([-1], dtype=np.int64), name=f"{name}_shape1d")
+    shape_init = numpy_helper.from_array(
+        np.array([-1], dtype=np.int64), name=f"{name}_shape1d"
+    )
 
-    X = helper.make_tensor_value_info(f"input_{name}", TensorProto.FLOAT, ["batch_size", input_dim])
-    Y = helper.make_tensor_value_info(f"output_{name}", TensorProto.FLOAT, ["batch_size"])
+    X = helper.make_tensor_value_info(
+        f"input_{name}", TensorProto.FLOAT, ["batch_size", input_dim]
+    )
+    Y = helper.make_tensor_value_info(
+        f"output_{name}", TensorProto.FLOAT, ["batch_size"]
+    )
 
-    gemm = helper.make_node("Gemm", [f"input_{name}", f"{name}_W", f"{name}_b"], [f"{name}_z1"])
+    gemm = helper.make_node(
+        "Gemm", [f"input_{name}", f"{name}_W", f"{name}_b"], [f"{name}_z1"]
+    )
     mul = helper.make_node("Mul", [f"{name}_z1", f"{name}_a"], [f"{name}_s1"])
     add = helper.make_node("Add", [f"{name}_s1", f"{name}_c"], [f"{name}_z2"])
     sig = helper.make_node("Sigmoid", [f"{name}_z2"], [f"{name}_p"])
-    reshape = helper.make_node("Reshape", [f"{name}_p", f"{name}_shape1d"], [f"output_{name}"])
+    reshape = helper.make_node(
+        "Reshape", [f"{name}_p", f"{name}_shape1d"], [f"output_{name}"]
+    )
 
     graph = helper.make_graph(
         nodes=[gemm, mul, add, sig, reshape],

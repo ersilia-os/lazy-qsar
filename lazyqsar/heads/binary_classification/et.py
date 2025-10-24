@@ -6,7 +6,11 @@ import numpy as np
 import optuna
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import ExtraTreesClassifier
-from sklearn.model_selection import StratifiedKFold, StratifiedShuffleSplit, cross_val_score
+from sklearn.model_selection import (
+    StratifiedKFold,
+    StratifiedShuffleSplit,
+    cross_val_score,
+)
 from sklearn.metrics import roc_auc_score
 from sklearn.base import BaseEstimator, ClassifierMixin
 
@@ -24,7 +28,9 @@ MIN_NUM_TRIALS = 10
 
 
 def find_params(X, y, num_trials):
-    logger.info("Starting hyperparameter optimization for ExtraTreesClassifier (light mode).")
+    logger.info(
+        "Starting hyperparameter optimization for ExtraTreesClassifier (light mode)."
+    )
 
     num_trials = min(num_trials, MAX_NUM_TRIALS)
 
@@ -34,7 +40,9 @@ def find_params(X, y, num_trials):
             "max_depth": trial.suggest_int("max_depth", 2, 4),
             "min_samples_split": trial.suggest_int("min_samples_split", 2, 10),
             "min_samples_leaf": trial.suggest_int("min_samples_leaf", 1, 5),
-            "max_features": trial.suggest_categorical("max_features", ["sqrt", "log2", 0.3, 0.5, None]),
+            "max_features": trial.suggest_categorical(
+                "max_features", ["sqrt", "log2", 0.3, 0.5, None]
+            ),
         }
 
         model = ExtraTreesClassifier(
@@ -42,7 +50,7 @@ def find_params(X, y, num_trials):
             bootstrap=False,
             n_jobs=-1,
             random_state=42,
-            class_weight="balanced"
+            class_weight="balanced",
         )
 
         cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
@@ -71,8 +79,14 @@ def find_params(X, y, num_trials):
 
 
 class Head(BaseEstimator, ClassifierMixin):
-    def __init__(self, n_estimators: int = None, max_depth: int = None, min_samples_split: int = None,
-                 min_samples_leaf: int = None, max_features=None):
+    def __init__(
+        self,
+        n_estimators: int = None,
+        max_depth: int = None,
+        min_samples_split: int = None,
+        min_samples_leaf: int = None,
+        max_features=None,
+    ):
         self.n_estimators = n_estimators
         self.max_depth = max_depth
         self.min_samples_split = min_samples_split
@@ -149,7 +163,9 @@ class Head(BaseEstimator, ClassifierMixin):
         with open(os.path.join(model_dir, f"{name}_metadata.json"), "w") as f:
             json.dump(metadata, f)
         joblib.dump(self.model, os.path.join(model_dir, f"{name}_model.joblib"))
-        joblib.dump(self.calibrator, os.path.join(model_dir, f"{name}_calibrator.joblib"))
+        joblib.dump(
+            self.calibrator, os.path.join(model_dir, f"{name}_calibrator.joblib")
+        )
 
     @classmethod
     def load(cls, name: str, model_dir: str):
@@ -166,7 +182,9 @@ class Head(BaseEstimator, ClassifierMixin):
         head.model = model
         head.score = metadata["score"]
         head.input_dim = metadata["input_dim"]
-        head.calibrator = joblib.load(os.path.join(model_dir, f"{name}_calibrator.joblib"))
+        head.calibrator = joblib.load(
+            os.path.join(model_dir, f"{name}_calibrator.joblib")
+        )
         return head
 
 
@@ -185,7 +203,7 @@ def convert_to_onnx(name: str, model_dir: str) -> str:
     logger.info("Converting ExtraTrees and Calibrator separately to ONNX...")
 
     et_onnx_path = os.path.join(model_dir, f"{name}_et.onnx")
-    et_initial_type = [('input', FloatTensorType([None, input_dim]))]
+    et_initial_type = [("input", FloatTensorType([None, input_dim]))]
     et_onnx = convert_sklearn(
         base_model,
         initial_types=et_initial_type,
@@ -237,9 +255,7 @@ def convert_to_onnx(name: str, model_dir: str) -> str:
     calib_input_name = calib_model.graph.input[0].name
 
     merged = compose.merge_models(
-        et_model,
-        calib_model,
-        io_map=[(et_probs_output, calib_input_name)]
+        et_model, calib_model, io_map=[(et_probs_output, calib_input_name)]
     )
 
     logger.info("Merged ExtraTrees + Calibrator into single ONNX graph.")
@@ -251,11 +267,19 @@ def convert_to_onnx(name: str, model_dir: str) -> str:
     slice_ends = np.array([2], dtype=np.int64)
     slice_axes = np.array([1], dtype=np.int64)
 
-    merged.graph.initializer.extend([
-        helper.make_tensor(f"{name}_slice_starts", TensorProto.INT64, [1], slice_starts),
-        helper.make_tensor(f"{name}_slice_ends", TensorProto.INT64, [1], slice_ends),
-        helper.make_tensor(f"{name}_slice_axes", TensorProto.INT64, [1], slice_axes),
-    ])
+    merged.graph.initializer.extend(
+        [
+            helper.make_tensor(
+                f"{name}_slice_starts", TensorProto.INT64, [1], slice_starts
+            ),
+            helper.make_tensor(
+                f"{name}_slice_ends", TensorProto.INT64, [1], slice_ends
+            ),
+            helper.make_tensor(
+                f"{name}_slice_axes", TensorProto.INT64, [1], slice_axes
+            ),
+        ]
+    )
 
     slice_node = helper.make_node(
         "Slice",
@@ -307,7 +331,9 @@ def convert_to_onnx(name: str, model_dir: str) -> str:
 
     del merged.graph.input[:]
     merged.graph.input.append(
-        helper.make_tensor_value_info(input_alias, TensorProto.FLOAT, [batch_dim, input_dim])
+        helper.make_tensor_value_info(
+            input_alias, TensorProto.FLOAT, [batch_dim, input_dim]
+        )
     )
 
     del merged.graph.output[:]
@@ -328,6 +354,8 @@ def convert_to_onnx(name: str, model_dir: str) -> str:
     logger.info(f"Successfully merged ONNX model: {onnx_path}")
     logger.info(f"Inputs: {[i.name for i in merged.graph.input]}")
     logger.info(f"Outputs: {[o.name for o in merged.graph.output]}")
-    logger.info(f"ONNX output shape: {[dim for dim in merged.graph.output[0].type.tensor_type.shape.dim]}")
+    logger.info(
+        f"ONNX output shape: {[dim for dim in merged.graph.output[0].type.tensor_type.shape.dim]}"
+    )
 
     return onnx_path

@@ -83,10 +83,12 @@ def find_params(X, y, num_trials):
                 svd_solver = "randomized"
             else:
                 svd_solver = "full"
-        reducer = PCA(
-            n_components=n_components, svd_solver=svd_solver, random_state=42
+        reducer = PCA(n_components=n_components, svd_solver=svd_solver, random_state=42)
+        logger.debug(
+            "Fitting PCA reducer on training data... shape {0}, {1}".format(
+                X_tr.shape[0], X_tr.shape[1]
+            )
         )
-        logger.debug("Fitting PCA reducer on training data... shape {0}, {1}".format(X_tr.shape[0], X_tr.shape[1]))
         reducer.fit(np.array(X_tr))
         logger.debug("Transforming data using fitted PCA reducer...")
         X_tr = reducer.transform(X_tr)
@@ -209,9 +211,11 @@ class LatentVariables(object):
             "Fitting latent reducer with {0} components...".format(self.n_components)
         )
         n_components = min(self.n_components, X.shape[1])
-        self.reducer = SparseRandomProjection(n_components=n_components, random_state=42)
+        self.reducer = SparseRandomProjection(
+            n_components=n_components, random_state=42
+        )
         self.reducer.fit(X)
-        
+
         return self
 
     def transform(self, X, y=None):
@@ -326,6 +330,7 @@ class LatentVariables(object):
 
 class SparseRandomProjectionTorch(nn.Module):
     """Torch implementation of SparseRandomProjection using fixed projection matrix."""
+
     def __init__(self, W: np.ndarray):
         super().__init__()
         assert W.ndim == 2, "Projection matrix must be 2D"
@@ -336,7 +341,6 @@ class SparseRandomProjectionTorch(nn.Module):
 
 
 def convert_to_onnx(name: str, model_dir: str) -> str:
-
     lv = LatentVariables.load(name, model_dir)
     srp = lv.reducer
 
@@ -347,7 +351,9 @@ def convert_to_onnx(name: str, model_dir: str) -> str:
 
     W = srp.components_
     if sparse.issparse(W):
-        logger.info(f"Sparse projection matrix detected ({W.nnz} non-zeros). Densifying for ONNX export.")
+        logger.info(
+            f"Sparse projection matrix detected ({W.nnz} non-zeros). Densifying for ONNX export."
+        )
         W = W.toarray().astype(np.float32)
     else:
         W = np.asarray(W, dtype=np.float32)
@@ -389,11 +395,13 @@ def convert_to_onnx(name: str, model_dir: str) -> str:
     onnx_model.graph.node.extend([reshape_node])
 
     del onnx_model.graph.output[:]
-    onnx_model.graph.output.extend([
-        helper.make_tensor_value_info(
-            output_name, TensorProto.FLOAT, ["batch_size", W.shape[0]]
-        )
-    ])
+    onnx_model.graph.output.extend(
+        [
+            helper.make_tensor_value_info(
+                output_name, TensorProto.FLOAT, ["batch_size", W.shape[0]]
+            )
+        ]
+    )
 
     onnx_model.graph.name = f"{name}"
     onnx_model.ir_version = ONNX_IR_VERSION
@@ -402,6 +410,8 @@ def convert_to_onnx(name: str, model_dir: str) -> str:
     onnx.save(onnx_model, onnx_path)
 
     logger.info(f"✅ SparseRandomProjection ONNX model saved to {onnx_path}")
-    logger.info(f"   Input shape: [batch_size, {n_features}] → Output shape: [batch_size, {W.shape[0]}]")
+    logger.info(
+        f"   Input shape: [batch_size, {n_features}] → Output shape: [batch_size, {W.shape[0]}]"
+    )
 
     return onnx_path

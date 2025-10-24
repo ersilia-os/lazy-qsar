@@ -173,7 +173,7 @@ class Head(BaseEstimator, ClassifierMixin):
         self.score = roc_auc_score(y_cal, y_hat)
         logger.info(f"ROC-AUC (pre-calibration): {self.score:.4f}")
         return self.score
-    
+
     def fit(self, X, y):
         self._calibrate(X, y)
         self._fit(X, y)

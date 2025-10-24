@@ -70,17 +70,17 @@ def fit_and_evaluate(mode="fast", clean=False, onnx=True, zip=True):
     model.save(output_dir_, onnx=onnx)
     model = LazyBinaryQSAR.load(output_dir_)
     y_pred = model.predict_proba(smiles_list=smiles_test)[:, 1]
-    y_pred_train = model.predict_proba(smiles_list=smiles_train)[:,1]
+    y_pred_train = model.predict_proba(smiles_list=smiles_train)[:, 1]
     logger.info("ROC-AUC train: {0}".format(roc_auc_score(y_train, y_pred_train)))
-    logger.info("Y pred train samples: {0}".format(random.sample(list(y_pred_train), 10)))
+    logger.info(
+        "Y pred train samples: {0}".format(random.sample(list(y_pred_train), 10))
+    )
 
     logger.info("ROC-AUC: {0}".format(roc_auc_score(y_test, y_pred)))
     logger.info("Y pred samples: {0}".format(random.sample(list(y_pred), 10)))
-    y_pred_train = model.predict_proba(smiles_list=smiles_train)[:,1]
+    y_pred_train = model.predict_proba(smiles_list=smiles_train)[:, 1]
     if clean:
-        logger.info(
-            "Removing temporary files from {0}".format(output_dir_)
-        )
+        logger.info("Removing temporary files from {0}".format(output_dir_))
         shutil.rmtree(output_dir_)
 
 
@@ -101,14 +101,11 @@ def fit_and_evaluate_agnostic(mode="fast", clean=False, onnx=True, zip=True):
     logger.info("ROC-AUC: {0}".format(roc_auc_score(y_test, y_pred)))
     logger.info("Y-test pred samples: {0}".format(random.sample(list(y_pred), 10)))
     if clean:
-        logger.info(
-            "Removing temporary files from {0}".format(output_dir_)
-        )
+        logger.info("Removing temporary files from {0}".format(output_dir_))
         shutil.rmtree(output_dir_)
 
 
 if __name__ == "__main__":
-
     import argparse
 
     if os.path.exists(output_dir):
@@ -128,7 +125,7 @@ if __name__ == "__main__":
         action="store_true",
         help="Use agnostic model for binary classification",
     )
-    
+
     parser.add_argument(
         "--clean",
         action="store_true",
@@ -137,22 +134,23 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
-        "--no-onnx",
-        action="store_true",
-        default=False,
-        help="Do not use ONNX storing"
+        "--no-onnx", action="store_true", default=False, help="Do not use ONNX storing"
     )
 
     parser.add_argument(
         "--no-zip",
         action="store_true",
         default=False,
-        help="Do not compress the output folder"
+        help="Do not compress the output folder",
     )
 
     args = parser.parse_args()
 
     if args.agnostic:
-        fit_and_evaluate_agnostic(mode=args.mode, clean=args.clean, onnx=not args.no_onnx, zip=not args.no_zip)
+        fit_and_evaluate_agnostic(
+            mode=args.mode, clean=args.clean, onnx=not args.no_onnx, zip=not args.no_zip
+        )
     else:
-        fit_and_evaluate(mode=args.mode, clean=args.clean, onnx=not args.no_onnx, zip=not args.no_zip)
+        fit_and_evaluate(
+            mode=args.mode, clean=args.clean, onnx=not args.no_onnx, zip=not args.no_zip
+        )
