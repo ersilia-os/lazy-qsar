@@ -73,12 +73,6 @@ def find_params(X, y, num_trials):
     return best_params
 
 
-import os
-import json
-import numpy as np
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.feature_selection import SelectFromModel
-from ...utils.logging import logger
 
 N_TREES = 100
 

@@ -13,7 +13,6 @@ from sklearn.base import BaseEstimator, ClassifierMixin
 import onnx
 from skl2onnx import convert_sklearn
 from skl2onnx.common.data_types import FloatTensorType
-import onnx
 from onnx import compose
 from onnx import helper, TensorProto
 
