@@ -4,6 +4,9 @@ import numpy as np
 from rdkit import Chem
 from rdkit.ML.Descriptors import MoleculeDescriptors
 from rdkit.Chem import Descriptors
+from rdkit import RDLogger
+
+RDLogger.DisableLog('rdApp.*')
 
 
 class RDKitDescriptor(object):
@@ -30,7 +33,7 @@ class RDKitDescriptor(object):
             except Exception:
                 desc_values = np.zeros(n_desc, dtype=float)
             results.append(desc_values)
-        return np.vstack(results)
+        return np.clip(np.vstack(results), -1e5, 1e5)
 
     def save(self, dir_name: str):
         if not os.path.exists(dir_name):

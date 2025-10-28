@@ -4,6 +4,9 @@ import os
 import numpy as np
 from rdkit import Chem
 from rdkit.Chem import rdFingerprintGenerator
+from rdkit import RDLogger
+
+RDLogger.DisableLog('rdApp.*')
 
 
 class MorganFingerprint(object):

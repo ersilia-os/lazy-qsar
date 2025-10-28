@@ -301,7 +301,7 @@ class BaseEclecticBinaryClassifier(BaseEstimator, ClassifierMixin):
         }
         metadata_path = os.path.join(model_dir, "metadata.json")
         logger.info("Saving metadata to {0}".format(metadata_path))
-        metadata["prep_params"] = bool(metadata["prep_params"]["is_sparse"])
+        metadata["prep_params"]["is_sparse"] = bool(metadata["prep_params"]["is_sparse"])
         with open(metadata_path, "w") as f:
             json.dump(metadata, f, indent=4)
 
@@ -325,6 +325,7 @@ class BaseEclecticBinaryClassifier(BaseEstimator, ClassifierMixin):
             "lv_svc": metadata.get("lv_svc_params", None),
             "lv_mlp": metadata.get("lv_mlp_params", None),
         }
+
         obj = cls(params)
         obj.prep = prep.Preprocessor.load("prep", model_dir)
 
@@ -346,7 +347,7 @@ class BaseEclecticBinaryClassifier(BaseEstimator, ClassifierMixin):
         obj.lv_svc = svc.Head.load("lv_svc", model_dir)
         obj.lv_mlp = mlp.Head.load("lv_mlp", model_dir)
 
-        obj.scores = metadata.get("model_scores", None)
+        obj.model_scores = metadata.get("model_scores", None)
         obj.model_names = metadata.get("model_names", None)
         obj.weights = np.array(metadata.get("weights", None))
         obj.num_trials = metadata.get("num_trials", None)

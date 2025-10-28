@@ -14,6 +14,9 @@ from chemprop.data import BatchMolGraph
 from chemprop.nn import RegressionFFN
 from chemprop.models import MPNN
 from rdkit.Chem import MolFromSmiles, Mol
+from rdkit import RDLogger
+
+RDLogger.DisableLog('rdApp.*')
 
 
 class _CheMeleonFingerprint:

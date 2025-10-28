@@ -265,4 +265,10 @@ def convert_to_onnx(name: str, model_dir: str):
     with open(onnx_path, "wb") as f:
         f.write(onnx_model.SerializeToString())
 
+    logger.debug("ONNX preprocessor model properties:")
+    logger.debug(f"Input name: {onnx_model.graph.input[0].name}")
+    logger.debug(f"Input shape: {onnx_model.graph.input[0].type.tensor_type.shape}")
+    logger.debug(f"Output name: {onnx_model.graph.output[0].name}")
+    logger.debug(f"Output shape: {onnx_model.graph.output[0].type.tensor_type.shape}")
+
     return onnx_path
