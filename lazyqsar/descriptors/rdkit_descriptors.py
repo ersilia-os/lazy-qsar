@@ -58,6 +58,6 @@ class RDKitDescriptor(object):
             current_rdkit_version = Chem.rdBase.rdkitVersion
             if current_rdkit_version != rdkit_version:
                 raise ValueError(
-                    f"RDKit version mismatch: expected {current_rdkit_version}, got {rdkit_version}"
+                    f"RDKit version mismatch: got {current_rdkit_version}, expected {rdkit_version}"
                 )
         return obj

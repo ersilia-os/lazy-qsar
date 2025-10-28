@@ -167,7 +167,7 @@ class Head(BaseEstimator, ClassifierMixin):
         self.model = None
 
     def _fit(self, X, y):
-        logger.info("Fitting the HeadNN model...")
+        logger.info("Fitting the MLP model...")
         self.model = HeadNN(
             self.input_dim, self.n_hidden, self.scale1, self.scale2, self.dropout
         ).to(self.device)

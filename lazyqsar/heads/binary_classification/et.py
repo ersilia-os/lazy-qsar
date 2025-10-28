@@ -48,7 +48,7 @@ def find_params(X, y, num_trials):
         model = ExtraTreesClassifier(
             **params,
             bootstrap=False,
-            n_jobs=-1,
+            n_jobs=1,
             random_state=42,
             class_weight="balanced",
         )
