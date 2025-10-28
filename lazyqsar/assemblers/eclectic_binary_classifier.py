@@ -301,7 +301,9 @@ class BaseEclecticBinaryClassifier(BaseEstimator, ClassifierMixin):
         }
         metadata_path = os.path.join(model_dir, "metadata.json")
         logger.info("Saving metadata to {0}".format(metadata_path))
-        metadata["prep_params"]["is_sparse"] = bool(metadata["prep_params"]["is_sparse"])
+        metadata["prep_params"]["is_sparse"] = bool(
+            metadata["prep_params"]["is_sparse"]
+        )
         with open(metadata_path, "w") as f:
             json.dump(metadata, f, indent=4)
 

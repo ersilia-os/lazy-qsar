@@ -16,7 +16,7 @@ from chemprop.models import MPNN
 from rdkit.Chem import MolFromSmiles, Mol
 from rdkit import RDLogger
 
-RDLogger.DisableLog('rdApp.*')
+RDLogger.DisableLog("rdApp.*")
 
 
 class _CheMeleonFingerprint:
