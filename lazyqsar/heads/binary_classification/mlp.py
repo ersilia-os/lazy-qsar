@@ -305,10 +305,11 @@ def convert_to_onnx(name: str, model_dir: str):
     """
     head = Head.load(name, model_dir)
     model = head.model
+    model = model.to("cpu")
     model.eval()
 
     onnx_path = os.path.join(model_dir, f"{name}.onnx")
-    dummy_input = torch.randn(1, head.input_dim, dtype=torch.float32)
+    dummy_input = torch.randn(1, head.input_dim, dtype=torch.float32, device="cpu")
 
     # 1) Export Torch model (produces logits_{name})
     torch.onnx.export(
