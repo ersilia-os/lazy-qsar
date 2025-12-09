@@ -5,6 +5,7 @@ import numpy as np
 import optuna
 import time
 from lazyqsar.utils._install_torch import ensure_torch_cpu
+
 try:
     import torch
 except ImportError:

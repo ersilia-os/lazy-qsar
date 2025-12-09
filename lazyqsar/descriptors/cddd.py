@@ -23,9 +23,10 @@ root = os.path.dirname(os.path.abspath(__file__))
 REMOVER = SaltRemover()
 ORGANIC_ATOM_SET = set([5, 6, 7, 8, 9, 15, 16, 17, 35, 53])
 
+
 def keep_largest_fragment(sml):
     """Function that returns the SMILES sequence of the largest fragment.
-    
+
     Args:
         sml: SMILES sequence.
     Returns:
@@ -41,9 +42,10 @@ def keep_largest_fragment(sml):
             largest_mol_size = size
     return Chem.MolToSmiles(largest_mol)
 
+
 def remove_salt_stereo(sml, remover):
     """Function that strips salts and removes stereochemistry information from a SMILES.
-    
+
     Args:
         sml: SMILES sequence.
         remover: RDKit's SaltRemover object.
@@ -53,22 +55,23 @@ def remove_salt_stereo(sml, remover):
     try:
         mol = Chem.MolFromSmiles(sml)
         if mol is None:
-            return float('nan')
-            
+            return float("nan")
+
         mol = remover.StripMol(mol, dontRemoveEverything=True)
         if mol is None:
-            return float('nan')
-            
+            return float("nan")
+
         sml = Chem.MolToSmiles(mol, isomericSmiles=False)
         if "." in sml:
             sml = keep_largest_fragment(sml)
     except:
-        return float('nan')
+        return float("nan")
     return sml
+
 
 def organic_filter(sml):
     """Function that filters for organic molecules.
-    
+
     Args:
         sml: SMILES sequence.
     Returns:
@@ -80,14 +83,15 @@ def organic_filter(sml):
         if m is None:
             return False
         atom_num_list = [atom.GetAtomicNum() for atom in m.GetAtoms()]
-        is_organic = (set(atom_num_list) <= ORGANIC_ATOM_SET)
+        is_organic = set(atom_num_list) <= ORGANIC_ATOM_SET
         return is_organic
     except:
         return False
 
+
 def filter_smiles(sml):
     """Filter SMILES based on molecular properties.
-    
+
     Args:
         sml: SMILES sequence.
     Returns:
@@ -95,31 +99,37 @@ def filter_smiles(sml):
     """
     try:
         if isinstance(sml, float) and np.isnan(sml):
-            return float('nan')
-            
+            return float("nan")
+
         m = Chem.MolFromSmiles(sml)
         if m is None:
-            return float('nan')
-            
+            return float("nan")
+
         logp = Descriptors.MolLogP(m)
         mol_weight = Descriptors.MolWt(m)
         num_heavy_atoms = Descriptors.HeavyAtomCount(m)
         atom_num_list = [atom.GetAtomicNum() for atom in m.GetAtoms()]
         is_organic = set(atom_num_list) <= ORGANIC_ATOM_SET
-        
-        if ((logp > -5) & (logp < 7) &
-            (mol_weight > 12) & (mol_weight < 600) &
-            (num_heavy_atoms > 3) & (num_heavy_atoms < 50) &
-            is_organic):
+
+        if (
+            (logp > -5)
+            & (logp < 7)
+            & (mol_weight > 12)
+            & (mol_weight < 600)
+            & (num_heavy_atoms > 3)
+            & (num_heavy_atoms < 50)
+            & is_organic
+        ):
             return Chem.MolToSmiles(m)
         else:
-            return float('nan')
+            return float("nan")
     except:
-        return float('nan')
+        return float("nan")
+
 
 def preprocess_smiles(sml):
     """Preprocess a SMILES string by removing salts, stereochemistry, and filtering.
-    
+
     Args:
         sml: SMILES sequence.
     Returns:
@@ -127,16 +137,58 @@ def preprocess_smiles(sml):
     """
     new_sml = remove_salt_stereo(sml, REMOVER)
     if isinstance(new_sml, float) and np.isnan(new_sml):
-        return float('nan')
+        return float("nan")
     new_sml = filter_smiles(new_sml)
     return new_sml
 
 
-REGEX_SML = r'Cl|Br|[#%\)\(\+\-1032547698:=@CBFIHONPS\[\]cionps]'
-REGEX_INCHI = r'Br|Cl|[\(\)\+,-/123456789CFHINOPSchpq]'
-voc = {'#': 1, '%': 2, '(': 4, ')': 3, '+': 5, '-': 6, '0': 8, '1': 7, '2': 10, '3': 9, '4': 12, '5': 11, '6': 14, '7': 13, '8': 16, '9': 15, ':': 17, '</s>': 0, '<s>': 39, '=': 18, '@': 19, 'B': 21, 'Br': 38, 'C': 20, 'Cl': 37, 'F': 22, 'H': 24, 'I': 23, 'N': 26, 'O': 25, 'P': 27, 'S': 28, '[': 29, ']': 30, 'c': 31, 'i': 32, 'n': 34, 'o': 33, 'p': 35, 's': 36}
+REGEX_SML = r"Cl|Br|[#%\)\(\+\-1032547698:=@CBFIHONPS\[\]cionps]"
+REGEX_INCHI = r"Br|Cl|[\(\)\+,-/123456789CFHINOPSchpq]"
+voc = {
+    "#": 1,
+    "%": 2,
+    "(": 4,
+    ")": 3,
+    "+": 5,
+    "-": 6,
+    "0": 8,
+    "1": 7,
+    "2": 10,
+    "3": 9,
+    "4": 12,
+    "5": 11,
+    "6": 14,
+    "7": 13,
+    "8": 16,
+    "9": 15,
+    ":": 17,
+    "</s>": 0,
+    "<s>": 39,
+    "=": 18,
+    "@": 19,
+    "B": 21,
+    "Br": 38,
+    "C": 20,
+    "Cl": 37,
+    "F": 22,
+    "H": 24,
+    "I": 23,
+    "N": 26,
+    "O": 25,
+    "P": 27,
+    "S": 28,
+    "[": 29,
+    "]": 30,
+    "c": 31,
+    "i": 32,
+    "n": 34,
+    "o": 33,
+    "p": 35,
+    "s": 36,
+}
 
-class InputPipelineInferEncode():
+
+class InputPipelineInferEncode:
     """Class that creates a python generator for list of sequnces. Used to feed
     sequnces to the encoing part during inference time.
 
@@ -158,11 +210,13 @@ class InputPipelineInferEncode():
         # Preprocess SMILES and filter invalid ones
         processed_smiles = [preprocess_smiles(smi) for smi in seq_list]
         valid_mask = [not pd.isna(smi) for smi in processed_smiles]
-        self.seq_list = [smi for smi, valid in zip(processed_smiles, valid_mask) if valid]
-        
+        self.seq_list = [
+            smi for smi, valid in zip(processed_smiles, valid_mask) if valid
+        ]
+
         if not self.seq_list:
             raise ValueError("No valid SMILES found after preprocessing")
-            
+
         self.batch_size = hparams.batch_size
         self.encode_vocabulary = voc
         self.generator = None
@@ -171,20 +225,25 @@ class InputPipelineInferEncode():
         """Function that defines the generator."""
         l = len(self.seq_list)
         for ndx in range(0, l, self.batch_size):
-            samples = self.seq_list[ndx:min(ndx + self.batch_size, l)]
+            samples = self.seq_list[ndx : min(ndx + self.batch_size, l)]
             samples = [self._seq_to_idx(seq) for seq in samples]
             seq_len_batch = np.array([len(entry) for entry in samples])
             # pad sequences to max len and concatenate to one array
             max_length = seq_len_batch.max()
             seq_batch = np.concatenate(
-                [np.expand_dims(
-                    np.append(
-                        seq,
-                        np.array([self.encode_vocabulary['</s>']]*(max_length - len(seq)))
-                    ),
-                    0
-                )
-                    for seq in samples]
+                [
+                    np.expand_dims(
+                        np.append(
+                            seq,
+                            np.array(
+                                [self.encode_vocabulary["</s>"]]
+                                * (max_length - len(seq))
+                            ),
+                        ),
+                        0,
+                    )
+                    for seq in samples
+                ]
             ).astype(np.int32)
             yield seq_batch, seq_len_batch
 
@@ -217,19 +276,26 @@ class InputPipelineInferEncode():
         Returns:
             seq: List with ids of the tokens in the tokenized sequnce.
         """
-        seq = np.concatenate([np.array([self.encode_vocabulary['<s>']]),
-                              np.array(self._char_to_idx(seq)).astype(np.int32),
-                              np.array([self.encode_vocabulary['</s>']])
-                              ]).astype(np.int32)
+        seq = np.concatenate(
+            [
+                np.array([self.encode_vocabulary["<s>"]]),
+                np.array(self._char_to_idx(seq)).astype(np.int32),
+                np.array([self.encode_vocabulary["</s>"]]),
+            ]
+        ).astype(np.int32)
         return seq
+
 
 @dataclass
 class HParams:
     """Hyperparameters for the model."""
+
     batch_size: int = 128
+
 
 class InferenceModel:
     """CDDD Inference Model for encoding SMILES to embeddings and back."""
+
     def __init__(self):
         """Initialize the inference model."""
         self.hparams = HParams()
@@ -238,22 +304,26 @@ class InferenceModel:
         ckpt_dir.mkdir(exist_ok=True)
         cddd_path = ckpt_dir / "cddd_encoder.onnx"
         if not cddd_path.exists():
-            logger.info("Downloading CDDD encoder model into ~/.lazyqsar/cddd_encoder.onnx")
+            logger.info(
+                "Downloading CDDD encoder model into ~/.lazyqsar/cddd_encoder.onnx"
+            )
             urlretrieve(
                 r"https://zenodo.org/records/14811055/files/encoder.onnx?download=1",
                 cddd_path,
             )
-       
+
         encoder_path = str(cddd_path)
         if not os.path.exists(encoder_path):
             raise FileNotFoundError(
                 f"Model file not found at {encoder_path}. "
                 "Please run the model_downloader script first."
             )
-            
+
         self.encoder_session = ort.InferenceSession(encoder_path)
 
-    def seq_to_emb(self, smiles_list: List[str], batch_size: Optional[int] = None) -> np.ndarray:
+    def seq_to_emb(
+        self, smiles_list: List[str], batch_size: Optional[int] = None
+    ) -> np.ndarray:
         """Encode a list of SMILES strings into molecular descriptors.
 
         Args:
@@ -268,35 +338,37 @@ class InferenceModel:
 
         processed_smiles = [preprocess_smiles(smi) for smi in smiles_list]
         valid_mask = [not pd.isna(smi) for smi in processed_smiles]
-        valid_smiles = [smi for smi, valid in zip(processed_smiles, valid_mask) if valid]
-        
+        valid_smiles = [
+            smi for smi, valid in zip(processed_smiles, valid_mask) if valid
+        ]
+
         if not valid_smiles:
             raise ValueError("No valid SMILES found after preprocessing")
-            
+
         input_pipeline = InputPipelineInferEncode(valid_smiles, self.hparams)
         input_pipeline.initialize()
         emb_list = []
-        
+
         while True:
             try:
                 input_seq, input_len = input_pipeline.get_next()
-                
+
                 outputs = self.encoder_session.run(
                     None,
                     {
-                        'Input/Placeholder:0': input_seq.astype(np.int32),
-                        'Input/Placeholder_1:0': input_len.astype(np.int32)
-                    }
+                        "Input/Placeholder:0": input_seq.astype(np.int32),
+                        "Input/Placeholder_1:0": input_len.astype(np.int32),
+                    },
                 )
                 emb_list.append(outputs[0])
             except StopIteration:
                 break
-            
+
         if emb_list:
             embeddings = np.vstack(emb_list)
         else:
             embeddings = np.array([])
-            
+
         result_embeddings = []
         for smi, valid in zip(smiles_list, valid_mask):
             if valid:
@@ -304,12 +376,11 @@ class InferenceModel:
                 embeddings = embeddings[1:]
             else:
                 result_embeddings.append(np.full(embeddings[0].shape, np.nan))
-                
+
         return np.array(result_embeddings)
 
 
 class ContinuousDataDrivenDescriptor(object):
-
     def __init__(self):
         self.featurizer_name = "cddd"
         self.n_dim = 512

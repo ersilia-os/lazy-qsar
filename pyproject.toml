@@ -51,3 +51,6 @@ include-package-data = true
 
 [tool.setuptools.packages.find]
 exclude = ["utilities"]
+
+[project.scripts]
+lazyqsar-setup = "lazyqsar.utils.setup:main"

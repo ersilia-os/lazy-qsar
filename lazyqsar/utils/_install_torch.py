@@ -4,9 +4,11 @@ import sys
 TORCH_VERSION = "2.8.0"
 TORCH_CPU_EXTRA_INDEX_URL = "https://download.pytorch.org/whl/cpu"
 
-def ensure_torch_cpu(version=TORCH_VERSION, index_url=TORCH_CPU_EXTRA_INDEX_URL, quiet=False):
+
+def ensure_torch_cpu(
+    version=TORCH_VERSION, index_url=TORCH_CPU_EXTRA_INDEX_URL, quiet=False
+):
     try:
-        import torch
         return
     except Exception:
         pass
@@ -16,18 +18,16 @@ def ensure_torch_cpu(version=TORCH_VERSION, index_url=TORCH_CPU_EXTRA_INDEX_URL,
         "-m",
         "pip",
         "install",
-        f"torch=={version}+cpu",
+        f"torch=={version}",
         "--extra-index-url",
         index_url,
     ]
 
     subprocess.check_call(cmd)
 
-    import torch
 
 def ensure_chemprop():
     try:
-        import chemprop
         return
     except Exception:
         pass
@@ -41,5 +41,3 @@ def ensure_chemprop():
     ]
 
     subprocess.check_call(cmd)
-
-    import torch

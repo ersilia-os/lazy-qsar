@@ -1,4 +1,3 @@
-
 from rdkit import Chem
 from rdkit.Chem import AllChem
 from rdkit import DataStructs
@@ -6,7 +5,6 @@ import csv
 import numpy as np
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import accuracy_score, roc_auc_score
-
 
 
 def load_dataset(dataset_name):
@@ -31,11 +29,19 @@ def load_dataset(dataset_name):
     print("Number of testing samples: {0}".format(len(y_test)))
     return smiles_train, y_train, smiles_test, y_test
 
+
 def train_and_eval_rf(
-    smiles_train, y_train, smiles_test, y_test,
-    radius=2, n_bits=2048, n_estimators=300, random_state=42
+    smiles_train,
+    y_train,
+    smiles_test,
+    y_test,
+    radius=2,
+    n_bits=2048,
+    n_estimators=300,
+    random_state=42,
 ):
     """Train RF on Morgan fingerprints and evaluate on the test set."""
+
     def featurize(smiles_list):
         X = np.zeros((len(smiles_list), n_bits), dtype=np.uint8)
         keep = []
@@ -78,6 +84,7 @@ def train_and_eval_rf(
 
     print(f"Accuracy: {acc:.4f} | ROC AUC: {roc:.4f}")
     return clf
+
 
 smiles_train, y_train, smiles_test, y_test = load_dataset("bioavailability_ma")
 clf = train_and_eval_rf(smiles_train, y_train, smiles_test, y_test)
