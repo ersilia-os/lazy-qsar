@@ -7,18 +7,21 @@ from ..utils.logging import logger
 
 from pathlib import Path
 from urllib.request import urlretrieve
-from lazyqsar.utils._install_torch import ensure_torch_cpu
+from lazyqsar.utils._install_torch import ensure_torch_cpu, ensure_chemprop
 
 try:
     import torch
 except ImportError:
     ensure_torch_cpu()
     import torch
-    
-from chemprop import featurizers, nn
-from chemprop.data import BatchMolGraph
-from chemprop.nn import RegressionFFN
-from chemprop.models import MPNN
+try:
+    import chemeleon
+except ImportError:
+    from chemprop import featurizers, nn
+    from chemprop.data import BatchMolGraph
+    from chemprop.nn import RegressionFFN
+    from chemprop.models import MPNN
+    ensure_chemprop()
 from rdkit.Chem import MolFromSmiles, Mol
 from rdkit import RDLogger
 

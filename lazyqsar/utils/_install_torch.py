@@ -24,3 +24,22 @@ def ensure_torch_cpu(version=TORCH_VERSION, index_url=TORCH_CPU_EXTRA_INDEX_URL,
     subprocess.check_call(cmd)
 
     import torch
+
+def ensure_chemprop():
+    try:
+        import chemprop
+        return
+    except Exception:
+        pass
+
+    cmd = [
+        sys.executable,
+        "-m",
+        "pip",
+        "install",
+        "chemprop",
+    ]
+
+    subprocess.check_call(cmd)
+
+    import torch
