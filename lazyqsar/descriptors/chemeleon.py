@@ -17,11 +17,11 @@ except ImportError:
 try:
     import chemeleon
 except ImportError:
+    ensure_chemprop()
     from chemprop import featurizers, nn
     from chemprop.data import BatchMolGraph
     from chemprop.nn import RegressionFFN
     from chemprop.models import MPNN
-    ensure_chemprop()
 from rdkit.Chem import MolFromSmiles, Mol
 from rdkit import RDLogger
 

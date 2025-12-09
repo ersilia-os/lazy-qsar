@@ -57,7 +57,7 @@ def load_h5_dataset(dataset_name):
     return X_train, y_train, X_test, y_test
 
 
-def fit_and_evaluate(mode="fast", clean=False, onnx=True, zip=True):
+def fit_and_evaluate(mode="default", clean=False, onnx=True, zip=True):
     if zip:
         output_dir_ = output_dir + ".zip"
     else:
