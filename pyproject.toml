@@ -40,7 +40,8 @@ dependencies = [
 
 [project.optional-dependencies]
 descriptors = [
-  "rdkit==2025.9.1"
+  "rdkit==2025.9.1",
+  "chemprop<=2.2.0",
 ]
 
 [project.urls]

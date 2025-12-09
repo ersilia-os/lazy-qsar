@@ -6,6 +6,7 @@ import numpy as np
 from .descriptors.chemeleon import ChemeleonDescriptor
 from .descriptors.morgan import MorganFingerprint
 from .descriptors.rdkit_descriptors import RDKitDescriptor
+from .descriptors.cddd import ContinuousDataDrivenDescriptor
 
 from .agnostic import LazyEclecticBinaryClassifier
 from .agnostic import LazyBinaryClassifierArtifact
@@ -19,12 +20,13 @@ DESCRIPTOR_TYPES = {
     "chemeleon": ChemeleonDescriptor,
     "morgan": MorganFingerprint,
     "rdkit": RDKitDescriptor,
+    "cddd": ContinuousDataDrivenDescriptor,
 }
 
 DESCRIPTORS_MODE = {
-    "default": ["chemeleon", "rdkit"],
+    "default": ["chemeleon", "rdkit", "cddd"],
     "fast": ["rdkit", "morgan"],
-    "slow": ["chemeleon", "morgan", "rdkit"],
+    "slow": ["chemeleon", "morgan", "rdkit", "cddd"],
 }
 
 DESCRIPTORS_MODE = {k: sorted(v) for k, v in DESCRIPTORS_MODE.items()}

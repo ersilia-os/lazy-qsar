@@ -32,7 +32,7 @@ class _CheMeleonFingerprint:
     def __init__(self, device: str | torch.device | None = None):
         self.featurizer = featurizers.SimpleMoleculeMolGraphFeaturizer()
         agg = nn.MeanAggregation()
-        ckpt_dir = Path().home() / ".chemprop"
+        ckpt_dir = Path().home() / ".lazyqsar"
         ckpt_dir.mkdir(exist_ok=True)
         mp_path = ckpt_dir / "chemeleon_mp.pt"
         if not mp_path.exists():
