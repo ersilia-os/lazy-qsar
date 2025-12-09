@@ -17,6 +17,12 @@ To use the default Lazy QSAR descriptors, please install them:
 python -m pip install -e .[descriptors]
 ```
 
+This command will enable descriptors (featurizers) calculation. The first time you run LazyQSAR it, it will download the Chemeleon and the CDDD checkpoints, as well as install other dependencies. If you want to finalize this setup upfront, simply run:
+
+```bash
+lazyqsar-setup
+```
+
 ## Binary Classification
 
 LazyQSAR's binary classifier can run either with default descriptors or with custom descriptors passed by the user.
