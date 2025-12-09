@@ -5,7 +5,12 @@ import os
 import joblib
 import numpy as np
 import optuna
-import torch
+from lazyqsar.utils._install_torch import ensure_torch_cpu
+try:
+    import torch
+except ImportError:
+    ensure_torch_cpu()
+    import torch
 import torch.nn as nn
 from sklearn.decomposition import PCA
 from sklearn.linear_model import SGDClassifier

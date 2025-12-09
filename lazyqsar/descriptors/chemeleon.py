@@ -7,8 +7,14 @@ from ..utils.logging import logger
 
 from pathlib import Path
 from urllib.request import urlretrieve
+from lazyqsar.utils._install_torch import ensure_torch_cpu
 
-import torch
+try:
+    import torch
+except ImportError:
+    ensure_torch_cpu()
+    import torch
+    
 from chemprop import featurizers, nn
 from chemprop.data import BatchMolGraph
 from chemprop.nn import RegressionFFN

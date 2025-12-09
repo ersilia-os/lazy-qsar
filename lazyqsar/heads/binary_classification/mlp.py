@@ -4,7 +4,13 @@ import joblib
 import numpy as np
 import optuna
 import time
-import torch
+from lazyqsar.utils._install_torch import ensure_torch_cpu
+try:
+    import torch
+except ImportError:
+    ensure_torch_cpu()
+    import torch
+
 import torch.nn as nn
 import torch.optim as optim
 from sklearn.base import BaseEstimator, ClassifierMixin
