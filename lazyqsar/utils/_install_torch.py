@@ -2,7 +2,7 @@ import subprocess
 import sys
 import logging
 
-TORCH_VERSION = "2.8.0"
+TORCH_VERSION = "2.8.0+cpu"
 TORCH_CPU_EXTRA_INDEX_URL = "https://download.pytorch.org/whl/cpu"
 
 logger = logging.getLogger("installer")
@@ -35,8 +35,13 @@ def run_cmd(cmd):
 
 
 def ensure_torch_cpu(version=TORCH_VERSION, index_url=TORCH_CPU_EXTRA_INDEX_URL):
-    logger.info(f"Installing torch=={version} from {index_url}")
-
+    try:
+        import torch  # noqa: F401
+        logger.info("Torch already installed; skipping installation.")
+        return
+    except ImportError:
+        logger.warning("Torch not found, installing CPU version...")
+    
     cmd = [
         sys.executable,
         "-m",
@@ -52,7 +57,12 @@ def ensure_torch_cpu(version=TORCH_VERSION, index_url=TORCH_CPU_EXTRA_INDEX_URL)
 
 
 def ensure_chemprop():
-    logger.info("Installing chemprop")
+    try:
+        import chemprop  # noqa: F401
+        logger.info("Chemprop already installed; skipping installation.")
+        return
+    except ImportError:
+        logger.warning("Chemprop not found, installing...")
 
     cmd = [
         sys.executable,
