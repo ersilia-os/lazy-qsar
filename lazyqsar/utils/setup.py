@@ -4,14 +4,20 @@ from ._install_torch import ensure_torch_cpu, ensure_chemprop
 from .logging import logger
 
 
+def _safe_download(url: str, dest: Path) -> None:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_suffix(dest.suffix + ".tmp")
+    urlretrieve(url, tmp)
+    tmp.replace(dest)
+
+
 def download_chemeleon():
     logger.info("Downloading Chemeleon model...")
     ckpt_dir = Path().home() / ".lazyqsar"
-    ckpt_dir.mkdir(exist_ok=True)
     mp_path = ckpt_dir / "chemeleon_mp.pt"
     if not mp_path.exists():
-        urlretrieve(
-            r"https://zenodo.org/records/15460715/files/chemeleon_mp.pt",
+        _safe_download(
+            "https://zenodo.org/records/15460715/files/chemeleon_mp.pt",
             mp_path,
         )
 
@@ -19,11 +25,10 @@ def download_chemeleon():
 def download_cddd():
     logger.info("Downloading CDDD encoder...")
     ckpt_dir = Path().home() / ".lazyqsar"
-    ckpt_dir.mkdir(exist_ok=True)
     cddd_path = ckpt_dir / "cddd_encoder.onnx"
     if not cddd_path.exists():
-        urlretrieve(
-            r"https://zenodo.org/records/14811055/files/encoder.onnx?download=1",
+        _safe_download(
+            "https://zenodo.org/records/14811055/files/encoder.onnx?download=1",
             cddd_path,
         )
 
