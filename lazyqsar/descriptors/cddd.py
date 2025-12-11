@@ -380,7 +380,6 @@ class ContinuousDataDrivenDescriptor(object):
     def transform(self, smiles_list):
         embeddings = self.model.seq_to_emb(smiles_list)
         embeddings = np.array(embeddings, dtype=np.float32)
-        embeddings[np.isnan(embeddings)] = 0.0
         return embeddings
 
     def save(self, dir_name: str):

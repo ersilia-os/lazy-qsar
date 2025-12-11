@@ -3,6 +3,7 @@ import os
 import shutil
 import random
 import h5py
+import argparse
 
 from lazyqsar.qsar import LazyBinaryQSAR
 from lazyqsar.agnostic import LazyBinaryClassifier
@@ -106,8 +107,7 @@ def fit_and_evaluate_agnostic(mode="fast", clean=False, onnx=True, zip=True):
 
 
 if __name__ == "__main__":
-    import argparse
-
+    
     if os.path.exists(output_dir):
         shutil.rmtree(output_dir)
 
