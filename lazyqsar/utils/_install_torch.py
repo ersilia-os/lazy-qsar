@@ -2,7 +2,7 @@ import subprocess
 import sys
 import logging
 
-TORCH_VERSION = "2.8.0+cpu"
+TORCH_VERSION = "2.8.0"
 TORCH_CPU_EXTRA_INDEX_URL = "https://download.pytorch.org/whl/cpu"
 
 logger = logging.getLogger("installer")
