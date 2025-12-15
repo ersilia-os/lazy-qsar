@@ -5,7 +5,7 @@ import os
 import joblib
 import numpy as np
 import optuna
-from lazyqsar.utils._install_torch import ensure_torch_cpu
+from lazyqsar.utils._install_extras import ensure_torch_cpu
 
 try:
     import torch

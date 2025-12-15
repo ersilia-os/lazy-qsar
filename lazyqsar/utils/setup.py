@@ -1,6 +1,6 @@
 from pathlib import Path
 from urllib.request import urlretrieve
-from ._install_torch import ensure_torch_cpu, ensure_chemprop
+from ._install_extras import ensure_torch_cpu, ensure_chemprop, ensure_rdkit
 from .logging import logger
 
 
@@ -40,10 +40,14 @@ def install_torch():
 def install_chemprop():
     ensure_chemprop()
 
+def install_rdkit():
+    ensure_rdkit()
+
 
 def main():
     install_torch()
     install_chemprop()
+    install_rdkit()
     download_chemeleon()
     download_cddd()
 
