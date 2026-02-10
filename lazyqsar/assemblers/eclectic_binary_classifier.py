@@ -361,10 +361,10 @@ class LazyEclecticBinaryClassifier(object):
     def __init__(
         self,
         num_trials: int = 10,
-        min_positive_proportion: float = 0.01,
+        min_positive_proportion: float = 0.001,
         max_positive_proportion: float = 0.5,
         min_samples: int = 30,
-        max_samples: int = 10000,
+        max_samples: int = 100_000,
         min_positive_samples: int = 10,
         max_num_partitions: int = 100,
         min_seen_across_partitions: int = 1,
