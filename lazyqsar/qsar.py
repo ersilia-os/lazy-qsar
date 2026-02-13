@@ -83,9 +83,8 @@ class LazyBinaryQSAR(object):
         for i, descriptor in enumerate(self.descriptors):
             logger.info(f"Fitting with descriptor: {self.descriptor_types[i]}")
             X = descriptor.transform(smiles_list)
-            mask = ~np.isnan(X).any(axis=1)
             model = LazyEclecticBinaryClassifier(num_trials=self.num_trials)
-            model.fit(X=X[mask], y=y[mask])
+            model.fit(X=X, y=y)
             self.models += [model]
         self._assign_weights()
 
@@ -93,17 +92,13 @@ class LazyBinaryQSAR(object):
         R = []
         for i, descriptor in enumerate(self.descriptors):
             X = descriptor.transform(smiles_list)
-            y_hat_1 = np.full(shape=(X.shape[0],), fill_value=np.nan)
-            mask = ~np.isnan(X).any(axis=1)
-            y_hat_1[mask] = np.array(self.models[i].predict(X=X[mask]))
+            y_hat_1 = np.array(self.models[i].predict(X=X))
             R += [y_hat_1]
         R = np.array(R)
         y_hat_1 = []
         for i in range(R.shape[0]):
             row = R[:, i]
-            mask = ~np.isnan(row)
-            weights = self.weights[mask]/np.sum(self.weights[mask])
-            y_hat_1 += [np.average(row[mask], weights=weights)]
+            y_hat_1 += [np.average(row, weights=self.weights)]
         y_hat_1 = np.array(y_hat_1)
         y_hat_0 = 1 - y_hat_1
         return np.vstack((y_hat_0, y_hat_1)).T
