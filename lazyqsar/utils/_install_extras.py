@@ -38,11 +38,12 @@ def run_cmd(cmd):
 def ensure_torch_cpu(version=TORCH_VERSION, index_url=TORCH_CPU_EXTRA_INDEX_URL):
     try:
         import torch  # noqa: F401
+
         logger.info("Torch already installed; skipping installation.")
         return
     except ImportError:
         logger.warning("Torch not found, installing CPU version...")
-    
+
     cmd = [
         sys.executable,
         "-m",
@@ -60,6 +61,7 @@ def ensure_torch_cpu(version=TORCH_VERSION, index_url=TORCH_CPU_EXTRA_INDEX_URL)
 def ensure_chemprop():
     try:
         import chemprop  # noqa: F401
+
         return
     except ImportError:
         logger.warning("Chemprop not found, installing...")
@@ -76,21 +78,15 @@ def ensure_chemprop():
     logger.info("Chemprop installation complete.")
 
 
-
 def ensure_rdkit(version=RDKIT_VERSION):
     try:
         import rdkit  # noqa: F401
+
         logger.info("rdkit already installed; Upg.")
     except:
         pass
-    
-    cmd = [
-        sys.executable,
-        "-m",
-        "pip",
-        "install",
-        f"rdkit=={version}"
-    ]
+
+    cmd = [sys.executable, "-m", "pip", "install", f"rdkit=={version}"]
 
     run_cmd(cmd)
     logger.info("Rdkit installation complete.")

@@ -40,6 +40,7 @@ def install_torch():
 def install_chemprop():
     ensure_chemprop()
 
+
 def install_rdkit():
     ensure_rdkit()
 

@@ -50,9 +50,24 @@ def load_featurizer(model_dir, featurizer_name):
 def main():
     parser = argparse.ArgumentParser(description="Predict with a LazyBinaryQSAR model.")
 
-    parser.add_argument("--model_dir", type=str, required=True, help="Directory containing the fitted model.")
-    parser.add_argument("--input_csv", type=str, required=True, help="Input CSV file containing the SMILES strings to predict on.")
-    parser.add_argument("--output_csv", type=str, required=True, help="Output file to save the predictions.")
+    parser.add_argument(
+        "--model_dir",
+        type=str,
+        required=True,
+        help="Directory containing the fitted model.",
+    )
+    parser.add_argument(
+        "--input_csv",
+        type=str,
+        required=True,
+        help="Input CSV file containing the SMILES strings to predict on.",
+    )
+    parser.add_argument(
+        "--output_csv",
+        type=str,
+        required=True,
+        help="Output file to save the predictions.",
+    )
     args = parser.parse_args()
 
     model_dir = os.path.abspath(args.model_dir)
@@ -71,13 +86,13 @@ def main():
             model_subdir = os.path.join(model_dir, task_name, featurizer_name)
             if os.path.isdir(model_subdir):
                 model = LazyBinaryClassifier.load(model_subdir)
-                y_pred = model.predict_proba(X)[:,1]
+                y_pred = model.predict_proba(X)[:, 1]
                 results[(task_name, featurizer_name)] = y_pred
 
     aggregated_results = {}
     for task_name in tasks:
         R = []
-        for k,v in results.items():
+        for k, v in results.items():
             if k[0] == task_name:
                 R += [v]
         aggregated_results[task_name] = np.average(np.array(R), axis=0)

@@ -28,10 +28,12 @@ REMOVER = SaltRemover()
 ORGANIC_ATOM_SET = set([5, 6, 7, 8, 9, 15, 16, 17, 35, 53])
 
 
-assert rdkit_version == "2025.09.1", "Please use RDKit 2025.09.1" # TODO make it more flexible in the future
+assert rdkit_version == "2025.09.1", (
+    "Please use RDKit 2025.09.1"
+)  # TODO make it more flexible in the future
+
 
 class ChemblNearestNeighbour(object):
-
     def __init__(self, similarity_threshold=0.7):
         self.similarity_threshold = similarity_threshold
         ckpt_dir = Path().home() / ".lazyqsar"
@@ -39,15 +41,9 @@ class ChemblNearestNeighbour(object):
         cddd_fpsim_path = ckpt_dir / "cddd_encoder_fpsim.h5"
         self.fp_database = cddd_fpsim_path
         self.fpe = FPSim2Engine(self.fp_database)
-    
+
     def highest_similarity(self, smiles, metric="tanimoto"):
-        results = self.fpe.top_k(
-            smiles,
-            k=1,
-            threshold=0.0,
-            metric=metric,
-            n_workers=1
-        )
+        results = self.fpe.top_k(smiles, k=1, threshold=0.0, metric=metric, n_workers=1)
         if results is None or len(results) == 0:
             return None, None
         idx = results[0][0]
@@ -57,7 +53,7 @@ class ChemblNearestNeighbour(object):
 def load_smiles_indexed():
     ckpt_dir = Path().home() / ".lazyqsar"
     cddd_encoder_smiles = ckpt_dir / "cddd_encoder_smiles.csv"
-    smiles_indexed =[]
+    smiles_indexed = []
     with open(cddd_encoder_smiles, "r") as f:
         reader = csv.reader(f)
         next(reader)
@@ -381,7 +377,7 @@ class InferenceModel:
             )
 
         self.encoder_session = ort.InferenceSession(encoder_path)
-    
+
     def seq_to_emb(
         self, smiles_list: List[str], batch_size: Optional[int] = None
     ) -> np.ndarray:
@@ -444,17 +440,21 @@ class ContinuousDataDrivenDescriptor(object):
         nan_rows = np.isnan(outputs).any(axis=1)
         n_rows_with_nan = int(nan_rows.sum())
         if n_rows_with_nan != 0:
-            chembl_sim  = ChemblNearestNeighbour()
+            chembl_sim = ChemblNearestNeighbour()
             for i in np.where(nan_rows)[0]:
                 smi = smiles_list[i]
-                logger.debug(f"Finding nearest neighbor in ChEMBL for SMILES with NaN descriptor...")
+                logger.debug(
+                    "Finding nearest neighbor in ChEMBL for SMILES with NaN descriptor..."
+                )
                 nn_idx = chembl_sim.highest_similarity(smi)
                 if nn_idx is None:
                     continue
                 smiles_chembl = self.smiles_indexed[nn_idx]
                 chembl_value = self.model.seq_to_emb([smiles_chembl])[0]
                 outputs[i, :] = chembl_value
-        assert len(outputs) == len(smiles_list), "CDDD output length does not match input length"
+        assert len(outputs) == len(smiles_list), (
+            "CDDD output length does not match input length"
+        )
         embeddings = np.array(outputs, dtype=np.float32)
         return embeddings
 

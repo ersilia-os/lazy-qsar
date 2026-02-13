@@ -107,7 +107,6 @@ def fit_and_evaluate_agnostic(mode="fast", clean=False, onnx=True, zip=True):
 
 
 if __name__ == "__main__":
-    
     if os.path.exists(output_dir):
         shutil.rmtree(output_dir)
 

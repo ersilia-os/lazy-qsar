@@ -55,5 +55,5 @@ exclude = ["utilities"]
 
 [project.scripts]
 lazyqsar-setup = "lazyqsar.utils.setup:main"
-lazyqsar-bin-fit = "lazyqsar.cli.bin_qsar_fit:main"
-lazyqsar-bin-predict = "lazyqsar.cli.bin_qsar_predict:main"
+lazyqsar-binary-fit = "lazyqsar.cli.binary_qsar_fit:main"
+lazyqsar-binary-predict = "lazyqsar.cli.binary_qsar_predict:main"

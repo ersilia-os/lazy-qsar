@@ -85,7 +85,7 @@ class ChemeleonDescriptor(object):
             chunk = smiles[i : i + chunk_size]
             X_chunk = np.array(self.chemeleon_fingerprint(chunk), dtype=np.float32)
             R += [X_chunk]
-            logger.debug(f"Transformed {len(R)*chunk_size} samples so far...")
+            logger.debug(f"Transformed {len(R) * chunk_size} samples so far...")
         return np.concatenate(R, dtype=np.float32, axis=0)
 
     def save(self, dir_name: str):

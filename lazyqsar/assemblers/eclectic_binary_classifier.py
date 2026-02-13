@@ -483,14 +483,18 @@ class LazyEclecticBinaryClassifier(object):
             if h5_file is None:
                 n = X.shape[0]
                 y_hat_ = []
-                logger.debug(f"Predicting on {n} samples with chunk size {chunk_size}...")
+                logger.debug(
+                    f"Predicting on {n} samples with chunk size {chunk_size}..."
+                )
                 for X_chunk in su.chunk_matrix(X, chunk_size):
                     y_hat_ += list(model.predict_proba(X_chunk)[:, 1])
                     logger.debug(f"Predicted {len(y_hat_)} samples so far...")
             else:
                 n = len(h5_idxs)
                 y_hat_ = []
-                logger.debug(f"Predicting on {n} samples from HDF5 with chunk size {chunk_size}...")
+                logger.debug(
+                    f"Predicting on {n} samples from HDF5 with chunk size {chunk_size}..."
+                )
                 for X_chunk in su.chunk_h5_file(h5_file, h5_idxs, chunk_size):
                     y_hat_ += list(model.predict_proba(X_chunk)[:, 1])
                     logger.debug(f"Predicted {len(y_hat_)} samples so far...")

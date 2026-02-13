@@ -55,7 +55,7 @@ class MorganFingerprint(object):
             chunk = smiles[i : i + chunk_size]
             X_chunk = self._morganfp(chunk)
             R += [X_chunk]
-            logger.debug(f"Transformed {len(R)*chunk_size} samples so far...")
+            logger.debug(f"Transformed {len(R) * chunk_size} samples so far...")
         return np.concatenate(R, axis=0)
 
     def save(self, dir_name: str):
