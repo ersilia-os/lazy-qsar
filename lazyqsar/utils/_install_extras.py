@@ -60,7 +60,6 @@ def ensure_torch_cpu(version=TORCH_VERSION, index_url=TORCH_CPU_EXTRA_INDEX_URL)
 def ensure_chemprop():
     try:
         import chemprop  # noqa: F401
-        logger.info("Chemprop already installed; skipping installation.")
         return
     except ImportError:
         logger.warning("Chemprop not found, installing...")

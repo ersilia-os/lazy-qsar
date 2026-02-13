@@ -1,5 +1,6 @@
 import os
 import re
+import csv
 import json
 import pandas as pd
 import numpy as np
@@ -10,6 +11,9 @@ from rdkit.Chem.SaltRemover import SaltRemover
 from rdkit import Chem
 from rdkit.Chem import Descriptors
 from rdkit import RDLogger
+from rdkit import __version__ as rdkit_version
+
+from FPSim2 import FPSim2Engine
 
 from pathlib import Path
 from urllib.request import urlretrieve
@@ -22,6 +26,44 @@ root = os.path.dirname(os.path.abspath(__file__))
 
 REMOVER = SaltRemover()
 ORGANIC_ATOM_SET = set([5, 6, 7, 8, 9, 15, 16, 17, 35, 53])
+
+
+assert rdkit_version == "2025.09.1", "Please use RDKit 2025.09.1" # TODO make it more flexible in the future
+
+class ChemblNearestNeighbour(object):
+
+    def __init__(self, similarity_threshold=0.7):
+        self.similarity_threshold = similarity_threshold
+        ckpt_dir = Path().home() / ".lazyqsar"
+        ckpt_dir.mkdir(exist_ok=True)
+        cddd_fpsim_path = ckpt_dir / "cddd_encoder_fpsim.h5"
+        self.fp_database = cddd_fpsim_path
+        self.fpe = FPSim2Engine(self.fp_database)
+    
+    def highest_similarity(self, smiles, metric="tanimoto"):
+        results = self.fpe.top_k(
+            smiles,
+            k=1,
+            threshold=0.0,
+            metric=metric,
+            n_workers=1
+        )
+        if results is None or len(results) == 0:
+            return None, None
+        idx = results[0][0]
+        return idx
+
+
+def load_smiles_indexed():
+    ckpt_dir = Path().home() / ".lazyqsar"
+    cddd_encoder_smiles = ckpt_dir / "cddd_encoder_smiles.csv"
+    smiles_indexed =[]
+    with open(cddd_encoder_smiles, "r") as f:
+        reader = csv.reader(f)
+        next(reader)
+        for r in reader:
+            smiles_indexed += [r[0]]
+    return smiles_indexed
 
 
 def keep_largest_fragment(sml):
@@ -228,7 +270,6 @@ class InputPipelineInferEncode:
             samples = self.seq_list[ndx : min(ndx + self.batch_size, l)]
             samples = [self._seq_to_idx(seq) for seq in samples]
             seq_len_batch = np.array([len(entry) for entry in samples])
-            # pad sequences to max len and concatenate to one array
             max_length = seq_len_batch.max()
             seq_batch = np.concatenate(
                 [
@@ -312,6 +353,26 @@ class InferenceModel:
                 cddd_path,
             )
 
+        cddd_fpsim_path = ckpt_dir / "cddd_encoder_fpsim.h5"
+        if not cddd_fpsim_path.exists():
+            logger.info(
+                "Downloading CDDD encoder fpsim file into ~/.lazyqsar/cddd_encoder_fpsim.h5"
+            )
+            urlretrieve(
+                r"https://ersilia-models.s3.eu-central-1.amazonaws.com/eos4rw4/model/checkpoints/fpsim2_database_chembl.h5",
+                cddd_fpsim_path,
+            )
+
+        cddd_smiles_path = ckpt_dir / "cddd_encoder_smiles.csv"
+        if not cddd_smiles_path.exists():
+            logger.info(
+                "Downloading CDDD encoder smiles file into ~/.lazyqsar/cddd_encoder_smiles.csv"
+            )
+            urlretrieve(
+                r"https://ersilia-models.s3.eu-central-1.amazonaws.com/eos4rw4/model/checkpoints/fpsim2_database_chembl_smiles.csv",
+                cddd_smiles_path,
+            )
+
         encoder_path = str(cddd_path)
         if not os.path.exists(encoder_path):
             raise FileNotFoundError(
@@ -376,10 +437,25 @@ class ContinuousDataDrivenDescriptor(object):
         self.featurizer_name = "cddd"
         self.n_dim = 512
         self.model = InferenceModel()
+        self.smiles_indexed = load_smiles_indexed()
 
     def transform(self, smiles_list):
-        embeddings = self.model.seq_to_emb(smiles_list)
-        embeddings = np.array(embeddings, dtype=np.float32)
+        outputs = self.model.seq_to_emb(smiles_list)
+        nan_rows = np.isnan(outputs).any(axis=1)
+        n_rows_with_nan = int(nan_rows.sum())
+        if n_rows_with_nan != 0:
+            chembl_sim  = ChemblNearestNeighbour()
+            for i in np.where(nan_rows)[0]:
+                smi = smiles_list[i]
+                logger.debug(f"Finding nearest neighbor in ChEMBL for SMILES with NaN descriptor...")
+                nn_idx = chembl_sim.highest_similarity(smi)
+                if nn_idx is None:
+                    continue
+                smiles_chembl = self.smiles_indexed[nn_idx]
+                chembl_value = self.model.seq_to_emb([smiles_chembl])[0]
+                outputs[i, :] = chembl_value
+        assert len(outputs) == len(smiles_list), "CDDD output length does not match input length"
+        embeddings = np.array(outputs, dtype=np.float32)
         return embeddings
 
     def save(self, dir_name: str):

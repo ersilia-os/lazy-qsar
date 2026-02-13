@@ -5,6 +5,7 @@ from rdkit import Chem
 from rdkit.ML.Descriptors import MoleculeDescriptors
 from rdkit.Chem import Descriptors
 from rdkit import RDLogger
+from ..utils.logging import logger
 
 RDLogger.DisableLog("rdApp.*")
 
@@ -54,7 +55,7 @@ class RDKitDescriptor(object):
             metadata = json.load(f)
             rdkit_version = metadata.get("rdkit_version")
             if rdkit_version:
-                print(f"Loaded RDKit version: {rdkit_version}")
+                logger.debug(f"Loaded RDKit version: {rdkit_version}")
             current_rdkit_version = Chem.rdBase.rdkitVersion
             if current_rdkit_version != rdkit_version:
                 raise ValueError(

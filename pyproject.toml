@@ -40,7 +40,8 @@ dependencies = [
 
 [project.optional-dependencies]
 descriptors = [
-  "rdkit==2025.9.1"
+  "rdkit==2025.9.1",
+  "FPSim2==0.7.3"
 ]
 
 [project.urls]
@@ -54,3 +55,5 @@ exclude = ["utilities"]
 
 [project.scripts]
 lazyqsar-setup = "lazyqsar.utils.setup:main"
+lazyqsar-bin-fit = "lazyqsar.cli.bin_qsar_fit:main"
+lazyqsar-bin-predict = "lazyqsar.cli.bin_qsar_predict:main"

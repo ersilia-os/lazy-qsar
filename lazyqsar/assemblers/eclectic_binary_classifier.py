@@ -6,7 +6,6 @@ import time
 
 import h5py
 import numpy as np
-from tqdm import tqdm
 from sklearn.base import BaseEstimator, ClassifierMixin
 
 from ..preprocess import prep
@@ -364,7 +363,7 @@ class LazyEclecticBinaryClassifier(object):
         min_positive_proportion: float = 0.001,
         max_positive_proportion: float = 0.5,
         min_samples: int = 30,
-        max_samples: int = 100_000,
+        max_samples: int = 10_000,
         min_positive_samples: int = 10,
         max_num_partitions: int = 100,
         min_seen_across_partitions: int = 1,
@@ -484,18 +483,17 @@ class LazyEclecticBinaryClassifier(object):
             if h5_file is None:
                 n = X.shape[0]
                 y_hat_ = []
-                for X_chunk in tqdm(
-                    su.chunk_matrix(X, chunk_size), desc="Predicting chunks..."
-                ):
+                logger.debug(f"Predicting on {n} samples with chunk size {chunk_size}...")
+                for X_chunk in su.chunk_matrix(X, chunk_size):
                     y_hat_ += list(model.predict_proba(X_chunk)[:, 1])
+                    logger.debug(f"Predicted {len(y_hat_)} samples so far...")
             else:
                 n = len(h5_idxs)
                 y_hat_ = []
-                for X_chunk in tqdm(
-                    su.chunk_h5_file(h5_file, h5_idxs, chunk_size),
-                    desc="Predicting chunks...",
-                ):
+                logger.debug(f"Predicting on {n} samples from HDF5 with chunk size {chunk_size}...")
+                for X_chunk in su.chunk_h5_file(h5_file, h5_idxs, chunk_size):
                     y_hat_ += list(model.predict_proba(X_chunk)[:, 1])
+                    logger.debug(f"Predicted {len(y_hat_)} samples so far...")
             y_hat += [y_hat_]
         y_hat = np.array(y_hat).T
         y_hat = np.mean(y_hat, axis=1)

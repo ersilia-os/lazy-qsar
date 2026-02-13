@@ -1,10 +1,10 @@
 import json
-from tqdm import tqdm
 import os
 import numpy as np
 from rdkit import Chem
 from rdkit.Chem import rdFingerprintGenerator
 from rdkit import RDLogger
+from ..utils.logging import logger
 
 RDLogger.DisableLog("rdApp.*")
 
@@ -50,13 +50,12 @@ class MorganFingerprint(object):
     def transform(self, smiles):
         chunk_size = 100_000
         R = []
-        for i in tqdm(
-            range(0, len(smiles), chunk_size),
-            desc="Transforming Morgan descriptors in chunks of 1000",
-        ):
+        logger.debug(f"Transforming Morgan fingerprints in chunks of {chunk_size}...")
+        for i in range(0, len(smiles), chunk_size):
             chunk = smiles[i : i + chunk_size]
             X_chunk = self._morganfp(chunk)
             R += [X_chunk]
+            logger.debug(f"Transformed {len(R)*chunk_size} samples so far...")
         return np.concatenate(R, axis=0)
 
     def save(self, dir_name: str):
@@ -78,7 +77,7 @@ class MorganFingerprint(object):
             metadata = json.load(f)
             rdkit_version = metadata.get("rdkit_version")
             if rdkit_version:
-                print(f"Loaded RDKit version: {rdkit_version}")
+                logger.debug(f"Loaded RDKit version: {rdkit_version}")
             current_rdkit_version = Chem.rdBase.rdkitVersion
             if current_rdkit_version != rdkit_version:
                 raise ValueError(

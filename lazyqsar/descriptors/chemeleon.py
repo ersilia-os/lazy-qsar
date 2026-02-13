@@ -1,7 +1,6 @@
 import os
 import json
 import numpy as np
-from tqdm import tqdm
 from rdkit import Chem
 from ..utils.logging import logger
 
@@ -81,13 +80,12 @@ class ChemeleonDescriptor(object):
     def transform(self, smiles):
         chunk_size = 100
         R = []
-        for i in tqdm(
-            range(0, len(smiles), chunk_size),
-            desc="Transforming CheMeleon descriptors in chunks of 100",
-        ):
+        logger.debug(f"Transforming CheMeleon descriptors in chunks of {chunk_size}...")
+        for i in range(0, len(smiles), chunk_size):
             chunk = smiles[i : i + chunk_size]
             X_chunk = np.array(self.chemeleon_fingerprint(chunk), dtype=np.float32)
             R += [X_chunk]
+            logger.debug(f"Transformed {len(R)*chunk_size} samples so far...")
         return np.concatenate(R, dtype=np.float32, axis=0)
 
     def save(self, dir_name: str):
