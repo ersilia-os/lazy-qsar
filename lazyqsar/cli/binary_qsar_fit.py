@@ -32,12 +32,7 @@ def main():
     )
     args = parser.parse_args()
 
-    models = None
-    if args.models_txt is not None:
-        with open(args.models_txt, "r") as f:
-            models = [line.strip() for line in f]
-
-    fit(data_dir=args.data_dir, model_dir=args.model_dir, mode=args.mode, models=models)
+    fit(data_dir=args.data_dir, model_dir=args.model_dir, models_txt=args.models_txt, mode=args.mode)
 
 
 if __name__ == "__main__":

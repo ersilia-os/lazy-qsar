@@ -1,11 +1,37 @@
 import csv
 import os
+import tempfile
 
 import numpy as np
 import pandas as pd
 
 from ..agnostic import LazyBinaryClassifier
 from ..qsar import DESCRIPTOR_TYPES
+
+
+def prepare_files(smiles_list, models: list = None, path: str = None):
+    if path is None:
+        path = tempfile.mkdtemp()
+    input_csv = os.path.join(path, "_input.csv")
+    with open(input_csv, "w") as f:
+        writer = csv.writer(f)
+        writer.writerow(["smiles"])
+        for s in smiles_list:
+            writer.writerow([s])
+    output_csv = os.path.join(path, "_output.csv")
+    if models is None:
+        models_txt = None
+    else:
+        models_txt = os.path.join(path, "_models.txt")
+        with open(models_txt, "w") as f:
+            for m in models:
+                f.write(m + "\n")
+    data = {
+        "input_csv": os.path.abspath(input_csv),
+        "output_csv": os.path.abspath(output_csv),
+        "models_txt": os.path.abspath(models_txt) if models_txt is not None else None,
+    }
+    return data
 
 
 def read_smiles(input_csv):
@@ -16,6 +42,12 @@ def read_smiles(input_csv):
         for r in reader:
             smiles_list += [r[0]]
     return smiles_list
+
+
+def read_output_array(output_csv):
+    df = pd.read_csv(output_csv)
+    return np.array(df)
+
 
 
 def get_task_names(model_dir):
@@ -46,7 +78,7 @@ def load_featurizer(model_dir, featurizer_name):
     return featurizer
 
 
-def predict(model_dir: str, input_csv: str, output_csv: str, models: list = None):
+def predict(model_dir: str, input_csv: str, output_csv: str, models_txt: str = None):
 
     model_dir = os.path.abspath(model_dir)
     input_csv = os.path.abspath(input_csv)
@@ -54,7 +86,11 @@ def predict(model_dir: str, input_csv: str, output_csv: str, models: list = None
 
     smiles_list = read_smiles(input_csv)
     tasks = get_task_names(model_dir)
-    if models is not None:
+    print(f"Found tasks: {tasks}")
+    print(f"Using models: {models_txt}")
+    if models_txt is not None:
+        with open(models_txt, "r") as f:
+            models = [line.strip() for line in f]
         tasks = [t for t in models if t in tasks]
     if len(tasks) == 0:
         raise ValueError("No valid tasks found in the model directory.")

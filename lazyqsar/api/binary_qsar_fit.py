@@ -8,6 +8,10 @@ from ..agnostic import LazyBinaryClassifier
 from ..qsar import DESCRIPTOR_TYPES, DESCRIPTORS_MODE
 
 
+def prepare_files():
+    pass
+
+
 def read_all_smiles(data_dir):
     smiles_list = []
     for fn in os.listdir(data_dir):
@@ -44,7 +48,7 @@ def get_task_data(data_dir, task_name):
     return smiles_list, np.array(y, dtype=int)
 
 
-def fit(data_dir: str, model_dir: str, mode: str = "default", models: list = None):
+def fit(data_dir: str, model_dir: str, models_txt: str = None, mode: str = "default"):
 
     data_dir = os.path.abspath(data_dir)
     model_dir = os.path.abspath(model_dir)
@@ -56,7 +60,9 @@ def fit(data_dir: str, model_dir: str, mode: str = "default", models: list = Non
         )
 
     task_names = get_task_names(data_dir)
-    if models is not None:
+    if models_txt is not None:
+        with open(models_txt, "r") as f:
+            models = [line.strip() for line in f]
         task_names = [t for t in models if t in task_names]
     if len(task_names) == 0:
         raise ValueError("No valid tasks found in the data directory.")

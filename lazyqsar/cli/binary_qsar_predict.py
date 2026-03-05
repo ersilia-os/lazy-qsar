@@ -32,12 +32,7 @@ def main():
     )
     args = parser.parse_args()
 
-    models = None
-    if args.models_txt is not None:
-        with open(args.models_txt, "r") as f:
-            models = [line.strip() for line in f]
-
-    predict(model_dir=args.model_dir, input_csv=args.input_csv, output_csv=args.output_csv, models=models)
+    predict(model_dir=args.model_dir, input_csv=args.input_csv, output_csv=args.output_csv, models_txt=args.models_txt)
 
 
 if __name__ == "__main__":
