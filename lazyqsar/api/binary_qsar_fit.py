@@ -6,10 +6,21 @@ import numpy as np
 
 from ..agnostic import LazyBinaryClassifier
 from ..qsar import DESCRIPTOR_TYPES, DESCRIPTORS_MODE
+from ..utils.logging import logger
 
 
-def prepare_files():
-    pass
+def prepare_files(models: list = None, path: str = None):
+    if path is None:
+        path = tempfile.mkdtemp()
+    models_txt = os.path.join(path, "_models.txt")
+    if models is not None:
+        with open(models_txt, "w") as f:
+            for m in models:
+                f.write(m + "\n")
+    data = {
+        "models_txt": os.path.abspath(models_txt) if models is not None else None,
+    }
+    return data
 
 
 def read_all_smiles(data_dir):
@@ -53,6 +64,7 @@ def fit(data_dir: str, model_dir: str, models_txt: str = None, mode: str = "defa
     data_dir = os.path.abspath(data_dir)
     model_dir = os.path.abspath(model_dir)
 
+    logger.info(f"Fitting models in mode '{mode}' | data: {data_dir} | output: {model_dir}")
 
     if os.path.exists(model_dir):
         raise FileExistsError(
@@ -66,15 +78,18 @@ def fit(data_dir: str, model_dir: str, models_txt: str = None, mode: str = "defa
         task_names = [t for t in models if t in task_names]
     if len(task_names) == 0:
         raise ValueError("No valid tasks found in the data directory.")
+    logger.info(f"Tasks to fit: {task_names}")
 
     descriptor_types = DESCRIPTORS_MODE[mode]
 
     all_smiles = read_all_smiles(data_dir)
     all_smiles2idx = {s: i for i, s in enumerate(all_smiles)}
+    logger.info(f"Found {len(all_smiles)} unique SMILES across all tasks")
 
     for descriptor_type in descriptor_types:
         if descriptor_type not in DESCRIPTOR_TYPES:
             raise Exception(f"Descriptor type {descriptor_type} is not supported.")
+        logger.info(f"Computing descriptors: {descriptor_type}")
         descriptor = DESCRIPTOR_TYPES[descriptor_type]()
         X = descriptor.transform(all_smiles)
         for task_name in task_names:
@@ -96,6 +111,7 @@ def fit(data_dir: str, model_dir: str, models_txt: str = None, mode: str = "defa
     for descriptor_type in descriptor_types:
         X = np.load(os.path.join(model_dir, f"{descriptor_type}.npy"))
         for task_name in task_names:
+            logger.info(f"Fitting task '{task_name}' with descriptor '{descriptor_type}'")
             idxs = [all_smiles2idx[s] for s in data[task_name][0]]
             y = data[task_name][1]
             X_task = X[idxs]
@@ -109,3 +125,4 @@ def fit(data_dir: str, model_dir: str, models_txt: str = None, mode: str = "defa
             )
         os.remove(os.path.join(model_dir, f"{descriptor_type}.json"))
         os.remove(os.path.join(model_dir, f"{descriptor_type}.npy"))
+    logger.success(f"All models saved to {model_dir}")
