@@ -46,7 +46,7 @@ def load_featurizer(model_dir, featurizer_name):
     return featurizer
 
 
-def predict(model_dir: str, input_csv: str, output_csv: str):
+def predict(model_dir: str, input_csv: str, output_csv: str, models: list = None):
 
     model_dir = os.path.abspath(model_dir)
     input_csv = os.path.abspath(input_csv)
@@ -54,6 +54,11 @@ def predict(model_dir: str, input_csv: str, output_csv: str):
 
     smiles_list = read_smiles(input_csv)
     tasks = get_task_names(model_dir)
+    if models is not None:
+        tasks = [t for t in models if t in tasks]
+    if len(tasks) == 0:
+        raise ValueError("No valid tasks found in the model directory.")
+    
     featurizers = get_featurizer_names(model_dir, tasks)
 
     results = {}

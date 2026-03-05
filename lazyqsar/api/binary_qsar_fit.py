@@ -28,6 +28,7 @@ def get_task_names(data_dir):
         if not fn.endswith(".csv"):
             continue
         task_names += [os.path.splitext(fn)[0]]
+    task_names = sorted(task_names)
     return task_names
 
 
@@ -43,7 +44,7 @@ def get_task_data(data_dir, task_name):
     return smiles_list, np.array(y, dtype=int)
 
 
-def fit(data_dir: str, model_dir: str, mode: str = "default"):
+def fit(data_dir: str, model_dir: str, mode: str = "default", models: list = None):
 
     data_dir = os.path.abspath(data_dir)
     model_dir = os.path.abspath(model_dir)
@@ -55,6 +56,11 @@ def fit(data_dir: str, model_dir: str, mode: str = "default"):
         )
 
     task_names = get_task_names(data_dir)
+    if models is not None:
+        task_names = [t for t in models if t in task_names]
+    if len(task_names) == 0:
+        raise ValueError("No valid tasks found in the data directory.")
+
     descriptor_types = DESCRIPTORS_MODE[mode]
 
     all_smiles = read_all_smiles(data_dir)

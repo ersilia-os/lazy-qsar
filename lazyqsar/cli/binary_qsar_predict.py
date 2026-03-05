@@ -24,9 +24,20 @@ def main():
         required=True,
         help="Output file to save the predictions.",
     )
+    parser.add_argument(
+        "--models_txt",
+        type=str,
+        default=None,
+        help="Path to a text file containing a list of specific models to use for prediction. If not provided, all models in the model directory will be used (alphabetically).",
+    )
     args = parser.parse_args()
 
-    predict(model_dir=args.model_dir, input_csv=args.input_csv, output_csv=args.output_csv)
+    models = None
+    if args.models_txt is not None:
+        with open(args.models_txt, "r") as f:
+            models = [line.strip() for line in f]
+
+    predict(model_dir=args.model_dir, input_csv=args.input_csv, output_csv=args.output_csv, models=models)
 
 
 if __name__ == "__main__":

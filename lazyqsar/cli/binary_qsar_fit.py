@@ -24,9 +24,20 @@ def main():
         required=True,
         help="Directory to save the fitted model.",
     )
+    parser.add_argument(
+        "--models_txt",
+        type=str,
+        default=None,
+        help="Path to a text file containing a list of specific models to fit. If not provided, all models in the data directory will be fitted (alphabetically)",
+    )
     args = parser.parse_args()
 
-    fit(data_dir=args.data_dir, model_dir=args.model_dir, mode=args.mode)
+    models = None
+    if args.models_txt is not None:
+        with open(args.models_txt, "r") as f:
+            models = [line.strip() for line in f]
+
+    fit(data_dir=args.data_dir, model_dir=args.model_dir, mode=args.mode, models=models)
 
 
 if __name__ == "__main__":
