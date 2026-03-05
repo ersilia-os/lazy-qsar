@@ -83,7 +83,7 @@ def ensure_rdkit(version=RDKIT_VERSION):
         import rdkit  # noqa: F401
 
         logger.info("rdkit already installed; Upg.")
-    except:
+    except ImportError:
         pass
 
     cmd = [sys.executable, "-m", "pip", "install", f"rdkit=={version}"]

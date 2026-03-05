@@ -50,7 +50,6 @@ def read_output_array(output_csv):
     return np.array(df)
 
 
-
 def get_task_names(model_dir):
     task_names = []
     for dn in os.listdir(model_dir):

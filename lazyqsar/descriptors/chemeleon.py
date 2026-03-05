@@ -14,7 +14,7 @@ except ImportError:
     ensure_torch_cpu()
     import torch
 try:
-    import chemeleon
+    import chemeleon  # noqa: F401
 except ImportError:
     ensure_chemprop()
     from chemprop import featurizers, nn

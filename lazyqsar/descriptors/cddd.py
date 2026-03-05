@@ -102,7 +102,7 @@ def remove_salt_stereo(sml, remover):
         sml = Chem.MolToSmiles(mol, isomericSmiles=False)
         if "." in sml:
             sml = keep_largest_fragment(sml)
-    except:
+    except Exception:
         return float("nan")
     return sml
 
@@ -123,7 +123,7 @@ def organic_filter(sml):
         atom_num_list = [atom.GetAtomicNum() for atom in m.GetAtoms()]
         is_organic = set(atom_num_list) <= ORGANIC_ATOM_SET
         return is_organic
-    except:
+    except Exception:
         return False
 
 
@@ -161,7 +161,7 @@ def filter_smiles(sml):
             return Chem.MolToSmiles(m)
         else:
             return float("nan")
-    except:
+    except Exception:
         return float("nan")
 
 
@@ -261,9 +261,9 @@ class InputPipelineInferEncode:
 
     def _input_generator(self):
         """Function that defines the generator."""
-        l = len(self.seq_list)
-        for ndx in range(0, l, self.batch_size):
-            samples = self.seq_list[ndx : min(ndx + self.batch_size, l)]
+        n = len(self.seq_list)
+        for ndx in range(0, n, self.batch_size):
+            samples = self.seq_list[ndx : min(ndx + self.batch_size, n)]
             samples = [self._seq_to_idx(seq) for seq in samples]
             seq_len_batch = np.array([len(entry) for entry in samples])
             max_length = seq_len_batch.max()
