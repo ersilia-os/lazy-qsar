@@ -1,6 +1,23 @@
 # Ersilia's LazyQSAR
 
-A library to build supervised QSAR models for chemistry quickly.
+A Python library for building supervised binary QSAR (Quantitative Structure-Activity Relationship) models quickly, with minimal configuration. LazyQSAR automates descriptor computation, feature selection, and hyperparameter tuning to produce robust ensemble models from chemical structures.
+
+**Two usage modes:**
+- **SMILES-based:** pass molecule SMILES strings directly; descriptors are computed automatically
+- **Descriptor-agnostic:** bring your own pre-computed descriptor arrays or HDF5 files
+
+## Table of Contents
+
+- [Installation](#installation)
+- [Python API](#use-as-a-python-api)
+  - [Binary Classification (SMILES)](#binary-classification)
+  - [Binary Classification (Custom Descriptors)](#custom-descriptors)
+  - [Saving and Loading Models](#saving-and-loading-models)
+  - [Tests and Benchmarks](#tests-and-benchmarks)
+- [CLI](#use-as-a-cli)
+- [How It Works](#how-it-works)
+- [Disclaimer](#disclaimer)
+- [About Us](#about-us)
 
 ## Installation
 
@@ -18,7 +35,7 @@ To use the built-in LazyQSAR descriptors, install the optional dependencies:
 python -m pip install -e .[descriptors]
 ```
 
-This will enable descriptor (featurizer) calculation. The first time you run LazyQSAR, it will download the Chemeleon and CDDD model checkpoints. To complete this setup in advance, run:
+This enables descriptor (featurizer) calculation. The first time you run LazyQSAR with deep-learning descriptors, it will download the Chemeleon and CDDD model checkpoints. To complete this setup in advance, run:
 
 ```bash
 lazyqsar-setup
@@ -34,11 +51,11 @@ LazyQSAR's binary classifier can run either with built-in descriptors (takes SMI
 
 Instantiate `LazyBinaryQSAR` with a mode of choice:
 
-| Mode | Descriptors used | Speed |
-|------|-----------------|-------|
-| `fast` | RDKit, Morgan fingerprints | Fastest, no deep-learning descriptors |
-| `default` | Chemeleon, RDKit, CDDD | Balanced |
-| `slow` | Chemeleon, Morgan, RDKit, CDDD | Most thorough |
+| Mode | Descriptors used | Optuna trials | Speed |
+|------|-----------------|--------------|-------|
+| `fast` | RDKit, Morgan fingerprints | 1 | Fastest, no deep-learning descriptors |
+| `default` | Chemeleon, RDKit, CDDD | 10 | Balanced |
+| `slow` | Chemeleon, Morgan, RDKit, CDDD | 30 | Most thorough |
 
 ```python
 from lazyqsar.qsar import LazyBinaryQSAR
@@ -67,7 +84,7 @@ y_hat = model.predict_proba(h5_file="descriptors.h5")[:, 1]
 
 ### Saving and loading models
 
-Models are saved as ONNX files by default, so inference only requires the ONNX runtime.
+Models are saved as ONNX files by default, so inference only requires the ONNX runtime (no scikit-learn dependency at prediction time).
 
 ```python
 # Save after training
@@ -111,6 +128,16 @@ python tests/test_binary_classification.py
 python tests/test_binary_classification.py --agnostic
 ```
 
+Additional flags:
+
+| Flag | Description |
+|------|-------------|
+| `--mode fast\|default\|slow` | Select descriptor mode |
+| `--agnostic` | Use descriptor-agnostic `LazyBinaryClassifier` |
+| `--no-onnx` | Skip ONNX conversion |
+| `--no-zip` | Skip ZIP archive save/load |
+| `--clean` | Remove temporary files after the run |
+
 #### Benchmarking
 
 The [benchmark repository](https://github.com/ersilia-os/zaira-chem-tdc-benchmark) contains performance results for the default estimators and descriptors on the TDCommons ADMET dataset.
@@ -137,10 +164,24 @@ lazyqsar-binary-fit --data_dir $DATA_DIR --model_dir $MODEL_DIR --models_txt mod
 lazyqsar-binary-predict --input_csv $INPUT_CSV --model_dir $MODEL_DIR --output_csv $OUTPUT_CSV
 ```
 
+The output CSV contains the input SMILES and one predicted probability column per task. Optionally use `--models_txt` to run predictions only for a subset of tasks.
+
+## How It Works
+
+LazyQSAR builds a weighted ensemble of up to 10 model variants per descriptor set:
+
+1. **Preprocessing** — missing value imputation, variance filtering, and scaling (StandardScaler for dense data, TF-IDF for sparse fingerprints)
+2. **Feature selection** — univariate (F-test) and model-based (permutation importance) selection pipelines
+3. **Latent variables** — optional PCA-based dimensionality reduction
+4. **Classifiers** — Logistic Regression, Linear SVM, Extra Trees, and MLP (PyTorch), each tuned via [Optuna](https://optuna.org)
+5. **Ensemble** — predictions are weighted by individual model ROC-AUC scores on out-of-fold validation
+
+All scikit-learn components are exported to ONNX for lightweight, dependency-free inference.
+
 ## Disclaimer
 
 This library is intended for quick QSAR modeling. For a more complete automated QSAR pipeline, refer to [Zaira Chem](https://github.com/ersilia-os/zaira-chem).
 
-## About us
+## About Us
 
 Learn about the [Ersilia Open Source Initiative](https://ersilia.io)!
