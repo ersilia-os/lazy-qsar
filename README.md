@@ -178,6 +178,50 @@ LazyQSAR builds a weighted ensemble of up to 10 model variants per descriptor se
 
 All scikit-learn components are exported to ONNX for lightweight, dependency-free inference.
 
+## Use in an Ersilia Model Hub template
+
+LazyQSAR models can be used inside an [Ersilia Model Hub template](https://github.com/ersilia-os/eos-template) structure. See [eos1lb5](https://github.com/ersilia-os/eos1lb5) for an example.
+
+Given a `checkpoints` folder with the following structure:
+
+```text
+checkpoints/
+├── task1/
+│   ├── cddd/
+│   │   ├── featurizer.json
+│   │   └── model.onnx
+│   ├── chemeleon/
+│   │   ├── featurizer.json
+│   │   └── model.onnx
+│   └── rdkit/
+│       ├── featurizer.json
+│       └── model.onnx
+└── task2/
+    ├── cddd/
+    ├── chemeleon/
+    └── rdkit/
+```
+
+The `code/main.py` script should look like this:
+
+```python
+import os
+import sys
+import csv
+
+from lazyqsar.api.binary_qsar_predict import predict
+
+root = os.path.dirname(os.path.abspath(__file__))
+checkpoints_dir = os.path.abspath(os.path.join(root, "..", "checkpoints"))
+
+input_file = sys.argv[1]
+output_file = sys.argv[2]
+
+predict(model_dir=checkpoints_dir, input_csv=input_file, output_csv=output_file)
+```
+
+Note that the order of the columns is alphabetical in the case presented. For a more controlled approach, look into the [eos1lb5](https://github.com/ersilia-os/eos1lb5) repository for an example.
+
 ## Disclaimer
 
 This library is intended for quick QSAR modeling. For a more complete automated QSAR pipeline, refer to [Zaira Chem](https://github.com/ersilia-os/zaira-chem).
