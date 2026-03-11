@@ -1,6 +1,6 @@
 import argparse
 
-from .api import fit
+from ..api.binary_qsar_fit import fit
 
 
 def main():

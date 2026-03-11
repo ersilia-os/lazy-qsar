@@ -1,6 +1,6 @@
 import argparse
 
-from .api import predict
+from ..api.binary_qsar_predict import predict
 
 
 def main():
