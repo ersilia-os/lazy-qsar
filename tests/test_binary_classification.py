@@ -2,14 +2,26 @@ import csv
 import os
 import shutil
 import random
+import time
 import h5py
 import argparse
 
 from lazyqsar.qsar import LazyBinaryQSAR
 from lazyqsar.agnostic import LazyBinaryClassifier
+from lazyqsar.descriptors.morgan import MorganFingerprint
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import roc_auc_score
 
 from lazyqsar.utils.logging import logger
+
+
+def rf_baseline_score(X_train, y_train, X_test, y_test):
+    rf = RandomForestClassifier(n_estimators=100, class_weight="balanced", random_state=42, n_jobs=-1)
+    t0 = time.time()
+    rf.fit(X_train, y_train)
+    elapsed = time.time() - t0
+    auc = roc_auc_score(y_test, rf.predict_proba(X_test)[:, 1])
+    return auc, elapsed
 
 
 root = os.path.dirname(os.path.abspath(__file__))
@@ -65,21 +77,27 @@ def fit_and_evaluate(mode="default", clean=False, onnx=True, zip=True):
         output_dir_ = output_dir
     logger.info("Binary classification task")
     smiles_train, y_train, smiles_test, y_test = load_dataset("bioavailability_ma")
+
+    logger.info("Computing RF baseline (Morgan fingerprints)...")
+    morgan = MorganFingerprint()
+    X_train_morgan = morgan.transform(smiles_train)
+    X_test_morgan = morgan.transform(smiles_test)
+    rf_auc, rf_time = rf_baseline_score(X_train_morgan, y_train, X_test_morgan, y_test)
+    logger.info("RF baseline ROC-AUC: {0:.4f} (train time: {1:.1f}s)".format(rf_auc, rf_time))
+
     logger.info("Using featurizer")
     model = LazyBinaryQSAR(mode=mode)
+    t0 = time.time()
     model.fit(smiles_list=smiles_train, y=y_train)
+    lazy_time = time.time() - t0
     model.save(output_dir_, onnx=onnx)
     model = LazyBinaryQSAR.load(output_dir_)
     y_pred = model.predict_proba(smiles_list=smiles_test)[:, 1]
-    y_pred_train = model.predict_proba(smiles_list=smiles_train)[:, 1]
-    logger.info("ROC-AUC train: {0}".format(roc_auc_score(y_train, y_pred_train)))
-    logger.info(
-        "Y pred train samples: {0}".format(random.sample(list(y_pred_train), 10))
-    )
+    lazy_auc = roc_auc_score(y_test, y_pred)
 
-    logger.info("ROC-AUC: {0}".format(roc_auc_score(y_test, y_pred)))
+    logger.info("ROC-AUC: {0:.4f} (LazyQSAR, {1:.1f}s) vs {2:.4f} (RF, {3:.1f}s)".format(
+        lazy_auc, lazy_time, rf_auc, rf_time))
     logger.info("Y pred samples: {0}".format(random.sample(list(y_pred), 10)))
-    y_pred_train = model.predict_proba(smiles_list=smiles_train)[:, 1]
     if clean:
         logger.info("Removing temporary files from {0}".format(output_dir_))
         shutil.rmtree(output_dir_)
@@ -92,14 +110,23 @@ def fit_and_evaluate_agnostic(mode="fast", clean=False, onnx=True, zip=True):
         output_dir_ = output_dir
     logger.info("Binary classification task")
     X_train, y_train, X_test, y_test = load_h5_dataset("bioavailability_ma")
+
+    logger.info("Computing RF baseline...")
+    rf_auc, rf_time = rf_baseline_score(X_train, y_train, X_test, y_test)
+    logger.info("RF baseline ROC-AUC: {0:.4f} (train time: {1:.1f}s)".format(rf_auc, rf_time))
+
     logger.info("Using agnostic model")
     model = LazyBinaryClassifier(mode=mode)
+    t0 = time.time()
     model.fit(X=X_train, y=y_train)
+    lazy_time = time.time() - t0
     model.save(output_dir_, onnx=onnx)
-    print("Saved model to {0}".format(output_dir))
     model = LazyBinaryClassifier.load(output_dir_)
     y_pred = model.predict_proba(X=X_test)[:, 1]
-    logger.info("ROC-AUC: {0}".format(roc_auc_score(y_test, y_pred)))
+    lazy_auc = roc_auc_score(y_test, y_pred)
+
+    logger.info("ROC-AUC: {0:.4f} (LazyQSAR, {1:.1f}s) vs {2:.4f} (RF, {3:.1f}s)".format(
+        lazy_auc, lazy_time, rf_auc, rf_time))
     logger.info("Y-test pred samples: {0}".format(random.sample(list(y_pred), 10)))
     if clean:
         logger.info("Removing temporary files from {0}".format(output_dir_))

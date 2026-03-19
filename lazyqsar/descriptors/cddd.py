@@ -13,8 +13,6 @@ from rdkit.Chem import Descriptors
 from rdkit import RDLogger
 from rdkit import __version__ as rdkit_version
 
-from FPSim2 import FPSim2Engine
-
 from pathlib import Path
 from urllib.request import urlretrieve
 
@@ -28,13 +26,19 @@ REMOVER = SaltRemover()
 ORGANIC_ATOM_SET = set([5, 6, 7, 8, 9, 15, 16, 17, 35, 53])
 
 
-assert rdkit_version == "2025.09.1", (
-    "Please use RDKit 2025.09.1"
-)  # TODO make it more flexible in the future
+if rdkit_version != "2025.09.1":
+    import warnings
+    warnings.warn(
+        f"CDDD was tested with RDKit 2025.09.1, but you have {rdkit_version}. "
+        "Results may differ.",
+        UserWarning,
+        stacklevel=2,
+    )
 
 
 class ChemblNearestNeighbour(object):
     def __init__(self, similarity_threshold=0.7):
+        from FPSim2 import FPSim2Engine
         self.similarity_threshold = similarity_threshold
         ckpt_dir = Path().home() / ".lazyqsar"
         ckpt_dir.mkdir(exist_ok=True)

@@ -2,8 +2,6 @@ import os
 import json
 import joblib
 import numpy as np
-import optuna
-import time
 from lazyqsar.utils._install_extras import ensure_torch_cpu
 
 try:
@@ -15,9 +13,8 @@ except ImportError:
 import torch.nn as nn
 import torch.optim as optim
 from sklearn.base import BaseEstimator, ClassifierMixin
-from sklearn.model_selection import train_test_split, StratifiedShuffleSplit
+from sklearn.model_selection import train_test_split
 from sklearn.metrics import roc_auc_score
-from sklearn.linear_model import LogisticRegression
 
 import onnx
 from onnx import helper, numpy_helper, TensorProto
@@ -27,10 +24,14 @@ from ...utils.logging import logger
 from ... import ONNX_TARGET_OPSET, ONNX_IR_VERSION
 
 
-MAX_NUM_TRIALS = 50
-
 NUM_EPOCHS = 30
 BATCH_SIZE = 32
+
+MLP_CONFIGS = [
+    {"n_hidden": 0, "scale1": 0.5, "scale2": 0.5, "dropout": 0.0, "lr": 5e-3},
+    {"n_hidden": 1, "scale1": 0.5, "scale2": 0.5, "dropout": 0.2, "lr": 1e-3},
+    {"n_hidden": 2, "scale1": 0.3, "scale2": 0.5, "dropout": 0.3, "lr": 5e-4},
+]
 
 
 class HeadNN(nn.Module):
@@ -74,75 +75,57 @@ class HeadNN(nn.Module):
         return self.net(x).squeeze(-1)
 
 
-def find_params(X, y, num_trials):
-    """
-    Run Optuna hyperparameter optimization for HeadNN.
-    Evaluation metric: ROC AUC.
-    """
-    n_trials = min(num_trials, MAX_NUM_TRIALS)
+def find_params(X, y):
+    logger.info(f"Evaluating {len(MLP_CONFIGS)} MLP configs.")
     epochs = NUM_EPOCHS
     batch_size = BATCH_SIZE
+    input_dim = X.shape[1]
 
-    def objective(trial):
-        input_dim = X.shape[1]
-        n_hidden = trial.suggest_int("n_hidden", 0, 2)
-        scale1 = trial.suggest_float("scale1", 0.1, 0.5)
-        scale2 = trial.suggest_float("scale2", 0.1, 0.5)
-        dropout = trial.suggest_float("dropout", 0.0, 0.5)
-        lr = trial.suggest_float("lr", 1e-4, 1e-1, log=True)
+    X_train, X_val, y_train, y_val = train_test_split(
+        X, y, test_size=0.2, stratify=y, random_state=42
+    )
 
-        X_train, X_val, y_train, y_val = train_test_split(
-            X, y, test_size=0.2, stratify=y
-        )
+    X_train_t = torch.tensor(X_train, dtype=torch.float32)
+    y_train_t = torch.tensor(y_train, dtype=torch.float32)
+    X_val_t = torch.tensor(X_val, dtype=torch.float32)
+    pos_weight = torch.tensor(
+        [(len(y_train) - y_train.sum()) / y_train.sum()], dtype=torch.float32
+    )
+    loss_fn = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
 
-        model = HeadNN(input_dim, n_hidden, scale1, scale2, dropout)
-        optimizer = optim.Adam(model.parameters(), lr=lr)
-
-        pos_weight = torch.tensor(
-            [(len(y_train) - y_train.sum()) / y_train.sum()], dtype=torch.float32
-        )
-        loss_fn = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
-
-        X_train_t = torch.tensor(X_train, dtype=torch.float32)
-        y_train_t = torch.tensor(y_train, dtype=torch.float32)
-        X_val_t = torch.tensor(X_val, dtype=torch.float32)
-
-        for epoch in range(epochs):
+    results = []
+    for cfg in MLP_CONFIGS:
+        torch.manual_seed(42)
+        model = HeadNN(input_dim, cfg["n_hidden"], cfg["scale1"], cfg["scale2"], cfg["dropout"])
+        optimizer = torch.optim.Adam(model.parameters(), lr=cfg["lr"])
+        for _ in range(epochs):
             model.train()
             for i in range(0, len(X_train_t), batch_size):
-                xb = X_train_t[i : i + batch_size]
-                yb = y_train_t[i : i + batch_size]
+                xb = X_train_t[i: i + batch_size]
+                yb = y_train_t[i: i + batch_size]
                 optimizer.zero_grad()
-                logits = model(xb)
-                loss = loss_fn(logits, yb)
+                loss = loss_fn(model(xb), yb)
                 loss.backward()
                 optimizer.step()
-
         model.eval()
         with torch.no_grad():
             logits_val = model(X_val_t).cpu().numpy()
             preds_val = 1 / (1 + np.exp(-logits_val))
         auc = roc_auc_score(y_val, preds_val)
-        return auc
+        results.append(float(auc))
+        logger.info(f"  MLP config {cfg}: AUC={auc:.4f}")
 
-    study = optuna.create_study(direction="maximize")
-    study.enqueue_trial(
-        {"n_hidden": 1, "scale1": 0.5, "scale2": 0.5, "dropout": 0.2, "lr": 1e-3}
-    )
-    study.optimize(objective, n_trials=n_trials)
-
-    results = {
-        "n_hidden": study.best_params["n_hidden"],
-        "scale1": study.best_params["scale1"],
-        "scale2": study.best_params["scale2"],
-        "dropout": study.best_params["dropout"],
-        "lr": study.best_params["lr"],
+    best_idx = int(np.argmax(results))
+    best_cfg = MLP_CONFIGS[best_idx]
+    cv_score = results[best_idx]
+    logger.info(f"Best MLP config: {best_cfg} (AUC: {cv_score:.4f})")
+    return {
+        **best_cfg,
         "epochs": epochs,
         "batch_size": batch_size,
-        "input_dim": X.shape[1],
+        "input_dim": input_dim,
+        "cv_score": cv_score,
     }
-
-    return results
 
 
 class Head(BaseEstimator, ClassifierMixin):
@@ -161,6 +144,7 @@ class Head(BaseEstimator, ClassifierMixin):
         epochs=30,
         batch_size=32,
         device=None,
+        cv_score=None,
     ):
         self.input_dim = input_dim
         self.n_hidden = n_hidden
@@ -171,10 +155,12 @@ class Head(BaseEstimator, ClassifierMixin):
         self.epochs = epochs
         self.batch_size = batch_size
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self.cv_score = cv_score
         self.model = None
 
     def _fit(self, X, y):
         logger.info("Fitting the MLP model...")
+        torch.manual_seed(42)
         self.model = HeadNN(
             self.input_dim, self.n_hidden, self.scale1, self.scale2, self.dropout
         ).to(self.device)
@@ -201,37 +187,10 @@ class Head(BaseEstimator, ClassifierMixin):
                 optimizer.step()
         return self
 
-    def _calibrate(self, X, y):
-        logger.info("Calibrating the model using Platt scaling...")
-        splitter = StratifiedShuffleSplit(n_splits=5, test_size=0.2, random_state=42)
-        y_hat = []
-        y_true = []
-        t0 = time.time()
-        for train_idx, val_idx in splitter.split(X, y):
-            X_train, X_val = X[train_idx], X[val_idx]
-            y_train, y_val = y[train_idx], y[val_idx]
-            self._fit(X_train, y_train)
-            logits_val = self.predict_raw(X_val)
-            y_hat += list(logits_val)
-            y_true += list(y_val)
-            t1 = time.time()
-            if (t1 - t0) > 60:
-                break
-        y_hat = np.array(y_hat)
-        logger.debug("Shape of y_hat: {}".format(y_hat.shape))
-        y_true = np.array(y_true)
-        logger.debug("Shape of y_true: {}".format(y_true.shape))
-        self.calibrator = LogisticRegression(class_weight="balanced")
-        self.calibrator.fit(y_hat.reshape(-1, 1), y_true)
-        self.score = roc_auc_score(
-            y_true, self.calibrator.predict_proba(y_hat.reshape(-1, 1))[:, 1]
-        )
-        logger.debug("Done with calibration! Score: {:.4f}".format(self.score))
-        return self.score
-
     def fit(self, X, y):
-        self._calibrate(X, y)
         self._fit(X, y)
+        self.score = self.cv_score if self.cv_score is not None else 0.5
+        logger.info(f"MLP head score (from CV): {self.score:.4f}")
         return self
 
     def predict_raw(self, X):
@@ -242,9 +201,10 @@ class Head(BaseEstimator, ClassifierMixin):
         return logits
 
     def predict_proba(self, X):
+        # BCEWithLogitsLoss trains HeadNN to output log-odds; sigmoid gives exact probability
         logits = self.predict_raw(X)
-        probs = self.calibrator.predict_proba(logits.reshape(-1, 1))
-        return probs
+        p = 1.0 / (1.0 + np.exp(-logits))
+        return np.vstack([1 - p, p]).T
 
     def predict(self, X):
         return (self.predict_proba(X)[:, 1] >= 0.5).astype(int)
@@ -265,13 +225,11 @@ class Head(BaseEstimator, ClassifierMixin):
             "batch_size": self.batch_size,
             "device": self.device,
             "score": self.score,
+            "cv_score": self.cv_score,
         }
         meta_path = os.path.join(model_dir, f"{name}_metadata.json")
         with open(meta_path, "w") as f:
             json.dump(metadata, f)
-        joblib.dump(
-            self.calibrator, os.path.join(model_dir, f"{name}_calibrator.joblib")
-        )
 
     @classmethod
     def load(cls, name: str, model_dir: str):
@@ -293,32 +251,28 @@ class Head(BaseEstimator, ClassifierMixin):
         model.load_state_dict(torch.load(model_path, map_location=device))
 
         obj = cls(
-            input_dim, n_hidden, scale1, scale2, dropout, lr, epochs, batch_size, device
+            input_dim, n_hidden, scale1, scale2, dropout, lr, epochs, batch_size, device,
+            cv_score=metadata.get("cv_score"),
         )
         obj.model = model
-
-        obj.calibrator = joblib.load(
-            os.path.join(model_dir, f"{name}_calibrator.joblib")
-        )
         obj.score = metadata.get("score", None)
-
         return obj
 
 
 def convert_to_onnx(name: str, model_dir: str):
     """
-    Export Torch head -> logits and append Platt calibrator in ONNX.
+    Export Torch head -> logits, then append Sigmoid + Reshape to produce
+    calibrated probabilities. BCEWithLogitsLoss trains HeadNN to output log-odds,
+    so sigmoid gives the exact probability.
     Final output: flat 1D vector [batch_size].
     """
     head = Head.load(name, model_dir)
-    model = head.model
-    model = model.to("cpu")
+    model = head.model.to("cpu")
     model.eval()
 
     onnx_path = os.path.join(model_dir, f"{name}.onnx")
     dummy_input = torch.randn(1, head.input_dim, dtype=torch.float32, device="cpu")
 
-    # 1) Export Torch model (produces logits_{name})
     torch.onnx.export(
         model,
         dummy_input,
@@ -332,60 +286,31 @@ def convert_to_onnx(name: str, model_dir: str):
         opset_version=ONNX_TARGET_OPSET,
     )
 
-    # 2) Patch ONNX: add Platt = Mul + Add + Sigmoid (+ Reshape to 1D)
     onnx_model = onnx.load(onnx_path)
 
-    coef = np.asarray(head.calibrator.coef_, dtype=np.float32).reshape(
-        1,
-    )  # scalar
-    intercept = np.asarray(head.calibrator.intercept_, dtype=np.float32).reshape(
-        1,
-    )
     shape1d = np.array([-1], dtype=np.int64)
-
-    onnx_model.graph.initializer.extend(
-        [
-            numpy_helper.from_array(coef, name=f"calib_coef_{name}"),
-            numpy_helper.from_array(intercept, name=f"calib_intercept_{name}"),
-            numpy_helper.from_array(shape1d, name=f"shape1d_{name}"),
-        ]
+    onnx_model.graph.initializer.append(
+        numpy_helper.from_array(shape1d, name=f"shape1d_{name}")
     )
 
-    mul_node = helper.make_node(
-        "Mul",
-        inputs=[f"logits_{name}", f"calib_coef_{name}"],
-        outputs=[f"logits_scaled_{name}"],
-        name=f"Calib_Mul_{name}",
-    )
-    add_node = helper.make_node(
-        "Add",
-        inputs=[f"logits_scaled_{name}", f"calib_intercept_{name}"],
-        outputs=[f"logits_shifted_{name}"],
-        name=f"Calib_Add_{name}",
-    )
     sigmoid_node = helper.make_node(
         "Sigmoid",
-        inputs=[f"logits_shifted_{name}"],
-        outputs=[f"probs_2d_{name}"],
-        name=f"Calib_Sigmoid_{name}",
+        inputs=[f"logits_{name}"],
+        outputs=[f"probs_{name}"],
+        name=f"Sigmoid_{name}",
     )
     reshape_node = helper.make_node(
         "Reshape",
-        inputs=[f"probs_2d_{name}", f"shape1d_{name}"],
+        inputs=[f"probs_{name}", f"shape1d_{name}"],
         outputs=[f"output_{name}"],
-        name=f"Output_Reshape1D_{name}",
+        name=f"Reshape1D_{name}",
     )
 
-    onnx_model.graph.node.extend([mul_node, add_node, sigmoid_node, reshape_node])
+    onnx_model.graph.node.extend([sigmoid_node, reshape_node])
 
-    # Replace graph outputs with our final 1D tensor
     del onnx_model.graph.output[:]
-    onnx_model.graph.output.extend(
-        [
-            helper.make_tensor_value_info(
-                f"output_{name}", TensorProto.FLOAT, ["batch_size"]
-            )
-        ]
+    onnx_model.graph.output.append(
+        helper.make_tensor_value_info(f"output_{name}", TensorProto.FLOAT, ["batch_size"])
     )
 
     onnx_model.graph.name = f"{name}"
@@ -393,5 +318,5 @@ def convert_to_onnx(name: str, model_dir: str):
 
     onnx.checker.check_model(onnx_model)
     onnx.save(onnx_model, onnx_path)
-    logger.info(f"ONNX model with calibrator saved to {onnx_path}")
+    logger.info(f"MLP ONNX saved to {onnx_path}")
     return onnx_path

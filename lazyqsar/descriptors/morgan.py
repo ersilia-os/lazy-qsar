@@ -1,4 +1,5 @@
 import json
+import multiprocessing
 import os
 import numpy as np
 from rdkit import Chem
@@ -7,6 +8,27 @@ from rdkit import RDLogger
 from ..utils.logging import logger
 
 RDLogger.DisableLog("rdApp.*")
+
+# Module-level worker state (initialised once per worker process)
+_worker_mfpgen = None
+_worker_fpSize = None
+
+
+def _init_morgan_worker(radius, fpSize):
+    global _worker_mfpgen, _worker_fpSize
+    from rdkit.Chem import rdFingerprintGenerator as _rfg
+    _worker_mfpgen = _rfg.GetMorganGenerator(radius=radius, fpSize=fpSize)
+    _worker_fpSize = fpSize
+
+
+def _compute_morgan_worker(smiles):
+    from rdkit import Chem as _Chem
+    mol = _Chem.MolFromSmiles(smiles)
+    v = _worker_mfpgen.GetCountFingerprint(mol)
+    data = [0] * _worker_fpSize
+    for i, val in v.GetNonzeroElements().items():
+        data[i] = val if val < 255 else 255
+    return data
 
 
 class MorganFingerprint(object):
@@ -29,34 +51,22 @@ class MorganFingerprint(object):
         )
         self.features = ["dim_{0}".format(i) for i in range(self.n_dim)]
 
-    def _clip_sparse(self, vect, nbits):
-        data = [0] * nbits
-        for i, v in vect.GetNonzeroElements().items():
-            data[i] = v if v < 255 else 255
-        return data
-
-    def _morganfp(self, smiles):
-        v_ = []
-        for smile in smiles:
-            mol = self._mol_from_smiles(smile)
-            v = self.mfpgen.GetCountFingerprint(mol)
-            v = self._clip_sparse(v, self.n_dim)
-            v_.append(v)
-        return np.array(v_, dtype=int)
-
     def _mol_from_smiles(self, smiles):
         return Chem.MolFromSmiles(smiles)
 
     def transform(self, smiles):
-        chunk_size = 100_000
-        R = []
-        logger.debug(f"Transforming Morgan fingerprints in chunks of {chunk_size}...")
-        for i in range(0, len(smiles), chunk_size):
-            chunk = smiles[i : i + chunk_size]
-            X_chunk = self._morganfp(chunk)
-            R += [X_chunk]
-            logger.debug(f"Transformed {len(R) * chunk_size} samples so far...")
-        return np.concatenate(R, axis=0)
+        n_workers = os.cpu_count() or 1
+        logger.debug(
+            f"Transforming Morgan fingerprints using {n_workers} parallel workers..."
+        )
+        chunksize = max(1, len(smiles) // (n_workers * 4))
+        with multiprocessing.Pool(
+            n_workers,
+            initializer=_init_morgan_worker,
+            initargs=(self.radius, self.n_dim),
+        ) as pool:
+            results = pool.map(_compute_morgan_worker, smiles, chunksize=chunksize)
+        return np.array(results, dtype=np.uint8)
 
     def save(self, dir_name: str):
         if not os.path.exists(dir_name):

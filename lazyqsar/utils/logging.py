@@ -1,29 +1,6 @@
 import logging
-import optuna
 from rich.logging import RichHandler
 from loguru import logger as _loguru
-
-
-class InterceptHandler(logging.Handler):
-    def emit(self, record):
-        try:
-            level = _loguru.level(record.levelname).name
-        except ValueError:
-            level = record.levelno
-        _loguru.opt(depth=6, exception=record.exc_info).log(level, record.getMessage())
-
-
-def setup_optuna_logging(level=logging.INFO):
-    optuna.logging.disable_default_handler()
-    optuna.logging.enable_propagation()
-    lg = logging.getLogger("optuna")
-    lg.handlers = [InterceptHandler()]
-    lg.setLevel(level)
-
-
-setup_optuna_logging(logging.INFO)
-
-ROTATION = "10 MB"
 
 _loguru.remove()
 _loguru.level("DEBUG", color="<cyan><bold>")

@@ -1,6 +1,7 @@
 import os
 import json
 import numpy as np
+from concurrent.futures import ThreadPoolExecutor
 from rdkit import Chem
 from ..utils.logging import logger
 
@@ -52,12 +53,13 @@ class _CheMeleonFingerprint:
             self.model.to(device=device)
 
     def __call__(self, molecules: list[str | Mol]) -> np.ndarray:
-        bmg = BatchMolGraph(
-            [
-                self.featurizer(MolFromSmiles(m) if isinstance(m, str) else m)
-                for m in molecules
-            ]
-        )
+        def _featurize(m):
+            mol = MolFromSmiles(m) if isinstance(m, str) else m
+            return self.featurizer(mol)
+
+        with ThreadPoolExecutor() as ex:
+            mol_graphs = list(ex.map(_featurize, molecules))
+        bmg = BatchMolGraph(mol_graphs)
         bmg.to(device=self.model.device)
         return self.model.fingerprint(bmg).numpy(force=True)
 

@@ -51,11 +51,11 @@ LazyQSAR's binary classifier can run either with built-in descriptors (takes SMI
 
 Instantiate `LazyBinaryQSAR` with a mode of choice:
 
-| Mode | Descriptors used | Optuna trials | Speed |
-|------|-----------------|--------------|-------|
-| `fast` | RDKit, Morgan fingerprints | 1 | Fastest, no deep-learning descriptors |
-| `default` | Chemeleon, RDKit, CDDD | 10 | Balanced |
-| `slow` | Chemeleon, Morgan, RDKit, CDDD | 30 | Most thorough |
+| Mode | Descriptors used | Speed |
+|------|-----------------|-------|
+| `fast` | RDKit, Morgan fingerprints | Fastest, no deep-learning descriptors |
+| `default` | Chemeleon, RDKit, CDDD | Balanced |
+| `slow` | Chemeleon, Morgan, RDKit, CDDD | Most thorough |
 
 ```python
 from lazyqsar.qsar import LazyBinaryQSAR
@@ -168,15 +168,15 @@ The output CSV contains the input SMILES and one predicted probability column pe
 
 ## How It Works
 
-LazyQSAR builds a weighted ensemble of up to 10 model variants per descriptor set:
+LazyQSAR builds a weighted ensemble of up to 8 model variants per descriptor set:
 
 1. **Preprocessing** — missing value imputation, variance filtering, and scaling (StandardScaler for dense data, TF-IDF for sparse fingerprints)
-2. **Feature selection** — univariate (F-test) and model-based (permutation importance) selection pipelines
-3. **Latent variables** — optional PCA-based dimensionality reduction
-4. **Classifiers** — Logistic Regression, Linear SVM, Extra Trees, and MLP (PyTorch), each tuned via [Optuna](https://optuna.org)
-5. **Ensemble** — predictions are weighted by individual model ROC-AUC scores on out-of-fold validation
+2. **Feature selection** — univariate F-test (`fs`) and RandomForest-based (`mfs`) selection pipelines run in parallel, producing two reduced feature sets
+3. **Latent variables** — optional SparseRandomProjection for dimensionality reduction, with the number of components chosen by PCA explained-variance heuristics
+4. **Classifiers** — Logistic Regression, Linear SVM, Extra Trees, and MLP (PyTorch); each head is tuned over a small fixed grid of hyperparameter configurations using stratified cross-validation
+5. **Ensemble** — predictions are averaged with weights derived from each head's cross-validation ROC-AUC score, with shrinkage toward uniform weights at small sample sizes
 
-All scikit-learn components are exported to ONNX for lightweight, dependency-free inference.
+The active set of heads is selected automatically based on dataset size and feature dimensionality. All components are exported to ONNX for lightweight, dependency-free inference.
 
 ## Use in an Ersilia Model Hub template
 

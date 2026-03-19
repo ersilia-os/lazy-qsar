@@ -1,11 +1,12 @@
 import os
 import numpy as np
-import optuna
+from concurrent.futures import ThreadPoolExecutor
 import json
 import warnings
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.feature_selection import SelectFromModel
-from sklearn.model_selection import StratifiedKFold, cross_val_score
+from sklearn.model_selection import StratifiedShuffleSplit
+from sklearn.metrics import roc_auc_score
 from sklearn.pipeline import Pipeline
 
 import onnx
@@ -18,62 +19,37 @@ warnings.filterwarnings("ignore", category=UserWarning)
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 
 
-MIN_FEATURES = 4
-MAX_FEATURES = 2048
+N_TREES = 20
 
-MAX_NUM_TRIALS = 10
+THRESHOLD_OPTIONS = ["mean", "1.25*mean", "1.5*mean", "2*mean"]
+def find_params(X, y=None):
+    logger.info(f"Evaluating {len(THRESHOLD_OPTIONS)} SelectFromModel thresholds.")
 
-N_TREES = 100
+    cv = StratifiedShuffleSplit(n_splits=3, test_size=0.2, random_state=42)
 
+    def eval_threshold(threshold):
+        pipe = Pipeline([
+            ("select", SelectFromModel(
+                RandomForestClassifier(n_estimators=N_TREES, random_state=42, n_jobs=-1, class_weight="balanced"),
+                threshold=threshold, prefit=False,
+            )),
+            ("clf", RandomForestClassifier(
+                n_estimators=N_TREES, random_state=42, n_jobs=-1, class_weight="balanced",
+            )),
+        ])
+        scores = []
+        for tr, va in cv.split(X, y):
+            pipe.fit(X[tr], y[tr])
+            scores.append(roc_auc_score(y[va], pipe.predict_proba(X[va])[:, 1]))
+        return float(np.mean(scores))
 
-def find_params(X, y, num_trials):
-    num_trials = min(num_trials, MAX_NUM_TRIALS)
+    with ThreadPoolExecutor(max_workers=len(THRESHOLD_OPTIONS)) as ex:
+        results = list(ex.map(eval_threshold, THRESHOLD_OPTIONS))
 
-    options = ["mean", "median", "1.25*mean", "1.5*mean", "2*mean"]
-
-    num_trials = min(num_trials, len(options))
-
-    logger.info("Starting hyperparameter optimization for SelectFromModel threshold.")
-
-    def objective(trial):
-        threshold = trial.suggest_categorical("threshold", options)
-
-        model = RandomForestClassifier(
-            n_estimators=N_TREES, random_state=42, n_jobs=-1, class_weight="balanced"
-        )
-
-        selector = SelectFromModel(model, threshold=threshold, prefit=False)
-
-        pipe = Pipeline(
-            [
-                ("select", selector),
-                (
-                    "clf",
-                    RandomForestClassifier(
-                        n_estimators=N_TREES,
-                        random_state=42,
-                        n_jobs=-1,
-                        class_weight="balanced",
-                    ),
-                ),
-            ]
-        )
-
-        cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-        scores = cross_val_score(pipe, X, y, cv=cv, scoring="roc_auc", n_jobs=-1)
-
-        return np.mean(scores)
-
-    study = optuna.create_study(direction="maximize")
-    study.optimize(objective, n_trials=num_trials, show_progress_bar=True)
-
-    best_params = study.best_params
-    logger.info(f"Best threshold found: {best_params['threshold']}")
-
-    return best_params
-
-
-N_TREES = 100
+    best_idx = int(np.argmax(results))
+    best_threshold = THRESHOLD_OPTIONS[best_idx]
+    logger.info(f"Best threshold: {best_threshold} (AUC: {results[best_idx]:.4f})")
+    return {"threshold": best_threshold}
 
 
 class FeatureSelector:
@@ -82,7 +58,9 @@ class FeatureSelector:
 
     def fit(self, X, y):
         if self.threshold is None:
-            self.selected_idx_ = np.arange(X.shape[1])
+            self.selected_idx_ = np.arange(X.shape[1]).tolist()
+            self.input_dim = X.shape[1]
+            self.output_dim = X.shape[1]
             logger.info("No feature selection performed, using all features.")
             return self
 

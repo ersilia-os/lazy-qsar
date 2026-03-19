@@ -18,17 +18,17 @@ from ..utils.logging import logger
 
 def find_params(X):
     """
-    Checks if the input data is sparse.
+    Detect whether the input data is sparse (>90% zeros).
 
     Parameters
     ----------
     X : ndarray
-        Input data.
+        Input data of shape (n_samples, n_features).
 
     Returns
     -------
-    bool
-        True if the data is sparse, False otherwise.
+    dict
+        ``{"is_sparse": bool}`` — True when the zero fraction exceeds 0.9.
     """
     tot = X.shape[0] * X.shape[1]
     n_zero = np.sum(X == 0)

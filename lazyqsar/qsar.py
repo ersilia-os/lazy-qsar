@@ -1,7 +1,9 @@
+import hashlib
 import os
 import json
 import shutil
 import numpy as np
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .descriptors.chemeleon import ChemeleonDescriptor
 from .descriptors.morgan import MorganFingerprint
@@ -11,7 +13,6 @@ from .descriptors.cddd import ContinuousDataDrivenDescriptor
 from .agnostic import LazyEclecticBinaryClassifier
 from .agnostic import LazyBinaryClassifierArtifact
 from .agnostic import convert_to_onnx
-from .agnostic import NUM_TRIALS_MODES
 
 from .utils.logging import logger
 
@@ -39,14 +40,20 @@ class ArtifactWrapper(object):
         self.weights = weights
 
     def predict_proba(self, smiles_list):
-        R = []
-        for descriptor, artifact in zip(self.descriptors, self.artifacts):
-            X = descriptor.transform(smiles_list)
-            y_hat_1 = np.array(artifact.predict_proba(X))[:, 1]
-            R += [y_hat_1]
-        y_hat_1 = np.average(np.array(R), axis=0, weights=self.weights)
-        y_hat_0 = 1 - y_hat_1
-        return np.vstack((y_hat_0, y_hat_1)).T
+        n = len(self.descriptors)
+        y_hats = [None] * n
+
+        def _predict_one(i):
+            X = self.descriptors[i].transform(smiles_list)
+            return np.array(self.artifacts[i].predict_proba(X))[:, 1]
+
+        with ThreadPoolExecutor(max_workers=n) as ex:
+            futures = {ex.submit(_predict_one, i): i for i in range(n)}
+            for future in as_completed(futures):
+                y_hats[futures[future]] = future.result()
+
+        y_hat_1 = np.average(np.array(y_hats), axis=0, weights=self.weights)
+        return np.vstack((1 - y_hat_1, y_hat_1)).T
 
     def predict(self, smiles_list, cutoff=0.5):
         y_hat = self.predict_proba(smiles_list)[:, 1]
@@ -65,9 +72,20 @@ class LazyBinaryQSAR(object):
         self.descriptors = [
             DESCRIPTOR_TYPES[descriptor_type]() for descriptor_type in descriptor_types
         ]
-        self.num_trials = NUM_TRIALS_MODES[mode]
         self.is_saved = False
         self.weights = None
+        self._feature_cache = {}  # {(descriptor_idx, smiles_hash): X}
+
+    def _smiles_hash(self, smiles_list):
+        return hashlib.md5("\x00".join(smiles_list).encode()).hexdigest()
+
+    def _transform_cached(self, i, smiles_list):
+        key = (i, self._smiles_hash(smiles_list))
+        if key not in self._feature_cache:
+            self._feature_cache[key] = self.descriptors[i].transform(smiles_list)
+        else:
+            logger.debug(f"Using cached features for descriptor: {self.descriptor_types[i]}")
+        return self._feature_cache[key]
 
     def _assign_weights(self):
         scores = []
@@ -79,39 +97,38 @@ class LazyBinaryQSAR(object):
 
     def fit(self, smiles_list, y):
         y = np.array(y, dtype=int)
+        n = len(self.descriptors)
+        Xs = [None] * n
+        with ThreadPoolExecutor(max_workers=n) as ex:
+            futures = {ex.submit(self._transform_cached, i, smiles_list): i for i in range(n)}
+            for future in as_completed(futures):
+                Xs[futures[future]] = future.result()
         self.models = []
-        for i, descriptor in enumerate(self.descriptors):
+        for i in range(n):
             logger.info(f"Fitting with descriptor: {self.descriptor_types[i]}")
-            X = descriptor.transform(smiles_list)
-            model = LazyEclecticBinaryClassifier(num_trials=self.num_trials)
-            model.fit(X=X, y=y)
+            model = LazyEclecticBinaryClassifier()
+            model.fit(X=Xs[i], y=y)
             self.models += [model]
         self._assign_weights()
 
     def predict_proba(self, smiles_list):
-        R = []
-        for i, descriptor in enumerate(self.descriptors):
-            X = descriptor.transform(smiles_list)
-            y_hat_1 = np.array(self.models[i].predict(X=X))
-            R += [y_hat_1]
-        R = np.array(R)
-        y_hat_1 = []
-        for i in range(R.shape[0]):
-            row = R[:, i]
-            y_hat_1 += [np.average(row, weights=self.weights)]
-        y_hat_1 = np.array(y_hat_1)
-        y_hat_0 = 1 - y_hat_1
-        return np.vstack((y_hat_0, y_hat_1)).T
+        n = len(self.descriptors)
+        y_hats = [None] * n
+
+        def _predict_one(i):
+            X = self._transform_cached(i, smiles_list)
+            return np.array(self.models[i].predict(X=X))
+
+        with ThreadPoolExecutor(max_workers=n) as ex:
+            futures = {ex.submit(_predict_one, i): i for i in range(n)}
+            for future in as_completed(futures):
+                y_hats[futures[future]] = future.result()
+
+        y_hat_1 = np.average(np.array(y_hats), axis=0, weights=self.weights)
+        return np.vstack((1 - y_hat_1, y_hat_1)).T
 
     def predict(self, smiles_list, threshold=0.5):
-        y_hat = self.predict_proba(smiles_list)[:, 1]
-        y_bin = []
-        for y in y_hat:
-            if y >= threshold:
-                y_bin.append(1)
-            else:
-                y_bin.append(0)
-        return np.array(y_bin, dtype=int)
+        return (self.predict_proba(smiles_list)[:, 1] >= threshold).astype(int)
 
     def save_raw(self, model_dir: str):
         for i, descriptor_name in enumerate(self.descriptor_types):
@@ -148,15 +165,6 @@ class LazyBinaryQSAR(object):
                 raise FileNotFoundError(
                     f"Descriptor directory {model_subdir} does not exist."
                 )
-            with open(os.path.join(model_subdir, "metadata.json"), "r") as f:
-                metadata = json.load(f)
-            num_trials = metadata["num_trials"]
-            mode_ = None
-            for k, v in NUM_TRIALS_MODES.items():
-                if v == num_trials:
-                    mode_ = k
-            if mode_ is None or mode_ != mode:
-                raise Exception("Inconsistent mode found in model directories.")
             descriptors += [DESCRIPTOR_TYPES[descriptor_type].load(model_subdir)]
             models += [LazyEclecticBinaryClassifier.load(model_subdir)]
 

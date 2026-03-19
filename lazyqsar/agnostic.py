@@ -1,5 +1,4 @@
 import os
-import json
 import shutil
 import numpy as np
 
@@ -10,21 +9,13 @@ from .assemblers.eclectic_binary_classifier import (
 from .artifacts.artifact_binary_classifier import LazyBinaryClassifierArtifact
 
 
-NUM_TRIALS_MODES = {"default": 10, "fast": 1, "slow": 30}
-
-
 class LazyBinaryClassifier(object):
     def __init__(self, mode: str = "default"):
-        if mode not in NUM_TRIALS_MODES:
-            raise ValueError(
-                f"Mode {mode} not recognized. Available modes: {list(NUM_TRIALS_MODES.keys())}"
-            )
-        self.num_trials = NUM_TRIALS_MODES[mode]
         self.is_saved = False
 
     def fit(self, X=None, y=None, h5_file=None, h5_idxs=None):
         y = np.array(y, dtype=int)
-        self.model = LazyEclecticBinaryClassifier(num_trials=self.num_trials)
+        self.model = LazyEclecticBinaryClassifier()
         self.model.fit(X=X, y=y, h5_file=h5_file, h5_idxs=h5_idxs)
 
     def predict_proba(self, X=None, h5_file=None, h5_idxs=None):
@@ -48,16 +39,8 @@ class LazyBinaryClassifier(object):
 
     @classmethod
     def load_raw(cls, model_dir: str):
-        with open(os.path.join(model_dir, "metadata.json"), "r") as f:
-            metadata = json.load(f)
-        num_trials = metadata["num_trials"]
-        mode = None
-        for k, v in NUM_TRIALS_MODES.items():
-            if v == num_trials:
-                mode = k
-        obj = cls(mode=mode)
-        model = LazyEclecticBinaryClassifier.load(model_dir)
-        obj.model = model
+        obj = cls()
+        obj.model = LazyEclecticBinaryClassifier.load(model_dir)
         obj.is_saved = True
         return obj
 

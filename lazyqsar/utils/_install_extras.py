@@ -82,11 +82,12 @@ def ensure_rdkit(version=RDKIT_VERSION):
     try:
         import rdkit  # noqa: F401
 
-        logger.info("rdkit already installed; Upg.")
+        logger.info("rdkit already installed; skipping installation.")
+        return
     except ImportError:
-        pass
+        logger.warning("rdkit not found, installing...")
 
     cmd = [sys.executable, "-m", "pip", "install", f"rdkit=={version}"]
 
     run_cmd(cmd)
-    logger.info("Rdkit installation complete.")
+    logger.info("rdkit installation complete.")

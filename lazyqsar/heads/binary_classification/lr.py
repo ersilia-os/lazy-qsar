@@ -1,11 +1,10 @@
 import json
 import joblib
 import os
-import time
 import numpy as np
-import optuna
+from concurrent.futures import ThreadPoolExecutor
 from sklearn.linear_model import SGDClassifier, LogisticRegression
-from sklearn.model_selection import StratifiedKFold, StratifiedShuffleSplit
+from sklearn.model_selection import StratifiedShuffleSplit
 from sklearn.metrics import roc_auc_score
 from sklearn.base import BaseEstimator, ClassifierMixin
 
@@ -14,10 +13,12 @@ from onnx import helper, numpy_helper, TensorProto
 
 from ... import ONNX_TARGET_OPSET, ONNX_IR_VERSION
 from ...utils.logging import logger
+from . import search_cv_splits
 
-MAX_NUM_TRIALS = 100
-MIN_NUM_TRIALS = 10
 MAX_ITER = 1000
+MAX_ITER_CV = 200  # sufficient for relative ranking during hyperparameter search
+LR_CONFIGS = [{"C": 0.01}, {"C": 0.1}, {"C": 1.0}]
+SGD_CONFIGS = [{"alpha": 0.001}, {"alpha": 0.01}, {"alpha": 0.1}]
 SPARSITY_THRESHOLD = 0.9
 
 
@@ -33,84 +34,71 @@ def use_full(X):
     return X.shape[1] <= 512 or _is_sparse(X)
 
 
-def find_params(X, y, num_trials):
-    """
-    Tune alpha (=1/C) for SGDClassifier or C for LogisticRegression using out-of-fold ROC-AUC.
-    """
-    num_trials = min(num_trials, MAX_NUM_TRIALS)
+def find_params(X, y):
     X, y = np.asarray(X), np.asarray(y)
     do_full = use_full(X)
-    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+    cv = StratifiedShuffleSplit(n_splits=search_cv_splits(len(y)), test_size=0.2, random_state=42)
 
     if do_full:
-        logger.info(
-            f"Running Optuna for LogisticRegression with {num_trials} trials..."
-        )
+        logger.info(f"Evaluating {len(LR_CONFIGS)} LogisticRegression configs...")
 
-        def objective(trial):
-            C = trial.suggest_float("C", 1e-4, 1e2, log=True)
-            oof = np.full(len(y), np.nan, dtype=np.float32)
+        def eval_config(cfg):
+            scores = []
             for tr, va in cv.split(X, y):
                 clf = LogisticRegression(
-                    C=C,
+                    C=cfg["C"],
                     class_weight="balanced",
-                    solver="saga",
-                    max_iter=MAX_ITER,
-                    n_jobs=-1,
+                    solver="lbfgs",
+                    max_iter=MAX_ITER_CV,
                     random_state=42,
                 )
                 clf.fit(X[tr], y[tr])
-                oof[va] = clf.predict_proba(X[va])[:, 1]
-            return roc_auc_score(y, oof) if not np.isnan(oof).any() else 0.5
+                scores.append(roc_auc_score(y[va], clf.predict_proba(X[va])[:, 1]))
+            return float(np.mean(scores))
 
-        study = optuna.create_study(
-            direction="maximize", pruner=optuna.pruners.MedianPruner()
-        )
-        study.enqueue_trial({"C": 1.0})
-        study.optimize(objective, n_trials=num_trials, n_jobs=-1)
-        best_C = float(study.best_params["C"])
-        logger.info(f"Best LogisticRegression C: {best_C}")
-        return {"C": best_C, "use_logreg": True}
+        with ThreadPoolExecutor(max_workers=len(LR_CONFIGS)) as ex:
+            results = list(ex.map(eval_config, LR_CONFIGS))
+
+        best_idx = int(np.argmax(results))
+        best_C = LR_CONFIGS[best_idx]["C"]
+        cv_score = results[best_idx]
+        logger.info(f"Best LogisticRegression C: {best_C} (AUC: {cv_score:.4f})")
+        return {"C": best_C, "use_logreg": True, "cv_score": cv_score}
 
     else:
-        num_trials = max(MIN_NUM_TRIALS, num_trials)
-        logger.info(
-            f"Running Optuna for SGD logistic regression head with {num_trials} trials..."
-        )
+        logger.info(f"Evaluating {len(SGD_CONFIGS)} SGD logistic regression configs...")
 
-        def objective(trial):
-            C = trial.suggest_float("C", 1e-4, 1e2, log=True)
-            alpha = 1.0 / C
-            oof = np.full(len(y), np.nan, dtype=np.float32)
+        def eval_config(cfg):
+            scores = []
             for tr, va in cv.split(X, y):
                 clf = SGDClassifier(
                     loss="log_loss",
-                    alpha=alpha,
+                    alpha=cfg["alpha"],
                     class_weight="balanced",
                     max_iter=MAX_ITER,
                     tol=1e-3,
-                    n_jobs=-1,
                     random_state=42,
                 )
                 clf.fit(X[tr], y[tr])
-                oof[va] = clf.predict_proba(X[va])[:, 1]
-            return roc_auc_score(y, oof) if not np.isnan(oof).any() else 0.5
+                scores.append(roc_auc_score(y[va], clf.predict_proba(X[va])[:, 1]))
+            return float(np.mean(scores))
 
-        study = optuna.create_study(
-            direction="maximize", pruner=optuna.pruners.MedianPruner()
-        )
-        study.enqueue_trial({"C": 1.0})
-        study.optimize(objective, n_trials=num_trials, n_jobs=-1)
-        best_C = float(study.best_params["C"])
-        logger.info(f"Best C: {best_C} (alpha={1.0 / best_C})")
-        return {"alpha": 1.0 / best_C, "use_logreg": False}
+        with ThreadPoolExecutor(max_workers=len(SGD_CONFIGS)) as ex:
+            results = list(ex.map(eval_config, SGD_CONFIGS))
+
+        best_idx = int(np.argmax(results))
+        best_alpha = SGD_CONFIGS[best_idx]["alpha"]
+        cv_score = results[best_idx]
+        logger.info(f"Best SGD alpha: {best_alpha} (AUC: {cv_score:.4f})")
+        return {"alpha": best_alpha, "use_logreg": False, "cv_score": cv_score}
 
 
 class Head(BaseEstimator, ClassifierMixin):
-    def __init__(self, alpha=None, C=None, use_logreg=False):
+    def __init__(self, alpha=None, C=None, use_logreg=False, cv_score=None):
         self.alpha = alpha
         self.C = C
         self.use_logreg = use_logreg
+        self.cv_score = cv_score
 
     def _fit(self, X, y):
         X = np.asarray(X)
@@ -119,9 +107,8 @@ class Head(BaseEstimator, ClassifierMixin):
             self.model = LogisticRegression(
                 C=self.C or 1.0,
                 class_weight="balanced",
-                solver="saga",
+                solver="lbfgs",
                 max_iter=MAX_ITER,
-                n_jobs=-1,
                 random_state=42,
             )
         else:
@@ -139,36 +126,17 @@ class Head(BaseEstimator, ClassifierMixin):
         self.input_dim = X.shape[1]
         return self
 
-    def _calibrate(self, X, y):
-        logger.info("Calibrating probabilities with logistic regression on logits...")
-        X, y = np.asarray(X), np.asarray(y)
-        splitter = StratifiedShuffleSplit(n_splits=5, test_size=0.2, random_state=42)
-        y_hat, y_cal = [], []
-        t0 = time.time()
-        for train_idxs, test_idxs in splitter.split(X, y):
-            self._fit(X[train_idxs], y[train_idxs])
-            logits = self.model.decision_function(X[test_idxs])
-            y_hat.extend(logits)
-            y_cal.extend(y[test_idxs])
-            if time.time() - t0 > 60:
-                break
-        y_hat, y_cal = np.array(y_hat), np.array(y_cal)
-        self.calibrator = LogisticRegression(class_weight="balanced", solver="lbfgs")
-        self.calibrator.fit(y_hat.reshape(-1, 1), y_cal)
-        p_cal = self.calibrator.predict_proba(y_hat.reshape(-1, 1))[:, 1]
-        self.score = roc_auc_score(y_cal, p_cal)
-        logger.info(f"Calibration ROC-AUC: {self.score:.4f}")
-        return self.score
-
     def fit(self, X, y):
-        self._calibrate(X, y)
         self._fit(X, y)
+        self.score = self.cv_score if self.cv_score is not None else 0.5
+        logger.info(f"LR head score (from CV): {self.score:.4f}")
         return self
 
     def predict_proba(self, X):
-        logits = self.model.decision_function(X)
-        y_hat = self.calibrator.predict_proba(logits.reshape(-1, 1))[:, 1]
-        return np.vstack([1 - y_hat, y_hat]).T
+        # LR/SGD log_loss decision_function = log-odds; sigmoid gives exact probability
+        logits = self.model.decision_function(np.asarray(X))
+        p = 1.0 / (1.0 + np.exp(-logits))
+        return np.vstack([1 - p, p]).T
 
     def predict(self, X):
         return (self.predict_proba(X)[:, 1] > 0.5).astype(int)
@@ -181,13 +149,11 @@ class Head(BaseEstimator, ClassifierMixin):
             "score": self.score,
             "input_dim": self.input_dim,
             "use_logreg": bool(self.use_logreg),
+            "cv_score": self.cv_score,
         }
         with open(os.path.join(model_dir, f"{name}_metadata.json"), "w") as f:
             json.dump(metadata, f)
         joblib.dump(self.model, os.path.join(model_dir, f"{name}_model.joblib"))
-        joblib.dump(
-            self.calibrator, os.path.join(model_dir, f"{name}_calibrator.joblib")
-        )
 
     @classmethod
     def load(cls, name: str, model_dir: str):
@@ -198,35 +164,28 @@ class Head(BaseEstimator, ClassifierMixin):
             alpha=metadata.get("alpha"),
             C=metadata.get("C"),
             use_logreg=bool(metadata.get("use_logreg", False)),
+            cv_score=metadata.get("cv_score"),
         )
         head.model = model
         head.score = metadata["score"]
         head.input_dim = metadata["input_dim"]
-        head.calibrator = joblib.load(
-            os.path.join(model_dir, f"{name}_calibrator.joblib")
-        )
         return head
 
 
 def convert_to_onnx(name: str, model_dir: str) -> str:
     """
-    Convert to ONNX: p = σ(a * (w^T x + b) + c)
+    Convert to ONNX: p = σ(w^T x + b)
+    LR/SGD log_loss decision_function = log-odds, so sigmoid gives exact probability.
     """
     head = Head.load(name, model_dir)
-    base, cal = head.model, head.calibrator
+    base = head.model
     input_dim = int(head.input_dim)
 
     w = np.asarray(base.coef_, dtype=np.float32).reshape(1, input_dim)
-    b = np.asarray(base.intercept_, dtype=np.float32).reshape(
-        1,
-    )
-    a = float(np.asarray(cal.coef_, dtype=np.float32).ravel()[0])
-    c = float(np.asarray(cal.intercept_, dtype=np.float32).ravel()[0])
+    b = np.asarray(base.intercept_, dtype=np.float32).reshape(1,)
 
     W_init = numpy_helper.from_array(w.T, name=f"{name}_W")
     b_init = numpy_helper.from_array(b, name=f"{name}_b")
-    a_init = numpy_helper.from_array(np.array([a], dtype=np.float32), name=f"{name}_a")
-    c_init = numpy_helper.from_array(np.array([c], dtype=np.float32), name=f"{name}_c")
     shape_init = numpy_helper.from_array(
         np.array([-1], dtype=np.int64), name=f"{name}_shape1d"
     )
@@ -239,21 +198,19 @@ def convert_to_onnx(name: str, model_dir: str) -> str:
     )
 
     gemm = helper.make_node(
-        "Gemm", [f"input_{name}", f"{name}_W", f"{name}_b"], [f"{name}_z1"]
+        "Gemm", [f"input_{name}", f"{name}_W", f"{name}_b"], [f"{name}_z"]
     )
-    mul = helper.make_node("Mul", [f"{name}_z1", f"{name}_a"], [f"{name}_s1"])
-    add = helper.make_node("Add", [f"{name}_s1", f"{name}_c"], [f"{name}_z2"])
-    sig = helper.make_node("Sigmoid", [f"{name}_z2"], [f"{name}_p"])
+    sig = helper.make_node("Sigmoid", [f"{name}_z"], [f"{name}_p"])
     reshape = helper.make_node(
         "Reshape", [f"{name}_p", f"{name}_shape1d"], [f"output_{name}"]
     )
 
     graph = helper.make_graph(
-        nodes=[gemm, mul, add, sig, reshape],
+        nodes=[gemm, sig, reshape],
         name=f"{name}",
         inputs=[X],
         outputs=[Y],
-        initializer=[W_init, b_init, a_init, c_init, shape_init],
+        initializer=[W_init, b_init, shape_init],
     )
 
     model = helper.make_model(

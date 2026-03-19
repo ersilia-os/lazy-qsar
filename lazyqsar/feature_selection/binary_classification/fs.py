@@ -1,6 +1,6 @@
 import os
 import numpy as np
-import optuna
+from concurrent.futures import ThreadPoolExecutor
 import json
 import joblib
 import warnings
@@ -22,55 +22,14 @@ warnings.filterwarnings("ignore", category=RuntimeWarning)
 MIN_FEATURES = 4
 MAX_FEATURES = 2048
 
-MAX_NUM_TRIALS = 10
-
-
-def find_params(X, y, num_trials):
-    """
-    Perform feature selection and hyperparameter optimization for binary classification.
-    This function uses `SelectKBest` to determine the most relevant features based on
-    ANOVA F-values and employs `optuna` for hyperparameter optimization of the number
-    of features (`k_features`) and the regularization strength (`alpha`) of an
-    `SGDClassifier`. The optimization aims to maximize the ROC-AUC score.
-
-    Parameters
-    ----------
-    X : numpy.ndarray
-        Feature matrix of shape (n_samples, n_features).
-    y : numpy.ndarray
-        Target vector of shape (n_samples,).
-
-    Returns
-    -------
-    dict
-        A dictionary containing the optimal number of features:
-        - "k_features" : int
-            The optimal number of features selected.
-
-    Notes
-    -----
-    - The function splits the data into stratified folds for cross-validation.
-    - The `optuna` library is used for hyperparameter optimization with a pruning mechanism.
-    - The initial limits for `k_features` are determined based on the significance
-      of features (p-values and scores).
-    - The `SGDClassifier` is used with logistic loss and early stopping enabled.
-
-    Examples
-    --------
-    >>> from sklearn.datasets import make_classification
-    >>> X, y = make_classification(n_samples=100, n_features=20, random_state=42)
-    >>> result = find_feature_selection_parameters(X, y)
-    >>> print(result)
-    {'k_features': 10}
-    """
-
+def find_params(X, y):
     do_feature_selection = True
     if not do_feature_selection:
         return {"k_features": None}
 
     def k_features_initial_limits(X, y):
         if X.shape[1] < MIN_FEATURES:
-            return None, None
+            return None, None, None
         selector_ = SelectKBest(score_func=f_classif, k="all")
         selector_.fit(X, y)
         pvals = selector_.pvalues_
@@ -110,17 +69,22 @@ def find_params(X, y, num_trials):
         X_te = X_te[:, features_idxs]
         folds += [(X_tr, X_te, y_tr, y_te)]
 
-    min_k_features, max_k_features, seed_k_features = k_features_initial_limits(X, y)
+    min_k, max_k, seed_k = k_features_initial_limits(X, y)
 
-    def objective(trial):
-        k_features = trial.suggest_int(
-            "k_features", min_k_features, max_k_features, step=1
-        )
-        alpha = trial.suggest_float("alpha", 1e-6, 1e-2, log=True)
+    k_low = max(MIN_FEATURES, seed_k // 2)
+    k_mid = seed_k
+    k_high = min(max_k, seed_k * 2)
+    configs = [k_low, k_mid, k_high]
+    # deduplicate while preserving order
+    seen = set()
+    configs = [k for k in configs if not (k in seen or seen.add(k))]
 
+    logger.info(f"Evaluating k_features configs: {configs}")
+
+    def eval_config(k):
         clf = SGDClassifier(
             loss="log_loss",
-            alpha=alpha,
+            alpha=1e-4,
             class_weight="balanced",
             max_iter=2000,
             tol=1e-3,
@@ -130,35 +94,18 @@ def find_params(X, y, num_trials):
             random_state=42,
         )
         scores = []
-        for fold_idx, (X_tr, X_te, y_tr, y_te) in enumerate(folds):
-            X_tr = X_tr[:, :k_features]
-            X_te = X_te[:, :k_features]
-            clf.fit(X_tr, y_tr)
-            proba = clf.predict_proba(X_te)[:, 1]
-            score = roc_auc_score(y_te, proba)
-            scores += [score]
-            trial.report(np.mean(scores), step=fold_idx)
-            if trial.should_prune():
-                raise optuna.TrialPruned()
+        for X_tr, X_te, y_tr, y_te in folds:
+            clf.fit(X_tr[:, :k], y_tr)
+            scores.append(roc_auc_score(y_te, clf.predict_proba(X_te[:, :k])[:, 1]))
         return float(np.mean(scores))
 
-    pruner = optuna.pruners.MedianPruner(n_warmup_steps=5)
-    study = optuna.create_study(direction="maximize", pruner=pruner)
-    initial_params = {
-        "k_features": seed_k_features,
-        "alpha": 1e-4,
-    }
-    study.enqueue_trial(params=initial_params)
-    study.optimize(
-        objective, n_trials=min(num_trials, MAX_NUM_TRIALS), show_progress_bar=True
-    )
-    logger.info("Best trial:")
-    logger.info(f"  ROC-AUC: {study.best_value}")
-    logger.info(f"  Params: {study.best_params}")
+    with ThreadPoolExecutor(max_workers=len(configs)) as ex:
+        results = list(ex.map(eval_config, configs))
 
-    results = {"k_features": study.best_params["k_features"]}
-
-    return results
+    best_idx = int(np.argmax(results))
+    best_k = configs[best_idx]
+    logger.info(f"Best k_features: {best_k} (AUC: {results[best_idx]:.4f})")
+    return {"k_features": best_k}
 
 
 class FeatureSelector(object):
