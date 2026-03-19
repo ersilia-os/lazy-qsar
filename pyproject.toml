@@ -4,7 +4,7 @@ build-backend = "poetry.core.masonry.api"
 
 [project]
 name = "lazyqsar"
-version = "2.2.0"
+version = "2.5.0"
 description = "A library to quickly build QSAR models"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -42,6 +42,10 @@ dependencies = [
 descriptors = [
   "rdkit==2025.9.1",
   "FPSim2==0.7.3"
+]
+boosting = [
+  "zsxgboost @ git+https://github.com/ersilia-os/zeroshot-xgboost.git",
+  "onnxmltools"
 ]
 
 [project.urls]

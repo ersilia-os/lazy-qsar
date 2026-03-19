@@ -3,16 +3,25 @@ import os
 import random
 import shutil
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import asdict, dataclass
 
 import h5py
 import numpy as np
+from scipy import sparse
 from sklearn.base import BaseEstimator, ClassifierMixin
+from sklearn.metrics import log_loss, roc_auc_score
+from sklearn.model_selection import StratifiedKFold, StratifiedShuffleSplit
 
 from ..preprocess import prep
 from ..feature_selection.binary_classification import fs, mfs
 from ..latent_variables.binary_classification import lv
-from ..heads.binary_classification import mlp, lr, svc, et
+from ..heads.binary_classification import mlp, lr, svc, et, search_cv_splits
+try:
+    from ..heads.binary_classification import xgb as xgb_head
+    _XGB_HEAD_AVAILABLE = True
+except ImportError:
+    xgb_head = None
+    _XGB_HEAD_AVAILABLE = False
 
 from ..utils.io import InputUtils
 from ..utils.samplers import BinaryClassifierSamplingUtils as SamplingUtils
@@ -26,7 +35,7 @@ from onnx import TensorProto
 
 
 def compute_head_weights(scores: list, n_samples: int) -> np.ndarray:
-    """Blend CV-based weights with uniform weights; shrinkage toward uniform grows with n_samples."""
+    """Blend CV-based weights with uniform weights; shrinkage toward CV grows with n_samples."""
     scores = np.array(scores, dtype=float)
     N = len(scores)
     alpha = n_samples / (n_samples + 500)
@@ -37,56 +46,360 @@ def compute_head_weights(scores: list, n_samples: int) -> np.ndarray:
     return weights / weights.sum()
 
 
-ALL_HEADS = ["lr", "svc", "et", "fs_lr", "fs_svc", "mfs_lr", "mfs_svc", "lv_mlp"]
+ALL_HEADS = ["lr", "svc", "et", "xgb", "fs_lr", "fs_svc", "mfs_lr", "mfs_svc", "lv_mlp"]
 
 HEAD_MODULES = {
-    "lr": lr, "svc": svc, "et": et,
+    "lr": lr, "svc": svc, "et": et, "xgb": xgb_head,
     "fs_lr": lr, "fs_svc": svc,
     "mfs_lr": lr, "mfs_svc": svc,
     "lv_mlp": mlp,
 }
 
 HEAD_FEATURE = {
-    "lr": "X", "svc": "X", "et": "X",
+    "lr": "X", "svc": "X", "et": "X", "xgb": "X",
     "fs_lr": "X_fs", "fs_svc": "X_fs",
     "mfs_lr": "X_mfs", "mfs_svc": "X_mfs",
     "lv_mlp": "X_lv",
 }
 
 HEAD_ONNX_INPUT = {
-    "lr": "prep_output_prep", "svc": "prep_output_prep", "et": "prep_output_prep",
+    "lr": "prep_output_prep", "svc": "prep_output_prep",
+    "et": "prep_output_prep", "xgb": "prep_output_prep",
     "fs_lr": "fs_output_fs", "fs_svc": "fs_output_fs",
     "mfs_lr": "mfs_output_mfs", "mfs_svc": "mfs_output_mfs",
     "lv_mlp": "lv_output_lv",
 }
 
+HEAD_FAMILY = {
+    "lr": "linear_raw",
+    "svc": "linear_raw",
+    "et": "tree",
+    "xgb": "boosting",
+    "fs_lr": "linear_fs",
+    "fs_svc": "linear_fs",
+    "mfs_lr": "linear_mfs",
+    "mfs_svc": "linear_mfs",
+    "lv_mlp": "mlp",
+}
 
-def should_use_mfs(n_samples: int, n_features_after_fs: int) -> bool:
-    """MFS (RandomForest-based selector) is only worthwhile when the dataset is
-    medium-sized and fs hasn't already reduced the feature space enough."""
-    if n_samples < 100 or n_samples > 10_000:
-        return False
-    if n_features_after_fs < 50:
-        return False
-    return True
+FAMILY_PRIORITY = {
+    ("tiny", False): ["linear_fs", "linear_raw", "tree"],
+    ("tiny", True): ["linear_raw", "linear_fs", "linear_mfs"],
+    ("small", False): ["linear_mfs", "linear_fs", "tree", "boosting", "mlp", "linear_raw"],
+    ("small", True): ["linear_raw", "linear_fs", "linear_mfs", "tree"],
+    ("medium", False): ["linear_mfs", "tree", "boosting", "mlp", "linear_fs", "linear_raw"],
+    ("medium", True): ["linear_mfs", "linear_raw", "linear_fs", "tree"],
+    ("large", False): ["linear_mfs", "tree", "boosting", "mlp", "linear_fs"],
+    ("large", True): ["linear_mfs", "linear_raw", "tree", "linear_fs"],
+}
 
 
-def active_heads_from_data(n_samples: int, n_features: int, is_sparse: bool = False) -> list:
-    heads = set(ALL_HEADS)
-    if n_samples > 5000:
-        heads -= {"svc", "fs_svc", "mfs_svc"}
-    if n_samples < 200 or n_features < 100:
-        heads -= {"lv_mlp"}
-    # When n_features > 512 and data is DENSE, lr/svc fall back to SGD which
-    # overfits severely on high-dimensional inputs with limited samples.
-    # On sparse data (e.g. Morgan fingerprints), use_full() returns True so
-    # they use full LR/LinearSVC — reliable, keep them.
-    # lv_mlp on SRP projections fails to generalize regardless of sparsity.
-    if n_features > 512 and not is_sparse:
-        heads -= {"lr", "svc", "lv_mlp"}
-    elif n_features > 512:
-        heads -= {"lv_mlp"}
-    return sorted(heads)
+PROFILE_HEADS = {
+    ("tiny", False): ["lr", "fs_lr"],
+    ("tiny", True): ["lr", "fs_lr"],
+    ("small", False): ["fs_lr", "mfs_lr", "et", "xgb"],
+    ("small", True): ["lr", "svc", "fs_lr", "fs_svc"],
+    ("medium", False): ["fs_lr", "mfs_lr", "et", "xgb"],
+    ("medium", True): ["lr", "svc", "fs_lr", "mfs_lr", "et"],
+    ("large", False): ["mfs_lr", "et", "xgb"],
+    ("large", True): ["lr", "mfs_lr", "et"],
+}
+
+if not _XGB_HEAD_AVAILABLE:
+    ALL_HEADS = [h for h in ALL_HEADS if h != "xgb"]
+    HEAD_MODULES.pop("xgb", None)
+    HEAD_FEATURE.pop("xgb", None)
+    HEAD_ONNX_INPUT.pop("xgb", None)
+    HEAD_FAMILY.pop("xgb", None)
+    PROFILE_HEADS = {k: [h for h in v if h != "xgb"] for k, v in PROFILE_HEADS.items()}
+
+PROFILE_CAPS = {"tiny": 2, "small": 3, "medium": 4, "large": 3}
+
+
+@dataclass
+class ShapePolicy:
+    profile: str = "small"
+    n_samples: int = 0
+    minority_count: int = 0
+    n_features_after_prep: int = 0
+    density: float = 1.0
+    is_sparse: bool = False
+    feature_sample_ratio: float = 0.0
+    candidate_heads: tuple = ()
+    max_heads: int = 3
+    max_search_models: int = 3
+    max_projection_dim: int = 256
+
+
+def _matrix_density(X) -> float:
+    if sparse.issparse(X):
+        return float(X.nnz) / float(np.prod(X.shape))
+    return 1.0 - float(np.mean(np.asarray(X) == 0))
+
+
+def _profile_from_shape(n_samples: int, minority_count: int) -> str:
+    if n_samples < 300 or minority_count < 30:
+        return "tiny"
+    if n_samples < 2_000:
+        return "small"
+    if n_samples < 20_000:
+        return "medium"
+    return "large"
+
+
+def derive_shape_policy(
+    X,
+    y,
+    max_heads: int | None = None,
+    max_search_models: int | None = None,
+    max_projection_dim: int | None = None,
+):
+    y = np.asarray(y, dtype=int)
+    n_samples = int(len(y))
+    minority_count = int(min(np.sum(y == 1), np.sum(y == 0)))
+    n_features = int(X.shape[1])
+    density = _matrix_density(X)
+    is_sparse = bool(sparse.issparse(X) or density <= 0.1)
+    feature_sample_ratio = float(n_features / max(n_samples, 1))
+    profile = _profile_from_shape(n_samples, minority_count)
+    candidate_heads = list(PROFILE_HEADS[(profile, is_sparse)])
+    projection_limit = max_projection_dim or 256
+    if (
+        profile in {"small", "medium", "large"}
+        and not is_sparse
+        and minority_count >= 75
+        and n_features >= 128
+        and min(n_features, projection_limit) <= 256
+    ):
+        candidate_heads.append("lv_mlp")
+
+    default_max_heads = PROFILE_CAPS[profile]
+    default_max_search_models = 3
+
+    return ShapePolicy(
+        profile=profile,
+        n_samples=n_samples,
+        minority_count=minority_count,
+        n_features_after_prep=n_features,
+        density=density,
+        is_sparse=is_sparse,
+        feature_sample_ratio=feature_sample_ratio,
+        candidate_heads=tuple(candidate_heads),
+        max_heads=min(max_heads or default_max_heads, len(candidate_heads)),
+        max_search_models=max_search_models or default_max_search_models,
+        max_projection_dim=projection_limit,
+    )
+
+
+def should_use_mfs(shape_policy: ShapePolicy, n_features_after_fs: int) -> bool:
+    return (
+        shape_policy.n_samples >= 300
+        and n_features_after_fs >= 256
+        and "mfs_lr" in shape_policy.candidate_heads
+    )
+
+
+def selector_scorer_head(shape_policy: ShapePolicy) -> str:
+    if shape_policy.is_sparse and "svc" in shape_policy.candidate_heads:
+        return "svc"
+    return "lr"
+
+
+def _clip_probs(y_prob):
+    return np.clip(np.asarray(y_prob, dtype=float), 1e-6, 1 - 1e-6)
+
+
+def _avg_abs_corr(candidate_probs, selected_names, oof_predictions):
+    if not selected_names:
+        return 0.0
+    corrs = []
+    for name in selected_names:
+        other = oof_predictions[name]
+        if np.std(candidate_probs) < 1e-12 or np.std(other) < 1e-12:
+            corrs.append(1.0)
+        else:
+            corrs.append(abs(float(np.corrcoef(candidate_probs, other)[0, 1])))
+    return float(np.mean(corrs))
+
+
+def _family_candidates(candidates):
+    grouped = {}
+    for candidate in candidates:
+        grouped.setdefault(HEAD_FAMILY[candidate["name"]], []).append(candidate)
+    for family in grouped:
+        grouped[family].sort(
+            key=lambda item: (item["log_loss"], -item["auc"], ALL_HEADS.index(item["name"]))
+        )
+    return grouped
+
+
+def _evaluate_equal_weight_combo(combo_names, oof_predictions, y):
+    probs = np.vstack([oof_predictions[name] for name in combo_names]).mean(axis=0)
+    probs = _clip_probs(probs)
+    return float(log_loss(y, probs)), float(roc_auc_score(y, probs))
+
+
+def _selection_cv(y):
+    y = np.asarray(y, dtype=int)
+    minority_count = int(min(np.sum(y == 1), np.sum(y == 0)))
+    n_splits = min(search_cv_splits(len(y)), max(minority_count, 2))
+    if n_splits < 2:
+        return None
+    return StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
+
+
+def select_heads_via_oof(oof_predictions, y, shape_policy: ShapePolicy, head_cv_scores=None):
+    if not oof_predictions:
+        return [], [], np.array([])
+
+    y = np.asarray(y, dtype=int)
+    candidates = []
+    for name, y_prob in oof_predictions.items():
+        y_prob = _clip_probs(y_prob)
+        candidates.append(
+            {
+                "name": name,
+                "probs": y_prob,
+                "log_loss": float(log_loss(y, y_prob)),
+                "auc": float(roc_auc_score(y, y_prob)),
+            }
+        )
+
+    candidates.sort(
+        key=lambda item: (item["log_loss"], -item["auc"], ALL_HEADS.index(item["name"]))
+    )
+    grouped = _family_candidates(candidates)
+    family_priority = FAMILY_PRIORITY[(shape_policy.profile, shape_policy.is_sparse)]
+    prioritized = [family for family in family_priority if family in grouped]
+    if not prioritized:
+        prioritized = list(grouped.keys())
+
+    if shape_policy.profile == "small" and not shape_policy.is_sparse:
+        head_cv_scores = head_cv_scores or {}
+        anchor_name = None
+        if "mfs_lr" in oof_predictions:
+            anchor_name = "mfs_lr"
+        elif "fs_lr" in oof_predictions:
+            anchor_name = "fs_lr"
+        elif candidates:
+            anchor_name = candidates[0]["name"]
+
+        if anchor_name is not None:
+            selected_names = [anchor_name]
+            anchor_cv = float(head_cv_scores.get(anchor_name, 0.0))
+            nonlinear_candidates = []
+            for name in ("et", "xgb", "lv_mlp"):
+                if name not in oof_predictions:
+                    continue
+                # Use OOF AUC for xgb (no find_params CV); cv_score for et/lv_mlp
+                if name == "xgb":
+                    score = float(roc_auc_score(y, _clip_probs(oof_predictions[name])))
+                else:
+                    score = float(head_cv_scores.get(name, 0.0))
+                if score >= max(0.72, anchor_cv - 0.08):
+                    nonlinear_candidates.append((score, name))
+            nonlinear_candidates.sort(reverse=True)
+            for _, name in nonlinear_candidates:
+                if len(selected_names) >= shape_policy.max_heads:
+                    break
+                selected_names.append(name)
+            selected_names = sorted(selected_names, key=ALL_HEADS.index)
+            selected_scores = [
+                float(roc_auc_score(y, _clip_probs(oof_predictions[name])))
+                for name in selected_names
+            ]
+            selected_weights = np.ones(len(selected_names), dtype=float) / len(selected_names)
+            return selected_names, selected_scores, selected_weights
+
+    primary_pool = [family for family in prioritized if family in ("linear_mfs", "linear_fs", "linear_raw")]
+    if not primary_pool:
+        primary_pool = prioritized[:]
+    first_family = min(
+        primary_pool,
+        key=lambda family: (
+            grouped[family][0]["log_loss"],
+            -grouped[family][0]["auc"],
+            family_priority.index(family) if family in family_priority else 999,
+        ),
+    )
+    first_candidate = grouped[first_family][0]
+
+    selected_names = [first_candidate["name"]]
+    selected_families = {first_family}
+    ensemble_probs = first_candidate["probs"].copy()
+    counts = {first_candidate["name"]: 1}
+    current_loss = first_candidate["log_loss"]
+
+    min_heads_to_keep = min(2, len(prioritized), shape_policy.max_heads)
+    improve_tol = 1e-3
+
+    for family in prioritized:
+        if len(selected_names) >= shape_policy.max_heads:
+            break
+        if family in selected_families:
+            continue
+        candidate = grouped[family][0]
+        if shape_policy.profile in {"small", "medium"} and not shape_policy.is_sparse:
+            if family == "linear_raw":
+                continue
+
+        trial_probs = _clip_probs(
+            (ensemble_probs * len(selected_names) + candidate["probs"]) / (len(selected_names) + 1)
+        )
+        trial_loss = float(log_loss(y, trial_probs))
+        improvement = current_loss - trial_loss
+        if improvement < improve_tol and len(selected_names) >= min_heads_to_keep:
+            continue
+        selected_names.append(candidate["name"])
+        selected_families.add(family)
+        counts[candidate["name"]] = 1
+        ensemble_probs = trial_probs
+        current_loss = trial_loss
+
+    if len(selected_names) < min_heads_to_keep:
+        best_addition = None
+        for candidate in candidates:
+            name = candidate["name"]
+            if name in counts:
+                continue
+            if HEAD_FAMILY[name] in selected_families:
+                continue
+            trial_probs = _clip_probs(
+                (ensemble_probs * len(selected_names) + candidate["probs"]) / (len(selected_names) + 1)
+            )
+            trial_loss = float(log_loss(y, trial_probs))
+            trial_auc = float(roc_auc_score(y, trial_probs))
+            corr = _avg_abs_corr(candidate["probs"], selected_names, oof_predictions)
+            improvement = current_loss - trial_loss
+            candidate_record = (improvement, trial_loss, trial_auc, corr, name, trial_probs)
+            if best_addition is None:
+                best_addition = candidate_record
+                continue
+            if candidate_record[0] > best_addition[0]:
+                best_addition = candidate_record
+            elif abs(candidate_record[0] - best_addition[0]) <= 1e-12:
+                if candidate_record[3] < best_addition[3]:
+                    best_addition = candidate_record
+                elif abs(candidate_record[3] - best_addition[3]) <= 1e-12 and candidate_record[2] > best_addition[2]:
+                    best_addition = candidate_record
+        if best_addition is not None:
+            improvement, trial_loss, _, _, name, trial_probs = best_addition
+            selected_names.append(name)
+            selected_families.add(HEAD_FAMILY[name])
+            counts[name] = 1
+            ensemble_probs = trial_probs
+            current_loss = trial_loss
+
+    weights = np.array([counts.get(name, 0.0) for name in selected_names], dtype=float)
+    weights = weights / weights.sum()
+    selected_scores = [float(roc_auc_score(y, _clip_probs(oof_predictions[name]))) for name in selected_names]
+    selected_names.sort(key=ALL_HEADS.index)
+    name_to_score = {name: score for name, score in zip([c["name"] for c in candidates], [c["auc"] for c in candidates])}
+    name_to_weight = {name: weight for name, weight in zip(list(counts.keys()), weights.tolist())}
+    selected_scores = [name_to_score[name] for name in selected_names]
+    selected_weights = np.array([name_to_weight[name] for name in selected_names], dtype=float)
+    selected_weights = selected_weights / selected_weights.sum()
+    return selected_names, selected_scores, selected_weights
 
 
 class BaseEclecticBinaryClassifier(BaseEstimator, ClassifierMixin):
@@ -104,6 +417,7 @@ class BaseEclecticBinaryClassifier(BaseEstimator, ClassifierMixin):
         self.lr_params = params.get("lr", None)
         self.svc_params = params.get("svc", None)
         self.et_params = params.get("et", None)
+        self.xgb_params = params.get("xgb", None)
 
         self.fs_lr_params = params.get("fs_lr", None)
         self.fs_svc_params = params.get("fs_svc", None)
@@ -114,6 +428,10 @@ class BaseEclecticBinaryClassifier(BaseEstimator, ClassifierMixin):
         self.lv_mlp_params = params.get("lv_mlp", None)
 
         self.active_heads = params.get("active_heads", None)
+        self.max_heads = params.get("max_heads", None)
+        self.max_search_models = params.get("max_search_models", None)
+        self.max_projection_dim = params.get("max_projection_dim", None)
+        self.shape_policy = params.get("shape_policy", None)
         self._fit_cache = None
 
     def find_params(self, X, y):
@@ -124,33 +442,62 @@ class BaseEclecticBinaryClassifier(BaseEstimator, ClassifierMixin):
         fitted_prep = prep.Preprocessor(**self.prep_params).fit(X)
         X = fitted_prep.transform(X)
 
+        if self.shape_policy is None:
+            self.shape_policy = asdict(
+                derive_shape_policy(
+                    X,
+                    y,
+                    max_heads=self.max_heads,
+                    max_search_models=self.max_search_models,
+                    max_projection_dim=self.max_projection_dim,
+                )
+            )
+        shape_policy = ShapePolicy(**self.shape_policy)
         if self.active_heads is None:
-            is_sparse = self.prep_params.get("is_sparse", False)
-            self.active_heads = active_heads_from_data(len(X), X.shape[1], is_sparse=is_sparse)
-        logger.info(f"Active heads for {len(X)} samples, {X.shape[1]} features: {self.active_heads}")
+            self.active_heads = list(shape_policy.candidate_heads)
+        logger.info(
+            f"Shape policy: profile={shape_policy.profile}, sparse={shape_policy.is_sparse}, "
+            f"features={shape_policy.n_features_after_prep}, candidates={self.active_heads}"
+        )
 
         if self.fs_params is None:
             logger.info("Finding feature selector parameters...")
-            self.fs_params = fs.find_params(X, y)
+            self.fs_params = fs.find_params(
+                X,
+                y,
+                scorer_head=selector_scorer_head(shape_policy),
+                max_search_models=shape_policy.max_search_models,
+            )
         fitted_fs = fs.FeatureSelector(**self.fs_params).fit(X, y)
         X_fs = fitted_fs.transform(X)
 
-        if not should_use_mfs(len(X), X_fs.shape[1]):
+        if not should_use_mfs(shape_policy, X_fs.shape[1]):
             logger.info(
-                f"Skipping MFS ({len(X)} samples, {X_fs.shape[1]} features after FS)."
+                f"Skipping MFS ({X.shape[0]} samples, {X_fs.shape[1]} features after FS)."
             )
             self.mfs_params = {"threshold": None}
             self.active_heads = [h for h in self.active_heads if h not in ("mfs_lr", "mfs_svc")]
         elif self.mfs_params is None:
             logger.info("Finding model feature selector parameters...")
-            self.mfs_params = mfs.find_params(X, y)
+            self.mfs_params = mfs.find_params(
+                X, y, max_search_models=shape_policy.max_search_models
+            )
         fitted_mfs = mfs.FeatureSelector(**self.mfs_params).fit(X, y)
         X_mfs = fitted_mfs.transform(X)
         if self.lv_params is None:
             logger.info("Finding latent variable parameters...")
-            self.lv_params = lv.find_params(X, y)
+            self.lv_params = lv.find_params(
+                X,
+                y,
+                profile=shape_policy.profile,
+                is_sparse=shape_policy.is_sparse,
+                max_projection_dim=shape_policy.max_projection_dim,
+                max_search_models=shape_policy.max_search_models,
+            )
         fitted_lv = lv.LatentVariables(**self.lv_params).fit(X, y)
         X_lv = fitted_lv.transform(X)
+        if X_lv.shape[1] > shape_policy.max_projection_dim:
+            self.active_heads = [h for h in self.active_heads if h != "lv_mlp"]
 
         self._fit_cache = {
             "prep": fitted_prep, "X": X,
@@ -161,7 +508,7 @@ class BaseEclecticBinaryClassifier(BaseEstimator, ClassifierMixin):
 
         feature_map = {"X": X, "X_fs": X_fs, "X_mfs": X_mfs, "X_lv": X_lv}
         head_params_attr = {
-            "lr": "lr_params", "svc": "svc_params", "et": "et_params",
+            "lr": "lr_params", "svc": "svc_params", "et": "et_params", "xgb": "xgb_params",
             "fs_lr": "fs_lr_params", "fs_svc": "fs_svc_params",
             "mfs_lr": "mfs_lr_params", "mfs_svc": "mfs_svc_params",
             "lv_mlp": "lv_mlp_params",
@@ -183,12 +530,17 @@ class BaseEclecticBinaryClassifier(BaseEstimator, ClassifierMixin):
             "lr": self.lr_params,
             "svc": self.svc_params,
             "et": self.et_params,
+            "xgb": self.xgb_params,
             "fs_lr": self.fs_lr_params,
             "fs_svc": self.fs_svc_params,
             "mfs_lr": self.mfs_lr_params,
             "mfs_svc": self.mfs_svc_params,
             "lv_mlp": self.lv_mlp_params,
             "active_heads": self.active_heads,
+            "max_heads": self.max_heads,
+            "max_search_models": self.max_search_models,
+            "max_projection_dim": self.max_projection_dim,
+            "shape_policy": self.shape_policy,
         }
 
     def clear_params(self):
@@ -201,6 +553,7 @@ class BaseEclecticBinaryClassifier(BaseEstimator, ClassifierMixin):
         self.lr_params = None
         self.svc_params = None
         self.et_params = None
+        self.xgb_params = None
 
         self.fs_lr_params = None
         self.fs_svc_params = None
@@ -209,6 +562,7 @@ class BaseEclecticBinaryClassifier(BaseEstimator, ClassifierMixin):
         self.mfs_svc_params = None
 
         self.lv_mlp_params = None
+        self.shape_policy = None
 
     def fit(self, X, y):
         if self.prep_params is None:
@@ -245,34 +599,55 @@ class BaseEclecticBinaryClassifier(BaseEstimator, ClassifierMixin):
             X_lv = self.lv.transform(X)
 
         if self.active_heads is None:
-            is_sparse = self.prep_params.get("is_sparse", False)
-            self.active_heads = active_heads_from_data(len(X), X.shape[1], is_sparse=is_sparse)
+            shape_policy = ShapePolicy(**self.shape_policy)
+            self.active_heads = list(shape_policy.candidate_heads)
+        else:
+            shape_policy = ShapePolicy(**self.shape_policy)
 
         feature_map = {"X": X, "X_fs": X_fs, "X_mfs": X_mfs, "X_lv": X_lv}
         head_params_attr = {
-            "lr": "lr_params", "svc": "svc_params", "et": "et_params",
+            "lr": "lr_params", "svc": "svc_params", "et": "et_params", "xgb": "xgb_params",
             "fs_lr": "fs_lr_params", "fs_svc": "fs_svc_params",
             "mfs_lr": "mfs_lr_params", "mfs_svc": "mfs_svc_params",
             "lv_mlp": "lv_mlp_params",
         }
-        logger.info(f"Fitting heads in parallel: {self.active_heads}")
+        logger.info(f"Fitting heads: {self.active_heads}")
         for name in ALL_HEADS:
             if name not in self.active_heads:
                 setattr(self, name, None)
 
-        def _fit_head(name):
+        oof_predictions = {}
+        head_cv_scores = {}
+        splitter = _selection_cv(y)
+        for name in self.active_heads:
             params = getattr(self, head_params_attr[name])
             X_in = feature_map[HEAD_FEATURE[name]]
-            return HEAD_MODULES[name].Head(**params).fit(X_in, y)
+            head_cv_scores[name] = float(params.get("cv_score") or 0.5)
+            y_prob = np.zeros(len(y), dtype=float)
+            if splitter is None:
+                head = HEAD_MODULES[name].Head(**params).fit(X_in, y)
+                y_prob = head.predict_proba(X_in)[:, 1]
+            else:
+                for train_idx, test_idx in splitter.split(X_in, y):
+                    head = HEAD_MODULES[name].Head(**params).fit(X_in[train_idx], y[train_idx])
+                    y_prob[test_idx] = head.predict_proba(X_in[test_idx])[:, 1]
+            oof_predictions[name] = _clip_probs(y_prob)
 
-        with ThreadPoolExecutor(max_workers=len(self.active_heads)) as ex:
-            futures = {ex.submit(_fit_head, name): name for name in self.active_heads}
-            for future in as_completed(futures):
-                setattr(self, futures[future], future.result())
+        self.model_names, self.model_scores, self.weights = select_heads_via_oof(
+            oof_predictions, y, shape_policy, head_cv_scores=head_cv_scores
+        )
+        logger.info(
+            f"Selected heads via OOF ensemble selection: {self.model_names} with weights {self.weights}"
+        )
 
-        self.model_names = [n for n in ALL_HEADS if n in self.active_heads]
-        self.model_scores = [getattr(self, n).score for n in self.model_names]
-        self.weights = compute_head_weights(self.model_scores, len(X))
+        for name in self.model_names:
+            params = getattr(self, head_params_attr[name])
+            X_in = feature_map[HEAD_FEATURE[name]]
+            setattr(self, name, HEAD_MODULES[name].Head(**params).fit(X_in, y))
+        self.active_heads = list(self.model_names)
+        for name in ALL_HEADS:
+            if name not in self.active_heads:
+                setattr(self, name, None)
         logger.info(f"Individual model scores: {self.model_scores}")
         logger.info(f"Model weights: {self.weights}")
         return self
@@ -310,6 +685,7 @@ class BaseEclecticBinaryClassifier(BaseEstimator, ClassifierMixin):
             "lr_params": self.lr_params,
             "svc_params": self.svc_params,
             "et_params": self.et_params,
+            "xgb_params": self.xgb_params,
             "fs_lr_params": self.fs_lr_params,
             "fs_svc_params": self.fs_svc_params,
             "mfs_lr_params": self.mfs_lr_params,
@@ -319,6 +695,10 @@ class BaseEclecticBinaryClassifier(BaseEstimator, ClassifierMixin):
             "model_names": self.model_names,
             "model_scores": self.model_scores,
             "weights": self.weights.tolist(),
+            "max_heads": self.max_heads,
+            "max_search_models": self.max_search_models,
+            "max_projection_dim": self.max_projection_dim,
+            "shape_policy": self.shape_policy,
         }
         metadata_path = os.path.join(model_dir, "metadata.json")
         logger.info("Saving metadata to {0}".format(metadata_path))
@@ -340,11 +720,16 @@ class BaseEclecticBinaryClassifier(BaseEstimator, ClassifierMixin):
             "lr": metadata.get("lr_params", None),
             "svc": metadata.get("svc_params", None),
             "et": metadata.get("et_params", None),
+            "xgb": metadata.get("xgb_params", None),
             "fs_lr": metadata.get("fs_lr_params", None),
             "fs_svc": metadata.get("fs_svc_params", None),
             "mfs_lr": metadata.get("mfs_lr_params", None),
             "mfs_svc": metadata.get("mfs_svc_params", None),
             "lv_mlp": metadata.get("lv_mlp_params", None),
+            "max_heads": metadata.get("max_heads", None),
+            "max_search_models": metadata.get("max_search_models", None),
+            "max_projection_dim": metadata.get("max_projection_dim", None),
+            "shape_policy": metadata.get("shape_policy", None),
         }
 
         obj = cls(params)
@@ -371,11 +756,17 @@ class BaseEclecticBinaryClassifier(BaseEstimator, ClassifierMixin):
 class LazyEclecticBinaryClassifier(object):
     def __init__(
         self,
+        max_heads: int | None = None,
+        max_search_models: int | None = None,
+        max_projection_dim: int | None = None,
         max_samples: int = 100_000,
         max_num_partitions: int = 100,
         force_on_disk: bool = False,
         random_state: int = 42,
     ):
+        self.max_heads = max_heads
+        self.max_search_models = max_search_models
+        self.max_projection_dim = max_projection_dim
         self.random_state = random_state
         self.max_samples = max_samples
         self.max_num_partitions = max_num_partitions
@@ -423,7 +814,13 @@ class LazyEclecticBinaryClassifier(object):
                 f"Fitting model on {len(idxs)} samples, positive samples: {np.sum(y_sampled)}, negative samples: {len(y_sampled) - np.sum(y_sampled)}, number of features {X_sampled.shape[1]}"
             )
             if not params:
-                model = BaseEclecticBinaryClassifier()
+                model = BaseEclecticBinaryClassifier(
+                    {
+                        "max_heads": self.max_heads,
+                        "max_search_models": self.max_search_models,
+                        "max_projection_dim": self.max_projection_dim,
+                    }
+                )
                 model.find_params(X_sampled, y_sampled)
                 params = model.get_params()
                 model.fit(X_sampled, y_sampled)
@@ -497,6 +894,9 @@ class LazyEclecticBinaryClassifier(object):
 
         metadata = {
             "num_partitions": len(self.models),
+            "max_heads": self.max_heads,
+            "max_search_models": self.max_search_models,
+            "max_projection_dim": self.max_projection_dim,
             "random_state": self.random_state,
             "fit_time": self.fit_time,
             "score": float(np.mean([np.mean(m.model_scores) for m in self.models])),
@@ -507,12 +907,16 @@ class LazyEclecticBinaryClassifier(object):
 
     @classmethod
     def load(cls, model_dir: str):
-        obj = cls()
         metadata_path = os.path.join(model_dir, "metadata.json")
         if not os.path.exists(metadata_path):
             raise Exception("Metadata file not found.")
         with open(metadata_path, "r") as f:
             metadata = json.load(f)
+        obj = cls(
+            max_heads=metadata.get("max_heads", None),
+            max_search_models=metadata.get("max_search_models", None),
+            max_projection_dim=metadata.get("max_projection_dim", None),
+        )
         obj.random_state = metadata.get("random_state", None)
         obj.fit_time = metadata.get("fit_time", None)
         obj.score = metadata.get("score", None)
