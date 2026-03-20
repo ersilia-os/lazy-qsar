@@ -25,20 +25,20 @@ def test_shape_policy_routes_tiny_profile():
     y = make_y(120, 20)
     policy = derive_shape_policy(X, y)
     assert policy.profile == "tiny"
-    assert list(policy.candidate_heads) == ["lr", "fs_lr"]
-    assert policy.max_heads == 2
+    assert list(policy.candidate_heads) == ["lr"]
+    assert policy.max_heads == 1
 
 
 def test_shape_policy_routes_small_sparse_profile():
     X = make_sparse_like(500, 2048)
     y = make_y(500, 120)
-    policy = derive_shape_policy(X, y)
+    policy = derive_shape_policy(X, y, is_sparse=True)
     assert policy.profile == "small"
     assert policy.is_sparse is True
-    assert list(policy.candidate_heads) == ["lr", "svc", "fs_lr", "fs_svc"]
+    assert list(policy.candidate_heads) == ["lr", "svc"]
 
 
-def test_shape_policy_routes_medium_dense_profile_with_lv():
+def test_shape_policy_routes_medium_dense_profile():
     X = make_dense(4000, 128)
     y = make_y(4000, 1000)
     policy = derive_shape_policy(X, y)
@@ -46,7 +46,6 @@ def test_shape_policy_routes_medium_dense_profile_with_lv():
     assert policy.is_sparse is False
     assert "et" in policy.candidate_heads
     assert "xgb" in policy.candidate_heads
-    assert "lv_mlp" in policy.candidate_heads
 
 
 def test_shape_policy_routes_large_profile():
@@ -54,7 +53,5 @@ def test_shape_policy_routes_large_profile():
     y = make_y(25000, 8000)
     policy = derive_shape_policy(X, y)
     assert policy.profile == "large"
-    assert "mfs_lr" in policy.candidate_heads
     assert "et" in policy.candidate_heads
     assert "xgb" in policy.candidate_heads
-    assert "lv_mlp" in policy.candidate_heads

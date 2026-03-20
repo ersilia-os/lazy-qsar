@@ -1,4 +1,5 @@
 # Developer ignores
+.claude/
 development/
 .DS_Store
 tests/test_model/

@@ -6,16 +6,17 @@ import time
 from dataclasses import asdict, dataclass
 
 import h5py
+import joblib
 import numpy as np
 from scipy import sparse
 from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.metrics import log_loss, roc_auc_score
 from sklearn.model_selection import StratifiedKFold, StratifiedShuffleSplit
 
-from ..preprocess import prep
-from ..feature_selection.binary_classification import fs, mfs
-from ..latent_variables.binary_classification import lv
-from ..heads.binary_classification import mlp, lr, svc, et, search_cv_splits
+from zspreprocessing import ZeroShotClassifierPreprocessor
+
+from .. import ONNX_IR_VERSION
+from ..heads.binary_classification import lr, svc, et, search_cv_splits
 try:
     from ..heads.binary_classification import xgb as xgb_head
     _XGB_HEAD_AVAILABLE = True
@@ -46,63 +47,50 @@ def compute_head_weights(scores: list, n_samples: int) -> np.ndarray:
     return weights / weights.sum()
 
 
-ALL_HEADS = ["lr", "svc", "et", "xgb", "fs_lr", "fs_svc", "mfs_lr", "mfs_svc", "lv_mlp"]
+ALL_HEADS = ["lr", "svc", "et", "xgb"]
 
 HEAD_MODULES = {
     "lr": lr, "svc": svc, "et": et, "xgb": xgb_head,
-    "fs_lr": lr, "fs_svc": svc,
-    "mfs_lr": lr, "mfs_svc": svc,
-    "lv_mlp": mlp,
 }
 
 HEAD_FEATURE = {
     "lr": "X", "svc": "X", "et": "X", "xgb": "X",
-    "fs_lr": "X_fs", "fs_svc": "X_fs",
-    "mfs_lr": "X_mfs", "mfs_svc": "X_mfs",
-    "lv_mlp": "X_lv",
 }
 
+# "prep_variable" is the output tensor name from zspreprocessing ONNX after
+# compose.add_prefix(model, "prep_") (skl2onnx names transformer outputs "variable")
 HEAD_ONNX_INPUT = {
-    "lr": "prep_output_prep", "svc": "prep_output_prep",
-    "et": "prep_output_prep", "xgb": "prep_output_prep",
-    "fs_lr": "fs_output_fs", "fs_svc": "fs_output_fs",
-    "mfs_lr": "mfs_output_mfs", "mfs_svc": "mfs_output_mfs",
-    "lv_mlp": "lv_output_lv",
+    "lr": "prep_variable", "svc": "prep_variable",
+    "et": "prep_variable", "xgb": "prep_variable",
 }
 
 HEAD_FAMILY = {
-    "lr": "linear_raw",
-    "svc": "linear_raw",
+    "lr": "linear",
+    "svc": "linear",
     "et": "tree",
     "xgb": "boosting",
-    "fs_lr": "linear_fs",
-    "fs_svc": "linear_fs",
-    "mfs_lr": "linear_mfs",
-    "mfs_svc": "linear_mfs",
-    "lv_mlp": "mlp",
 }
 
 FAMILY_PRIORITY = {
-    ("tiny", False): ["linear_fs", "linear_raw", "tree"],
-    ("tiny", True): ["linear_raw", "linear_fs", "linear_mfs"],
-    ("small", False): ["linear_mfs", "linear_fs", "tree", "boosting", "mlp", "linear_raw"],
-    ("small", True): ["linear_raw", "linear_fs", "linear_mfs", "tree"],
-    ("medium", False): ["linear_mfs", "tree", "boosting", "mlp", "linear_fs", "linear_raw"],
-    ("medium", True): ["linear_mfs", "linear_raw", "linear_fs", "tree"],
-    ("large", False): ["linear_mfs", "tree", "boosting", "mlp", "linear_fs"],
-    ("large", True): ["linear_mfs", "linear_raw", "tree", "linear_fs"],
+    ("tiny",   False): ["linear", "tree"],
+    ("tiny",   True):  ["linear", "tree"],
+    ("small",  False): ["linear", "tree", "boosting"],
+    ("small",  True):  ["linear", "tree"],
+    ("medium", False): ["linear", "tree", "boosting"],
+    ("medium", True):  ["linear", "tree", "boosting"],
+    ("large",  False): ["tree", "boosting", "linear"],
+    ("large",  True):  ["tree", "boosting", "linear"],
 }
 
-
 PROFILE_HEADS = {
-    ("tiny", False): ["lr", "fs_lr"],
-    ("tiny", True): ["lr", "fs_lr"],
-    ("small", False): ["fs_lr", "mfs_lr", "et", "xgb"],
-    ("small", True): ["lr", "svc", "fs_lr", "fs_svc"],
-    ("medium", False): ["fs_lr", "mfs_lr", "et", "xgb"],
-    ("medium", True): ["lr", "svc", "fs_lr", "mfs_lr", "et"],
-    ("large", False): ["mfs_lr", "et", "xgb"],
-    ("large", True): ["lr", "mfs_lr", "et"],
+    ("tiny",   False): ["lr"],
+    ("tiny",   True):  ["lr", "svc"],
+    ("small",  False): ["lr", "et"],
+    ("small",  True):  ["lr", "svc"],
+    ("medium", False): ["lr", "et", "xgb"],
+    ("medium", True):  ["lr", "svc", "et"],
+    ("large",  False): ["et", "xgb"],
+    ("large",  True):  ["lr", "et", "xgb"],
 }
 
 if not _XGB_HEAD_AVAILABLE:
@@ -122,13 +110,11 @@ class ShapePolicy:
     n_samples: int = 0
     minority_count: int = 0
     n_features_after_prep: int = 0
-    density: float = 1.0
     is_sparse: bool = False
     feature_sample_ratio: float = 0.0
     candidate_heads: tuple = ()
     max_heads: int = 3
     max_search_models: int = 3
-    max_projection_dim: int = 256
 
 
 def _matrix_density(X) -> float:
@@ -150,28 +136,19 @@ def _profile_from_shape(n_samples: int, minority_count: int) -> str:
 def derive_shape_policy(
     X,
     y,
+    is_sparse: bool | None = None,
     max_heads: int | None = None,
     max_search_models: int | None = None,
-    max_projection_dim: int | None = None,
 ):
     y = np.asarray(y, dtype=int)
     n_samples = int(len(y))
     minority_count = int(min(np.sum(y == 1), np.sum(y == 0)))
     n_features = int(X.shape[1])
-    density = _matrix_density(X)
-    is_sparse = bool(sparse.issparse(X) or density <= 0.1)
+    if is_sparse is None:
+        is_sparse = bool(sparse.issparse(X) or _matrix_density(X) <= 0.1)
     feature_sample_ratio = float(n_features / max(n_samples, 1))
     profile = _profile_from_shape(n_samples, minority_count)
     candidate_heads = list(PROFILE_HEADS[(profile, is_sparse)])
-    projection_limit = max_projection_dim or 256
-    if (
-        profile in {"small", "medium", "large"}
-        and not is_sparse
-        and minority_count >= 75
-        and n_features >= 128
-        and min(n_features, projection_limit) <= 256
-    ):
-        candidate_heads.append("lv_mlp")
 
     default_max_heads = PROFILE_CAPS[profile]
     default_max_search_models = 3
@@ -181,28 +158,12 @@ def derive_shape_policy(
         n_samples=n_samples,
         minority_count=minority_count,
         n_features_after_prep=n_features,
-        density=density,
         is_sparse=is_sparse,
         feature_sample_ratio=feature_sample_ratio,
         candidate_heads=tuple(candidate_heads),
         max_heads=min(max_heads or default_max_heads, len(candidate_heads)),
         max_search_models=max_search_models or default_max_search_models,
-        max_projection_dim=projection_limit,
     )
-
-
-def should_use_mfs(shape_policy: ShapePolicy, n_features_after_fs: int) -> bool:
-    return (
-        shape_policy.n_samples >= 300
-        and n_features_after_fs >= 256
-        and "mfs_lr" in shape_policy.candidate_heads
-    )
-
-
-def selector_scorer_head(shape_policy: ShapePolicy) -> str:
-    if shape_policy.is_sparse and "svc" in shape_policy.candidate_heads:
-        return "svc"
-    return "lr"
 
 
 def _clip_probs(y_prob):
@@ -276,22 +237,17 @@ def select_heads_via_oof(oof_predictions, y, shape_policy: ShapePolicy, head_cv_
 
     if shape_policy.profile == "small" and not shape_policy.is_sparse:
         head_cv_scores = head_cv_scores or {}
-        anchor_name = None
-        if "mfs_lr" in oof_predictions:
-            anchor_name = "mfs_lr"
-        elif "fs_lr" in oof_predictions:
-            anchor_name = "fs_lr"
-        elif candidates:
-            anchor_name = candidates[0]["name"]
+        # anchor = best linear head by log_loss
+        linear_candidates = [c for c in candidates if HEAD_FAMILY[c["name"]] == "linear"]
+        anchor_name = linear_candidates[0]["name"] if linear_candidates else (candidates[0]["name"] if candidates else None)
 
         if anchor_name is not None:
             selected_names = [anchor_name]
             anchor_cv = float(head_cv_scores.get(anchor_name, 0.0))
             nonlinear_candidates = []
-            for name in ("et", "xgb", "lv_mlp"):
+            for name in ("et", "xgb"):
                 if name not in oof_predictions:
                     continue
-                # Use OOF AUC for xgb (no find_params CV); cv_score for et/lv_mlp
                 if name == "xgb":
                     score = float(roc_auc_score(y, _clip_probs(oof_predictions[name])))
                 else:
@@ -311,7 +267,7 @@ def select_heads_via_oof(oof_predictions, y, shape_policy: ShapePolicy, head_cv_
             selected_weights = np.ones(len(selected_names), dtype=float) / len(selected_names)
             return selected_names, selected_scores, selected_weights
 
-    primary_pool = [family for family in prioritized if family in ("linear_mfs", "linear_fs", "linear_raw")]
+    primary_pool = [family for family in prioritized if family in ("linear",)]
     if not primary_pool:
         primary_pool = prioritized[:]
     first_family = min(
@@ -340,7 +296,7 @@ def select_heads_via_oof(oof_predictions, y, shape_policy: ShapePolicy, head_cv_
             continue
         candidate = grouped[family][0]
         if shape_policy.profile in {"small", "medium"} and not shape_policy.is_sparse:
-            if family == "linear_raw":
+            if family == "linear":
                 continue
 
         trial_probs = _clip_probs(
@@ -410,46 +366,39 @@ class BaseEclecticBinaryClassifier(BaseEstimator, ClassifierMixin):
 
         self.prep_params = params.get("prep", None)
 
-        self.fs_params = params.get("fs", None)
-        self.mfs_params = params.get("mfs", None)
-        self.lv_params = params.get("lv", None)
-
         self.lr_params = params.get("lr", None)
         self.svc_params = params.get("svc", None)
         self.et_params = params.get("et", None)
         self.xgb_params = params.get("xgb", None)
 
-        self.fs_lr_params = params.get("fs_lr", None)
-        self.fs_svc_params = params.get("fs_svc", None)
-
-        self.mfs_lr_params = params.get("mfs_lr", None)
-        self.mfs_svc_params = params.get("mfs_svc", None)
-
-        self.lv_mlp_params = params.get("lv_mlp", None)
-
         self.active_heads = params.get("active_heads", None)
         self.max_heads = params.get("max_heads", None)
         self.max_search_models = params.get("max_search_models", None)
-        self.max_projection_dim = params.get("max_projection_dim", None)
         self.shape_policy = params.get("shape_policy", None)
         self._fit_cache = None
 
     def find_params(self, X, y):
-        if self.prep_params is None:
-            logger.info("Finding preprocessor parameters...")
-            self.prep_params = prep.find_params(X)
+        logger.info("Fitting ZeroShotClassifierPreprocessor...")
+        preprocessor = ZeroShotClassifierPreprocessor()
+        X = preprocessor.fit_transform(X, y)
 
-        fitted_prep = prep.Preprocessor(**self.prep_params).fit(X)
-        X = fitted_prep.transform(X)
+        self.prep_params = {
+            "scaler_name": preprocessor.scaler_name_,
+            "reducer_name": preprocessor.reducer_name_,
+            "n_features_in": preprocessor.n_features_in_,
+            "n_features_out": preprocessor.n_features_out_,
+        }
+
+        is_sparse = bool(preprocessor.profile_.sparsity > 0.1 or preprocessor.profile_.is_sparse_counts)
 
         if self.shape_policy is None:
             self.shape_policy = asdict(
                 derive_shape_policy(
                     X,
                     y,
+                    is_sparse=is_sparse,
                     max_heads=self.max_heads,
                     max_search_models=self.max_search_models,
-                    max_projection_dim=self.max_projection_dim,
                 )
             )
         shape_policy = ShapePolicy(**self.shape_policy)
@@ -460,108 +409,37 @@ class BaseEclecticBinaryClassifier(BaseEstimator, ClassifierMixin):
             f"features={shape_policy.n_features_after_prep}, candidates={self.active_heads}"
         )
 
-        if self.fs_params is None:
-            logger.info("Finding feature selector parameters...")
-            self.fs_params = fs.find_params(
-                X,
-                y,
-                scorer_head=selector_scorer_head(shape_policy),
-                max_search_models=shape_policy.max_search_models,
-            )
-        fitted_fs = fs.FeatureSelector(**self.fs_params).fit(X, y)
-        X_fs = fitted_fs.transform(X)
-
-        if not should_use_mfs(shape_policy, X_fs.shape[1]):
-            logger.info(
-                f"Skipping MFS ({X.shape[0]} samples, {X_fs.shape[1]} features after FS)."
-            )
-            self.mfs_params = {"threshold": None}
-            self.active_heads = [h for h in self.active_heads if h not in ("mfs_lr", "mfs_svc")]
-        elif self.mfs_params is None:
-            logger.info("Finding model feature selector parameters...")
-            self.mfs_params = mfs.find_params(
-                X, y, max_search_models=shape_policy.max_search_models
-            )
-        fitted_mfs = mfs.FeatureSelector(**self.mfs_params).fit(X, y)
-        X_mfs = fitted_mfs.transform(X)
-        if self.lv_params is None:
-            logger.info("Finding latent variable parameters...")
-            self.lv_params = lv.find_params(
-                X,
-                y,
-                profile=shape_policy.profile,
-                is_sparse=shape_policy.is_sparse,
-                max_projection_dim=shape_policy.max_projection_dim,
-                max_search_models=shape_policy.max_search_models,
-            )
-        fitted_lv = lv.LatentVariables(**self.lv_params).fit(X, y)
-        X_lv = fitted_lv.transform(X)
-        if X_lv.shape[1] > shape_policy.max_projection_dim:
-            self.active_heads = [h for h in self.active_heads if h != "lv_mlp"]
-
-        self._fit_cache = {
-            "prep": fitted_prep, "X": X,
-            "fs": fitted_fs, "X_fs": X_fs,
-            "mfs": fitted_mfs, "X_mfs": X_mfs,
-            "lv": fitted_lv, "X_lv": X_lv,
-        }
-
-        feature_map = {"X": X, "X_fs": X_fs, "X_mfs": X_mfs, "X_lv": X_lv}
         head_params_attr = {
             "lr": "lr_params", "svc": "svc_params", "et": "et_params", "xgb": "xgb_params",
-            "fs_lr": "fs_lr_params", "fs_svc": "fs_svc_params",
-            "mfs_lr": "mfs_lr_params", "mfs_svc": "mfs_svc_params",
-            "lv_mlp": "lv_mlp_params",
         }
         for name in self.active_heads:
             attr = head_params_attr[name]
             if getattr(self, attr) is None:
                 logger.info(f"Finding parameters for head: {name}")
-                X_in = feature_map[HEAD_FEATURE[name]]
-                setattr(self, attr, HEAD_MODULES[name].find_params(X_in, y))
+                setattr(self, attr, HEAD_MODULES[name].find_params(X, y))
+
+        self._fit_cache = {"prep": preprocessor, "X": X}
         return self
 
     def get_params(self):
         return {
             "prep": self.prep_params,
-            "fs": self.fs_params,
-            "mfs": self.mfs_params,
-            "lv": self.lv_params,
             "lr": self.lr_params,
             "svc": self.svc_params,
             "et": self.et_params,
             "xgb": self.xgb_params,
-            "fs_lr": self.fs_lr_params,
-            "fs_svc": self.fs_svc_params,
-            "mfs_lr": self.mfs_lr_params,
-            "mfs_svc": self.mfs_svc_params,
-            "lv_mlp": self.lv_mlp_params,
             "active_heads": self.active_heads,
             "max_heads": self.max_heads,
             "max_search_models": self.max_search_models,
-            "max_projection_dim": self.max_projection_dim,
             "shape_policy": self.shape_policy,
         }
 
     def clear_params(self):
         self.prep_params = None
-
-        self.fs_params = None
-        self.mfs_params = None
-        self.lv_params = None
-
         self.lr_params = None
         self.svc_params = None
         self.et_params = None
         self.xgb_params = None
-
-        self.fs_lr_params = None
-        self.fs_svc_params = None
-
-        self.mfs_lr_params = None
-        self.mfs_svc_params = None
-
-        self.lv_mlp_params = None
         self.shape_policy = None
 
     def fit(self, X, y):
@@ -569,34 +447,26 @@ class BaseEclecticBinaryClassifier(BaseEstimator, ClassifierMixin):
             self.find_params(X, y)
 
         if self._fit_cache is not None:
-            logger.info("Reusing fitted transformers from find_params...")
+            logger.info("Reusing fitted preprocessor from find_params...")
             self.prep = self._fit_cache["prep"]
             X = self._fit_cache["X"]
-            self.fs = self._fit_cache["fs"]
-            X_fs = self._fit_cache["X_fs"]
-            self.mfs = self._fit_cache["mfs"]
-            X_mfs = self._fit_cache["X_mfs"]
-            self.lv = self._fit_cache["lv"]
-            X_lv = self._fit_cache["X_lv"]
             self._fit_cache = None
         else:
-            logger.info("Fitting preprocessor...")
-            self.prep = prep.Preprocessor(**self.prep_params)
-            self.prep.fit(X)
-            X = self.prep.transform(X)
+            logger.info("Fitting ZeroShotClassifierPreprocessor...")
+            self.prep = ZeroShotClassifierPreprocessor()
+            X = self.prep.fit_transform(X, y)
 
-            logger.info("Fitting feature selector...")
-            self.fs = fs.FeatureSelector(**self.fs_params)
-            self.fs.fit(X, y)
-            X_fs = self.fs.transform(X)
-            logger.info("Fitting model feature selector...")
-            self.mfs = mfs.FeatureSelector(**self.mfs_params)
-            self.mfs.fit(X, y)
-            X_mfs = self.mfs.transform(X)
-            logger.info("Fitting latent variable reducer...")
-            self.lv = lv.LatentVariables(**self.lv_params)
-            self.lv.fit(X, y)
-            X_lv = self.lv.transform(X)
+        if self.shape_policy is None:
+            is_sparse = bool(self.prep.profile_.sparsity > 0.1 or self.prep.profile_.is_sparse_counts)
+            self.shape_policy = asdict(
+                derive_shape_policy(
+                    X,
+                    y,
+                    is_sparse=is_sparse,
+                    max_heads=self.max_heads,
+                    max_search_models=self.max_search_models,
+                )
+            )
 
         if self.active_heads is None:
             shape_policy = ShapePolicy(**self.shape_policy)
@@ -604,12 +474,8 @@ class BaseEclecticBinaryClassifier(BaseEstimator, ClassifierMixin):
         else:
             shape_policy = ShapePolicy(**self.shape_policy)
 
-        feature_map = {"X": X, "X_fs": X_fs, "X_mfs": X_mfs, "X_lv": X_lv}
         head_params_attr = {
             "lr": "lr_params", "svc": "svc_params", "et": "et_params", "xgb": "xgb_params",
-            "fs_lr": "fs_lr_params", "fs_svc": "fs_svc_params",
-            "mfs_lr": "mfs_lr_params", "mfs_svc": "mfs_svc_params",
-            "lv_mlp": "lv_mlp_params",
         }
         logger.info(f"Fitting heads: {self.active_heads}")
         for name in ALL_HEADS:
@@ -621,16 +487,15 @@ class BaseEclecticBinaryClassifier(BaseEstimator, ClassifierMixin):
         splitter = _selection_cv(y)
         for name in self.active_heads:
             params = getattr(self, head_params_attr[name])
-            X_in = feature_map[HEAD_FEATURE[name]]
             head_cv_scores[name] = float(params.get("cv_score") or 0.5)
             y_prob = np.zeros(len(y), dtype=float)
             if splitter is None:
-                head = HEAD_MODULES[name].Head(**params).fit(X_in, y)
-                y_prob = head.predict_proba(X_in)[:, 1]
+                head = HEAD_MODULES[name].Head(**params).fit(X, y)
+                y_prob = head.predict_proba(X)[:, 1]
             else:
-                for train_idx, test_idx in splitter.split(X_in, y):
-                    head = HEAD_MODULES[name].Head(**params).fit(X_in[train_idx], y[train_idx])
-                    y_prob[test_idx] = head.predict_proba(X_in[test_idx])[:, 1]
+                for train_idx, test_idx in splitter.split(X, y):
+                    head = HEAD_MODULES[name].Head(**params).fit(X[train_idx], y[train_idx])
+                    y_prob[test_idx] = head.predict_proba(X[test_idx])[:, 1]
             oof_predictions[name] = _clip_probs(y_prob)
 
         self.model_names, self.model_scores, self.weights = select_heads_via_oof(
@@ -642,8 +507,7 @@ class BaseEclecticBinaryClassifier(BaseEstimator, ClassifierMixin):
 
         for name in self.model_names:
             params = getattr(self, head_params_attr[name])
-            X_in = feature_map[HEAD_FEATURE[name]]
-            setattr(self, name, HEAD_MODULES[name].Head(**params).fit(X_in, y))
+            setattr(self, name, HEAD_MODULES[name].Head(**params).fit(X, y))
         self.active_heads = list(self.model_names)
         for name in ALL_HEADS:
             if name not in self.active_heads:
@@ -655,56 +519,35 @@ class BaseEclecticBinaryClassifier(BaseEstimator, ClassifierMixin):
     def predict_proba(self, X):
         logger.debug("Predicting probabilities")
         X = self.prep.transform(X)
-        feature_map = {
-            "X": X,
-            "X_fs": self.fs.transform(X),
-            "X_mfs": self.mfs.transform(X),
-            "X_lv": self.lv.transform(X),
-        }
         y_hats = [
-            getattr(self, n).predict_proba(feature_map[HEAD_FEATURE[n]])[:, 1]
+            getattr(self, n).predict_proba(X)[:, 1]
             for n in self.model_names
         ]
         y_hat = np.average(np.array(y_hats).T, axis=1, weights=self.weights)
         return np.vstack([1 - y_hat, y_hat]).T
 
     def save(self, model_dir: str):
-        self.prep.save("prep", model_dir)
-        self.fs.save("fs", model_dir)
-        self.mfs.save("mfs", model_dir)
-        self.lv.save("lv", model_dir)
+        joblib.dump(self.prep, os.path.join(model_dir, "prep.joblib"))
 
         for name in self.active_heads:
             getattr(self, name).save(name, model_dir)
 
         metadata = {
             "prep_params": self.prep_params,
-            "fs_params": self.fs_params,
-            "mfs_params": self.mfs_params,
-            "lv_params": self.lv_params,
             "lr_params": self.lr_params,
             "svc_params": self.svc_params,
             "et_params": self.et_params,
             "xgb_params": self.xgb_params,
-            "fs_lr_params": self.fs_lr_params,
-            "fs_svc_params": self.fs_svc_params,
-            "mfs_lr_params": self.mfs_lr_params,
-            "mfs_svc_params": self.mfs_svc_params,
-            "lv_mlp_params": self.lv_mlp_params,
             "active_heads": self.active_heads,
             "model_names": self.model_names,
             "model_scores": self.model_scores,
             "weights": self.weights.tolist(),
             "max_heads": self.max_heads,
             "max_search_models": self.max_search_models,
-            "max_projection_dim": self.max_projection_dim,
             "shape_policy": self.shape_policy,
         }
         metadata_path = os.path.join(model_dir, "metadata.json")
         logger.info("Saving metadata to {0}".format(metadata_path))
-        metadata["prep_params"]["is_sparse"] = bool(
-            metadata["prep_params"]["is_sparse"]
-        )
         with open(metadata_path, "w") as f:
             json.dump(metadata, f, indent=4)
 
@@ -714,29 +557,17 @@ class BaseEclecticBinaryClassifier(BaseEstimator, ClassifierMixin):
             metadata = json.load(f)
         params = {
             "prep": metadata.get("prep_params", None),
-            "fs": metadata.get("fs_params", None),
-            "mfs": metadata.get("mfs_params", None),
-            "lv": metadata.get("lv_params", None),
             "lr": metadata.get("lr_params", None),
             "svc": metadata.get("svc_params", None),
             "et": metadata.get("et_params", None),
             "xgb": metadata.get("xgb_params", None),
-            "fs_lr": metadata.get("fs_lr_params", None),
-            "fs_svc": metadata.get("fs_svc_params", None),
-            "mfs_lr": metadata.get("mfs_lr_params", None),
-            "mfs_svc": metadata.get("mfs_svc_params", None),
-            "lv_mlp": metadata.get("lv_mlp_params", None),
             "max_heads": metadata.get("max_heads", None),
             "max_search_models": metadata.get("max_search_models", None),
-            "max_projection_dim": metadata.get("max_projection_dim", None),
             "shape_policy": metadata.get("shape_policy", None),
         }
 
         obj = cls(params)
-        obj.prep = prep.Preprocessor.load("prep", model_dir)
-        obj.fs = fs.FeatureSelector.load("fs", model_dir)
-        obj.mfs = mfs.FeatureSelector.load("mfs", model_dir)
-        obj.lv = lv.LatentVariables.load("lv", model_dir)
+        obj.prep = joblib.load(os.path.join(model_dir, "prep.joblib"))
 
         active_heads = metadata.get("active_heads", ALL_HEADS)
         for name in ALL_HEADS:
@@ -758,7 +589,6 @@ class LazyEclecticBinaryClassifier(object):
         self,
         max_heads: int | None = None,
         max_search_models: int | None = None,
-        max_projection_dim: int | None = None,
         max_samples: int = 100_000,
         max_num_partitions: int = 100,
         force_on_disk: bool = False,
@@ -766,7 +596,6 @@ class LazyEclecticBinaryClassifier(object):
     ):
         self.max_heads = max_heads
         self.max_search_models = max_search_models
-        self.max_projection_dim = max_projection_dim
         self.random_state = random_state
         self.max_samples = max_samples
         self.max_num_partitions = max_num_partitions
@@ -818,7 +647,6 @@ class LazyEclecticBinaryClassifier(object):
                     {
                         "max_heads": self.max_heads,
                         "max_search_models": self.max_search_models,
-                        "max_projection_dim": self.max_projection_dim,
                     }
                 )
                 model.find_params(X_sampled, y_sampled)
@@ -896,7 +724,6 @@ class LazyEclecticBinaryClassifier(object):
             "num_partitions": len(self.models),
             "max_heads": self.max_heads,
             "max_search_models": self.max_search_models,
-            "max_projection_dim": self.max_projection_dim,
             "random_state": self.random_state,
             "fit_time": self.fit_time,
             "score": float(np.mean([np.mean(m.model_scores) for m in self.models])),
@@ -915,7 +742,6 @@ class LazyEclecticBinaryClassifier(object):
         obj = cls(
             max_heads=metadata.get("max_heads", None),
             max_search_models=metadata.get("max_search_models", None),
-            max_projection_dim=metadata.get("max_projection_dim", None),
         )
         obj.random_state = metadata.get("random_state", None)
         obj.fit_time = metadata.get("fit_time", None)
@@ -1094,27 +920,46 @@ def convert_partition_to_onnx(partition_dir: str, clean: bool = True) -> str:
 
     active_heads = metadata.get("active_heads", ALL_HEADS)
     model_names = metadata.get("model_names", active_heads)
-    need_lv = "lv_mlp" in active_heads
 
-    # Convert backbone components
-    prep_onnx_file = prep.convert_to_onnx("prep", model_dir)
-    fs_onnx_file = fs.convert_to_onnx("fs", model_dir)
-    mfs_onnx_file = mfs.convert_to_onnx("mfs", model_dir)
+    # Convert preprocessor: load from joblib, export to ONNX
+    prep_joblib_path = os.path.join(model_dir, "prep.joblib")
+    preprocessor = joblib.load(prep_joblib_path)
+    prep_onnx_path = os.path.join(model_dir, "prep.onnx")
+    preprocessor.to_onnx(prep_onnx_path)
+
+    prep_onnx_model = onnx.load(prep_onnx_path)
+    # Set graph name to "prep" so that after add_prefix("prep_") the output
+    # tensor "variable" becomes "prep_variable" (predictable tensor name)
+    prep_onnx_model.graph.name = "prep"
+    onnx.save(prep_onnx_model, prep_onnx_path)
 
     onnx_graphs = {
-        "prep": onnx.load(prep_onnx_file),
-        "fs": onnx.load(fs_onnx_file),
-        "mfs": onnx.load(mfs_onnx_file),
+        "prep": onnx.load(prep_onnx_path),
     }
-
-    if need_lv:
-        lv_onnx_file = lv.convert_to_onnx("lv", model_dir)
-        onnx_graphs["lv"] = onnx.load(lv_onnx_file)
 
     # Convert active heads
     for name in active_heads:
         head_file = HEAD_MODULES[name].convert_to_onnx(name, model_dir)
         onnx_graphs[name] = onnx.load(head_file)
+
+    # Normalize IR version and opset across all models before merging.
+    # Collect the union of all extra domains (e.g. ai.onnx.ml) across models
+    # so that all merged models declare the same opset set.
+    from lazyqsar import ONNX_TARGET_OPSET
+    extra_domains: dict[str, int] = {}
+    for model in onnx_graphs.values():
+        for op in model.opset_import:
+            if op.domain != "":
+                extra_domains[op.domain] = max(extra_domains.get(op.domain, 0), op.version)
+
+    for key in list(onnx_graphs.keys()):
+        model = onnx_graphs[key]
+        # Replace opset_import: one entry per domain, no duplicates
+        del model.opset_import[:]
+        model.opset_import.append(helper.make_opsetid("", ONNX_TARGET_OPSET))
+        for domain, version in extra_domains.items():
+            model.opset_import.append(helper.make_opsetid(domain, version))
+        model.ir_version = ONNX_IR_VERSION
 
     onnx_graphs = {k: _fix_graph_outputs_with_identity(v) for k, v in onnx_graphs.items()}
     onnx_graphs = {k: densify(v) for k, v in onnx_graphs.items()}
@@ -1124,34 +969,18 @@ def convert_partition_to_onnx(partition_dir: str, clean: bool = True) -> str:
         _onnx_logger(onnx_model)
 
     logger.info("Merging ONNX graphs...")
-    accumulated_outputs = ["prep_output_prep"]
+    # After _fix_graph_outputs_with_identity with graph name "prep",
+    # the preprocessor output tensor is named "prep_variable"
+    prep_output_tensor = "prep_variable"
+    accumulated_outputs = [prep_output_tensor]
     model = onnx_graphs["prep"]
-
-    for backbone_name, input_key, output_key in [
-        ("fs",  "prep_output_prep", "fs_output_fs"),
-        ("mfs", "prep_output_prep", "mfs_output_mfs"),
-    ]:
-        accumulated_outputs.append(output_key)
-        model = compose.merge_models(
-            model, onnx_graphs[backbone_name],
-            io_map=[(input_key, f"{backbone_name}_input_{backbone_name}")],
-            outputs=list(accumulated_outputs),
-        )
-
-    if need_lv:
-        accumulated_outputs.append("lv_output_lv")
-        model = compose.merge_models(
-            model, onnx_graphs["lv"],
-            io_map=[("prep_output_prep", "lv_input_lv")],
-            outputs=list(accumulated_outputs),
-        )
 
     for name in active_heads:
         head_output = f"{name}_output_{name}"
         accumulated_outputs.append(head_output)
         model = compose.merge_models(
             model, onnx_graphs[name],
-            io_map=[(HEAD_ONNX_INPUT[name], f"{name}_input_{name}")],
+            io_map=[(prep_output_tensor, f"{name}_input_{name}")],
             outputs=list(accumulated_outputs),
         )
 
