@@ -1,8 +1,23 @@
 import os
 import h5py
 import numpy as np
-import psutil
+
+try:
+    import psutil
+except ImportError:
+    psutil = None
+
 from .logging import logger
+
+
+def _h5_values_key(f):
+    keys = f.keys()
+    if "values" in keys:
+        return "values"
+    elif "Values" in keys:
+        return "Values"
+    else:
+        raise Exception("HDF5 does not contain a values key")
 
 
 class InputUtils(object):
@@ -26,13 +41,7 @@ class InputUtils(object):
                 raise ValueError("h5_file should be a .h5 file.")
             if h5_idxs is None:
                 with h5py.File(h5_file, "r") as f:
-                    keys = f.keys()
-                    if "values" in keys:
-                        values_key = "values"
-                    elif "Values" in keys:
-                        values_key = "Values"
-                    else:
-                        raise Exception("HDF5 does not contain a values key")
+                    values_key = _h5_values_key(f)
                     h5_idxs = [i for i in range(f[values_key].shape[0])]
             else:
                 if y is not None:
@@ -52,14 +61,11 @@ class InputUtils(object):
         return x
 
     def is_load_full_h5_file(self, h5_file):
+        if psutil is None:
+            logger.warning("psutil is unavailable; keeping HDF5 data on disk.")
+            return False
         with h5py.File(h5_file, "r") as f:
-            keys = f.keys()
-            if "values" in keys:
-                values_key = "values"
-            elif "Values" in keys:
-                values_key = "Values"
-            else:
-                raise Exception("HDF5 does not contain a values key")
+            values_key = _h5_values_key(f)
             dataset = f[values_key]
             if isinstance(dataset, h5py.Dataset):
                 size_bytes = dataset.size * dataset.dtype.itemsize
@@ -78,24 +84,12 @@ class InputUtils(object):
         if h5_file is not None:
             if h5_idxs is None:
                 with h5py.File(h5_file, "r") as f:
-                    keys = f.keys()
-                    if "values" in keys:
-                        values_key = "values"
-                    elif "Values" in keys:
-                        values_key = "Values"
-                    else:
-                        raise Exception("HDF5 does not contain a values key")
+                    values_key = _h5_values_key(f)
                     h5_idxs = [i for i in range(f[values_key].shape[0])]
             if not force_on_disk and self.is_load_full_h5_file(h5_file):
                 logger.debug("Loading full h5 file into memory...")
                 with h5py.File(h5_file, "r") as f:
-                    keys = f.keys()
-                    if "values" in keys:
-                        values_key = "values"
-                    elif "Values" in keys:
-                        values_key = "Values"
-                    else:
-                        raise Exception("HDF5 does not contain a values key")
+                    values_key = _h5_values_key(f)
                     X = f[values_key][:]
                     X = X[h5_idxs, :]
                     h5_file = None

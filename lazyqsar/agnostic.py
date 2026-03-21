@@ -10,12 +10,18 @@ from .artifacts.artifact_binary_classifier import LazyBinaryClassifierArtifact
 
 
 class LazyBinaryClassifier(object):
-    def __init__(self, mode: str = "default"):
+    def __init__(
+        self,
+        max_heads: int = None,
+    ):
         self.is_saved = False
+        self.max_heads = max_heads
 
     def fit(self, X=None, y=None, h5_file=None, h5_idxs=None):
         y = np.array(y, dtype=int)
-        self.model = LazyEclecticBinaryClassifier()
+        self.model = LazyEclecticBinaryClassifier(
+            max_heads=self.max_heads,
+        )
         self.model.fit(X=X, y=y, h5_file=h5_file, h5_idxs=h5_idxs)
 
     def predict_proba(self, X=None, h5_file=None, h5_idxs=None):
@@ -25,13 +31,7 @@ class LazyBinaryClassifier(object):
 
     def predict(self, X=None, h5_file=None, h5_idxs=None, threshold=0.5):
         y_hat = self.predict_proba(X=X, h5_file=h5_file, h5_idxs=h5_idxs)[:, 1]
-        y_bin = []
-        for y in y_hat:
-            if y >= threshold:
-                y_bin.append(1)
-            else:
-                y_bin.append(0)
-        return np.array(y_bin, dtype=int)
+        return np.where(y_hat >= threshold, 1, 0).astype(int)
 
     def save_raw(self, model_dir: str):
         self.model.save(model_dir=model_dir)

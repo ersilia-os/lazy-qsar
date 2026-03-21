@@ -65,6 +65,19 @@ model.fit(smiles_list=smiles_train, y=y_train)
 y_hat = model.predict_proba(smiles_list=smiles_test)[:, 1]
 ```
 
+You can cap the ensemble size and search budgets while keeping the training policy fixed to the default balanced lightweight regime:
+
+```python
+model = LazyBinaryQSAR(
+    mode="default",
+    max_heads=3,
+    max_search_models=3,
+    max_projection_dim=256,
+)
+```
+
+The training policy is fixed internally to a balanced lightweight regime. The exposed knobs only cap ensemble size and search/projection budgets.
+
 #### Custom descriptors
 
 Pre-calculate your own descriptors and pass them directly. We recommend the [Ersilia Model Hub](https://github.com/ersilia-os/ersilia) for this — its `.h5` output format is supported natively. Alternatively, pass descriptors as a NumPy array.
@@ -73,7 +86,7 @@ Pre-calculate your own descriptors and pass them directly. We recommend the [Ers
 from lazyqsar.agnostic import LazyBinaryClassifier
 
 # From a NumPy array
-model = LazyBinaryClassifier(mode="default")
+model = LazyBinaryClassifier()
 model.fit(X=X_train, y=y_train)
 y_hat = model.predict_proba(X=X_test)[:, 1]
 

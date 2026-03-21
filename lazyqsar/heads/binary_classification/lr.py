@@ -2,11 +2,11 @@ import json
 import joblib
 import os
 import numpy as np
-from concurrent.futures import ThreadPoolExecutor
 from sklearn.linear_model import SGDClassifier, LogisticRegression
 from sklearn.model_selection import StratifiedShuffleSplit
 from sklearn.metrics import roc_auc_score
 from sklearn.base import BaseEstimator, ClassifierMixin
+from scipy import sparse
 
 import onnx
 from onnx import helper, numpy_helper, TensorProto
@@ -23,7 +23,7 @@ SPARSITY_THRESHOLD = 0.9
 
 
 def _is_sparse(X):
-    if hasattr(X, "toarray"):
+    if sparse.issparse(X):
         zero_fraction = 1.0 - (X.count_nonzero() / np.prod(X.shape))
     else:
         zero_fraction = np.mean(X == 0)
@@ -35,7 +35,7 @@ def use_full(X):
 
 
 def find_params(X, y):
-    X, y = np.asarray(X), np.asarray(y)
+    y = np.asarray(y)
     do_full = use_full(X)
     cv = StratifiedShuffleSplit(n_splits=search_cv_splits(len(y)), test_size=0.2, random_state=42)
 
@@ -56,8 +56,7 @@ def find_params(X, y):
                 scores.append(roc_auc_score(y[va], clf.predict_proba(X[va])[:, 1]))
             return float(np.mean(scores))
 
-        with ThreadPoolExecutor(max_workers=len(LR_CONFIGS)) as ex:
-            results = list(ex.map(eval_config, LR_CONFIGS))
+        results = [eval_config(cfg) for cfg in LR_CONFIGS]
 
         best_idx = int(np.argmax(results))
         best_C = LR_CONFIGS[best_idx]["C"]
@@ -83,8 +82,7 @@ def find_params(X, y):
                 scores.append(roc_auc_score(y[va], clf.predict_proba(X[va])[:, 1]))
             return float(np.mean(scores))
 
-        with ThreadPoolExecutor(max_workers=len(SGD_CONFIGS)) as ex:
-            results = list(ex.map(eval_config, SGD_CONFIGS))
+        results = [eval_config(cfg) for cfg in SGD_CONFIGS]
 
         best_idx = int(np.argmax(results))
         best_alpha = SGD_CONFIGS[best_idx]["alpha"]
@@ -101,7 +99,6 @@ class Head(BaseEstimator, ClassifierMixin):
         self.cv_score = cv_score
 
     def _fit(self, X, y):
-        X = np.asarray(X)
         if self.use_logreg:
             logger.info("Fitting LogisticRegression head...")
             self.model = LogisticRegression(
@@ -119,7 +116,7 @@ class Head(BaseEstimator, ClassifierMixin):
                 class_weight="balanced",
                 max_iter=MAX_ITER,
                 tol=1e-3,
-                n_jobs=-1,
+                n_jobs=1,
                 random_state=42,
             )
         self.model.fit(X, y)
@@ -134,7 +131,7 @@ class Head(BaseEstimator, ClassifierMixin):
 
     def predict_proba(self, X):
         # LR/SGD log_loss decision_function = log-odds; sigmoid gives exact probability
-        logits = self.model.decision_function(np.asarray(X))
+        logits = self.model.decision_function(X)
         p = 1.0 / (1.0 + np.exp(-logits))
         return np.vstack([1 - p, p]).T
 

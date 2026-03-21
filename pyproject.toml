@@ -27,7 +27,6 @@ dependencies = [
     "joblib==1.5.1",
     "pandas==2.3.0",
     "scikit-learn==1.6.1",
-    "optuna==4.4.0",
     "h5py==3.14.0",
     "psutil==7.0.0",
     "rich==14.1.0",

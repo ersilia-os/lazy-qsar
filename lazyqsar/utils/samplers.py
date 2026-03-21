@@ -2,9 +2,21 @@ import math
 import random
 import h5py
 import numpy as np
-from sklearn.model_selection import KFold, StratifiedKFold
+
 from .io import InputUtils
 from .logging import logger
+
+
+def compute_head_weights(scores: list, n_samples: int) -> np.ndarray:
+    """Blend CV-based weights with uniform weights; shrinkage toward CV grows with n_samples."""
+    scores = np.array(scores, dtype=float)
+    N = len(scores)
+    alpha = n_samples / (n_samples + 500) if n_samples else 0.0
+    cv = np.clip(scores - 0.5, 0, 1) + 1e-4
+    cv = cv / cv.sum()
+    uniform = np.ones(N) / N
+    weights = alpha * cv + (1 - alpha) * uniform
+    return weights / weights.sum()
 
 
 class BinaryClassifierSamplingUtils(object):
@@ -69,60 +81,3 @@ class BinaryClassifierSamplingUtils(object):
             else:
                 chunk = idxs[start:] + idxs[:end - n_tot]
             yield sorted(chunk)
-
-
-class KFolder(object):
-    def __init__(self, n_splits=5, shuffle=True, random_state=None):
-        self.n_splits = n_splits
-        self.shuffle = shuffle
-        self.random_state = random_state
-
-    def get_n_splits(self, X=None, y=None, groups=None):
-        return self.n_splits
-
-    def split(self, X, y, groups=None):
-        skf = KFold(
-            n_splits=self.n_splits, shuffle=self.shuffle, random_state=self.random_state
-        )
-        for train_idxs, test_idxs in skf.split(X, y):
-            yield train_idxs, test_idxs
-
-
-class StratifiedKFolder(object):
-    def __init__(
-        self,
-        test_size=0.25,
-        n_splits=5,
-        max_positive_proportion=0.5,
-        shuffle=True,
-        random_state=None,
-    ):
-        self.test_size = test_size
-        self.n_splits = n_splits
-        self.shuffle = shuffle
-        self.random_state = random_state
-        self.max_positive_proportion = max_positive_proportion
-
-    def get_n_splits(self, X=None, y=None, groups=None):
-        return self.n_splits
-
-    def split(self, X, y, groups=None):
-        num_splits = max(3, int(1 / self.test_size))
-        splitter = StratifiedKFold(
-            n_splits=num_splits, shuffle=self.shuffle, random_state=self.random_state
-        )
-        done_folds = 0
-        for train_idxs, test_idxs in splitter.split(X, y):
-            train_idxs_pos = [i for i in train_idxs if y[i] == 1]
-            train_idxs_neg = [i for i in train_idxs if y[i] == 0]
-            if len(train_idxs_pos) / len(train_idxs) > self.max_positive_proportion:
-                expected_neg = len(train_idxs) * (1 - self.max_positive_proportion)
-                n_missing = int(expected_neg - len(train_idxs_neg))
-                if n_missing > 0:
-                    additional_neg_idxs = random.choices(train_idxs_neg, k=n_missing)
-                    train_idxs = list(train_idxs) + additional_neg_idxs
-                    random.shuffle(train_idxs)
-            done_folds += 1
-            if done_folds >= self.n_splits:
-                break
-            yield train_idxs, test_idxs

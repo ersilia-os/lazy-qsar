@@ -3,25 +3,16 @@ import os
 import json
 import shutil
 import numpy as np
-from concurrent.futures import ThreadPoolExecutor, as_completed
-
-from .descriptors.chemeleon import ChemeleonDescriptor
-from .descriptors.morgan import MorganFingerprint
-from .descriptors.rdkit_descriptors import RDKitDescriptor
-from .descriptors.cddd import ContinuousDataDrivenDescriptor
-
-from .agnostic import LazyEclecticBinaryClassifier
-from .agnostic import LazyBinaryClassifierArtifact
-from .agnostic import convert_to_onnx
 
 from .utils.logging import logger
+from .utils.samplers import compute_head_weights
 
 
 DESCRIPTOR_TYPES = {
-    "chemeleon": ChemeleonDescriptor,
-    "morgan": MorganFingerprint,
-    "rdkit": RDKitDescriptor,
-    "cddd": ContinuousDataDrivenDescriptor,
+    "chemeleon": ("lazyqsar.descriptors.chemeleon", "ChemeleonDescriptor"),
+    "morgan": ("lazyqsar.descriptors.morgan", "MorganFingerprint"),
+    "rdkit": ("lazyqsar.descriptors.rdkit_descriptors", "RDKitDescriptor"),
+    "cddd": ("lazyqsar.descriptors.cddd", "ContinuousDataDrivenDescriptor"),
 }
 
 DESCRIPTORS_MODE = {
@@ -33,6 +24,22 @@ DESCRIPTORS_MODE = {
 DESCRIPTORS_MODE = {k: sorted(v) for k, v in DESCRIPTORS_MODE.items()}
 
 
+def get_descriptor_type(descriptor_name):
+    module_name, class_name = DESCRIPTOR_TYPES[descriptor_name]
+    module = __import__(module_name, fromlist=[class_name])
+    return getattr(module, class_name)
+
+
+def get_agnostic_symbols():
+    from .agnostic import (
+        LazyEclecticBinaryClassifier,
+        LazyBinaryClassifierArtifact,
+        convert_to_onnx,
+    )
+
+    return LazyEclecticBinaryClassifier, LazyBinaryClassifierArtifact, convert_to_onnx
+
+
 class ArtifactWrapper(object):
     def __init__(self, descriptors, artifacts, weights):
         self.descriptors = descriptors
@@ -40,18 +47,10 @@ class ArtifactWrapper(object):
         self.weights = weights
 
     def predict_proba(self, smiles_list):
-        n = len(self.descriptors)
-        y_hats = [None] * n
-
-        def _predict_one(i):
-            X = self.descriptors[i].transform(smiles_list)
-            return np.array(self.artifacts[i].predict_proba(X))[:, 1]
-
-        with ThreadPoolExecutor(max_workers=n) as ex:
-            futures = {ex.submit(_predict_one, i): i for i in range(n)}
-            for future in as_completed(futures):
-                y_hats[futures[future]] = future.result()
-
+        y_hats = []
+        for descriptor, artifact in zip(self.descriptors, self.artifacts):
+            X = descriptor.transform(smiles_list)
+            y_hats.append(np.array(artifact.predict_proba(X))[:, 1])
         y_hat_1 = np.average(np.array(y_hats), axis=0, weights=self.weights)
         return np.vstack((1 - y_hat_1, y_hat_1)).T
 
@@ -61,20 +60,27 @@ class ArtifactWrapper(object):
 
 
 class LazyBinaryQSAR(object):
-    def __init__(self, mode: str = "default"):
+    def __init__(
+        self,
+        mode: str = "default",
+        max_heads: int = None,
+    ):
         assert mode in ["default", "fast", "slow"], (
             f"Mode {mode} not recognized. Choose from 'default', 'fast', or 'slow'."
         )
 
         descriptor_types = DESCRIPTORS_MODE[mode]
 
+        self.mode = mode
+        self.max_heads = max_heads
         self.descriptor_types = descriptor_types
         self.descriptors = [
-            DESCRIPTOR_TYPES[descriptor_type]() for descriptor_type in descriptor_types
+            get_descriptor_type(descriptor_type)() for descriptor_type in descriptor_types
         ]
         self.is_saved = False
         self.weights = None
         self._feature_cache = {}  # {(descriptor_idx, smiles_hash): X}
+        self._n_train_samples = None
 
     def _smiles_hash(self, smiles_list):
         return hashlib.md5("\x00".join(smiles_list).encode()).hexdigest()
@@ -88,42 +94,29 @@ class LazyBinaryQSAR(object):
         return self._feature_cache[key]
 
     def _assign_weights(self):
-        scores = []
-        for m in self.models:
-            scores += [m.score]
-        weights = np.clip(np.array(scores) - 0.5, a_min=0, a_max=1) + 1e-4
-        weights = weights / np.sum(weights)
-        self.weights = weights
+        scores = [m.score for m in self.models]
+        self.weights = compute_head_weights(scores, self._n_train_samples or 0)
 
     def fit(self, smiles_list, y):
         y = np.array(y, dtype=int)
-        n = len(self.descriptors)
-        Xs = [None] * n
-        with ThreadPoolExecutor(max_workers=n) as ex:
-            futures = {ex.submit(self._transform_cached, i, smiles_list): i for i in range(n)}
-            for future in as_completed(futures):
-                Xs[futures[future]] = future.result()
+        self._n_train_samples = len(y)
+        Xs = [self._transform_cached(i, smiles_list) for i in range(len(self.descriptors))]
         self.models = []
-        for i in range(n):
+        LazyEclecticBinaryClassifier, _, _ = get_agnostic_symbols()
+        for i in range(len(self.descriptors)):
             logger.info(f"Fitting with descriptor: {self.descriptor_types[i]}")
-            model = LazyEclecticBinaryClassifier()
+            model = LazyEclecticBinaryClassifier(
+                max_heads=self.max_heads,
+            )
             model.fit(X=Xs[i], y=y)
             self.models += [model]
         self._assign_weights()
 
     def predict_proba(self, smiles_list):
-        n = len(self.descriptors)
-        y_hats = [None] * n
-
-        def _predict_one(i):
+        y_hats = []
+        for i in range(len(self.descriptors)):
             X = self._transform_cached(i, smiles_list)
-            return np.array(self.models[i].predict(X=X))
-
-        with ThreadPoolExecutor(max_workers=n) as ex:
-            futures = {ex.submit(_predict_one, i): i for i in range(n)}
-            for future in as_completed(futures):
-                y_hats[futures[future]] = future.result()
-
+            y_hats.append(np.array(self.models[i].predict(X=X)))
         y_hat_1 = np.average(np.array(y_hats), axis=0, weights=self.weights)
         return np.vstack((1 - y_hat_1, y_hat_1)).T
 
@@ -159,18 +152,20 @@ class LazyBinaryQSAR(object):
             )
         descriptors = []
         models = []
+        LazyEclecticBinaryClassifier, _, _ = get_agnostic_symbols()
         for descriptor_type in descriptor_types:
             model_subdir = os.path.join(model_dir, descriptor_type)
             if not os.path.exists(model_subdir):
                 raise FileNotFoundError(
                     f"Descriptor directory {model_subdir} does not exist."
                 )
-            descriptors += [DESCRIPTOR_TYPES[descriptor_type].load(model_subdir)]
+            descriptors += [get_descriptor_type(descriptor_type).load(model_subdir)]
             models += [LazyEclecticBinaryClassifier.load(model_subdir)]
 
         obj = cls(mode=mode)
         obj.descriptors = descriptors
         obj.models = models
+        obj._n_train_samples = None
         obj._assign_weights()
         obj.is_saved = True
         return obj
@@ -183,6 +178,7 @@ class LazyBinaryQSAR(object):
             if fn in DESCRIPTOR_TYPES.keys():
                 descriptor_types += [fn]
         descriptor_types = sorted(descriptor_types)
+        _, _, convert_to_onnx = get_agnostic_symbols()
         for descriptor_type in descriptor_types:
             model_subdir = os.path.join(model_dir, descriptor_type)
             convert_to_onnx(model_subdir, clean=clean)
@@ -197,20 +193,20 @@ class LazyBinaryQSAR(object):
         descriptors = []
         artifacts = []
         scores = []
+        _, LazyBinaryClassifierArtifact, _ = get_agnostic_symbols()
         for descriptor_type in descriptor_types:
             model_subdir = os.path.join(model_dir, descriptor_type)
             if not os.path.exists(model_subdir):
                 raise FileNotFoundError(
                     f"Descriptor directory {model_subdir} does not exist."
                 )
-            descriptors += [DESCRIPTOR_TYPES[descriptor_type].load(model_subdir)]
+            descriptors += [get_descriptor_type(descriptor_type).load(model_subdir)]
             artifacts += [LazyBinaryClassifierArtifact.load(model_dir=model_subdir)]
             metadata = {}
             with open(os.path.join(model_subdir, "metadata.json"), "r") as f:
                 metadata = json.load(f)
                 scores += [metadata["score"]]
-        weights = np.clip(np.array(scores) - 0.5, a_min=0, a_max=1) + 1e-4
-        weights = weights / np.sum(weights)
+        weights = compute_head_weights(scores, 0)
         return ArtifactWrapper(
             descriptors=descriptors, artifacts=artifacts, weights=weights
         )
