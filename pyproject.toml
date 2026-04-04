@@ -35,7 +35,7 @@ dependencies = [
     "numpy==2.1.3",
     "onnxruntime==1.20.1",
     "onnxconverter-common==1.16.0",
-    "zspreprocessing @ file:///Users/mduranfrigola/Documents/GitHub/zeroshot-preprocessing"
+    "zspreprocessing @ git+https://github.com/ersilia-os/zeroshot-preprocessing.git"
 ]
 
 [project.optional-dependencies]
