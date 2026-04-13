@@ -2,6 +2,9 @@
 .claude/
 development/
 .DS_Store
+calibration_*.png
+swarm_*.png
+smoke_swarm.png
 tests/test_model/
 benchmark/data/admet_group.zip
 benchmark/data/admet_group/

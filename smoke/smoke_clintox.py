@@ -1,0 +1,166 @@
+#!/usr/bin/env python
+"""
+Smoke test on the ClinTox dataset (pre-computed Morgan fingerprints).
+
+ClinTox is heavily imbalanced (~8% clinical toxicity failures).
+Compares LazyClassifier vs RandomForest and LogisticRegression baselines.
+
+Usage:
+    python smoke_clintox.py
+"""
+import os
+import time
+import tempfile
+import csv
+
+import h5py
+import numpy as np
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import roc_auc_score
+from sklearn.preprocessing import MaxAbsScaler
+
+from lazyqsar.utils.logging import logger
+logger.set_verbosity(True)
+
+from lazyqsar.agnostic import LazyClassifier
+
+# -------------------------------------------------------------------
+# Load data
+# -------------------------------------------------------------------
+DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "tests", "data")
+
+
+def _load(split):
+    with h5py.File(os.path.join(DATA_DIR, f"clintox_{split}.h5"), "r") as f:
+        X = f["Values"][:]
+    with open(os.path.join(DATA_DIR, f"clintox_{split}.csv")) as f:
+        reader = csv.reader(f)
+        next(reader)
+        y = np.array([int(row[1]) for row in reader], dtype=int)
+    return X.astype("float32"), y
+
+
+X_train, y_train = _load("train")
+X_test,  y_test  = _load("test")
+
+print(f"\nClinTox  —  train: {len(y_train):,}  test: {len(y_test):,}  "
+      f"features: {X_train.shape[1]:,}  "
+      f"pos_rate: {y_train.mean():.1%}  "
+      f"n_pos_train: {y_train.sum()}\n")
+
+# -------------------------------------------------------------------
+# Baseline: vanilla Random Forest
+# -------------------------------------------------------------------
+print("── Random Forest (baseline) " + "─" * 40)
+t0 = time.perf_counter()
+rf = RandomForestClassifier(n_estimators=100, class_weight="balanced",
+                            random_state=42, n_jobs=-1)
+rf.fit(X_train, y_train)
+rf_time = time.perf_counter() - t0
+rf_auc  = roc_auc_score(y_test, rf.predict_proba(X_test)[:, 1])
+print(f"  AUC = {rf_auc:.4f}   fit time = {rf_time:.1f}s\n")
+
+# -------------------------------------------------------------------
+# Baseline: vanilla Logistic Regression
+# -------------------------------------------------------------------
+print("── Logistic Regression (baseline) " + "─" * 34)
+t0 = time.perf_counter()
+scaler = MaxAbsScaler()
+X_train_sc = scaler.fit_transform(X_train)
+X_test_sc  = scaler.transform(X_test)
+lr = LogisticRegression(C=0.1, solver="saga", penalty="l1",
+                        class_weight="balanced", max_iter=10_000, random_state=42)
+lr.fit(X_train_sc, y_train)
+lr_time = time.perf_counter() - t0
+lr_auc  = roc_auc_score(y_test, lr.predict_proba(X_test_sc)[:, 1])
+print(f"  AUC = {lr_auc:.4f}   fit time = {lr_time:.1f}s\n")
+
+# -------------------------------------------------------------------
+# LazyClassifier
+# -------------------------------------------------------------------
+print("── LazyClassifier " + "─" * 50)
+t0 = time.perf_counter()
+clf = LazyClassifier()
+clf.fit(X=X_train, y=y_train)
+lazy_time = time.perf_counter() - t0
+
+proba = clf.predict_proba(X=X_test)
+lazy_auc = roc_auc_score(y_test, proba[:, 1])
+
+# -------------------------------------------------------------------
+# ONNX roundtrip check
+# -------------------------------------------------------------------
+with tempfile.TemporaryDirectory() as tmp:
+    model_dir = os.path.join(tmp, "model")
+    clf.save(model_dir)
+    artifact = LazyClassifier.load(model_dir)
+    proba_onnx = artifact.predict_proba(X=X_test)
+
+from scipy.stats import pearsonr
+pearson_r, _ = pearsonr(proba[:, 1], proba_onnx[:, 1])
+max_diff = float(np.abs(proba[:, 1] - proba_onnx[:, 1]).max())
+
+# -------------------------------------------------------------------
+# Summary
+# -------------------------------------------------------------------
+print("\n" + "═" * 60)
+print(f"{'Method':<30}  {'AUC':>8}  {'Time (s)':>10}")
+print("─" * 60)
+print(f"{'RandomForest (n=100, balanced)':<30}  {rf_auc:>8.4f}  {rf_time:>10.1f}")
+print(f"{'LogisticRegression (L1, C=0.1)':<30}  {lr_auc:>8.4f}  {lr_time:>10.1f}")
+print(f"{'LazyClassifier':<30}  {lazy_auc:>8.4f}  {lazy_time:>10.1f}")
+delta = lazy_auc - rf_auc
+sign  = "+" if delta >= 0 else ""
+print(f"\n  Δ AUC (Lazy − RF) = {sign}{delta:.4f}")
+print(f"\n  ONNX roundtrip  Pearson r = {pearson_r:.6f}  max|diff| = {max_diff:.4f}")
+print("═" * 60 + "\n")
+
+assert pearson_r > 0.999, f"ONNX roundtrip broken: Pearson r = {pearson_r:.6f}"
+print("Smoke test PASSED\n")
+
+# -------------------------------------------------------------------
+# Calibration plot
+# -------------------------------------------------------------------
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+from sklearn.calibration import calibration_curve
+
+rf_prob   = rf.predict_proba(X_test)[:, 1]
+lr_prob   = lr.predict_proba(X_test_sc)[:, 1]
+lazy_prob = proba[:, 1]
+
+fig, (ax_cal, ax_hist) = plt.subplots(
+    2, 1, figsize=(6, 7), gridspec_kw={"height_ratios": [3, 1]}, sharex=True
+)
+
+# Reliability diagram — quantile binning for imbalanced data
+ax_cal.plot([0, 1], [0, 1], "k--", lw=1, label="Perfect calibration")
+for prob, label, color in [
+    (rf_prob,   f"RandomForest  (AUC={rf_auc:.3f})",    "#e15759"),
+    (lr_prob,   f"LogisticRegr.  (AUC={lr_auc:.3f})",   "#59a14f"),
+    (lazy_prob, f"LazyClassifier (AUC={lazy_auc:.3f})", "#4e79a7"),
+]:
+    frac_pos, mean_pred = calibration_curve(y_test, prob, n_bins=10, strategy="quantile")
+    ax_cal.plot(mean_pred, frac_pos, "o-", label=label, color=color, lw=1.5, ms=5)
+
+ax_cal.set_ylabel("Fraction of positives")
+ax_cal.set_title(f"Calibration — ClinTox (test set, pos_rate={y_test.mean():.1%})")
+ax_cal.legend(fontsize=9)
+ax_cal.set_ylim(-0.05, 1.05)
+ax_cal.grid(True, alpha=0.3)
+
+# Prediction histogram
+ax_hist.hist(rf_prob,   bins=20, range=(0, 1), alpha=0.5, color="#e15759", label="RF")
+ax_hist.hist(lr_prob,   bins=20, range=(0, 1), alpha=0.5, color="#59a14f", label="LR")
+ax_hist.hist(lazy_prob, bins=20, range=(0, 1), alpha=0.5, color="#4e79a7", label="Lazy")
+ax_hist.set_xlabel("Mean predicted probability")
+ax_hist.set_ylabel("Count")
+ax_hist.legend(fontsize=8)
+ax_hist.grid(True, alpha=0.3)
+
+plt.tight_layout()
+out_path = os.path.join(os.path.dirname(__file__), "calibration_clintox.png")
+plt.savefig(out_path, dpi=150)
+print(f"Calibration plot saved to {out_path}\n")

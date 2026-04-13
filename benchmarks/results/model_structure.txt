@@ -1,0 +1,10 @@
+model/
+├── batch_0/
+│   ├── linear.json  (24.6 KB)
+│   ├── linear.onnx  (12.9 KB)
+│   ├── preprocessor.json  (19.0 KB)
+│   ├── preprocessor.onnx  (38.4 KB)
+│   ├── weigther.json  (0.3 KB)
+│   ├── xgboost.json  (5.5 KB)
+│   └── xgboost.onnx  (231.3 KB)
+└── metadata.json  (0.1 KB)

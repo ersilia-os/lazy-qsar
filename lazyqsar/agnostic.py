@@ -1,90 +1,145 @@
 import os
 import shutil
+
+import h5py
 import numpy as np
 
-from .assemblers.eclectic_binary_classifier import (
-    LazyEclecticBinaryClassifier,
-    convert_to_onnx,
-)
-from .artifacts.artifact_binary_classifier import LazyBinaryClassifierArtifact
+from .artifacts.classifier import LazyClassifierArtifact
+from .utils.logging import logger
 
 
-class LazyBinaryClassifier(object):
-    def __init__(
-        self,
-        max_heads: int = None,
-    ):
-        self.is_saved = False
-        self.max_heads = max_heads
+def _load_h5(h5_file: str, h5_idxs=None) -> np.ndarray:
+    with h5py.File(h5_file, "r") as f:
+        keys = list(f.keys())
+        for candidate in ("X", "data", "values", "Values"):
+            if candidate in keys:
+                return f[candidate][:].astype("float32") if h5_idxs is None else f[candidate][h5_idxs].astype("float32")
+        raise ValueError(f"No recognised dataset key in {h5_file!r}. Found: {keys}")
+
+
+class LazyClassifier:
+    """
+    Descriptor-agnostic binary classifier.
+
+    Accepts pre-computed feature arrays (X) or Ersilia .h5 files directly.
+    Wraps the internal assembler and saves/loads via ONNX.
+    """
+
+    def __init__(self, calibrated: bool = True, max_rounds: int | None = None, max_imbalance_ratio: int = 100):
+        self._model = None
+        self.calibrated = calibrated
+        self.max_rounds = max_rounds
+        self.max_imbalance_ratio = max_imbalance_ratio
+
+    # ------------------------------------------------------------------
+    # Fit
+    # ------------------------------------------------------------------
 
     def fit(self, X=None, y=None, h5_file=None, h5_idxs=None):
-        y = np.array(y, dtype=int)
-        self.model = LazyEclecticBinaryClassifier(
-            max_heads=self.max_heads,
+        # Lazy import so inference-only environments do not need fit dependencies.
+        from .assemblers.classifier import LazyClassifier as _AssemblerClassifier
+
+        logger.rule("LazyClassifier (agnostic) — fit")
+
+        if X is None:
+            if h5_file is None:
+                raise ValueError("Provide either X or h5_file.")
+            logger.info(f"Loading features from {h5_file!r}")
+            X = _load_h5(h5_file, h5_idxs)
+
+        y = np.asarray(y, dtype=int)
+
+        self._model = _AssemblerClassifier(
+            calibrated=self.calibrated,
+            max_rounds=self.max_rounds,
+            max_imbalance_ratio=self.max_imbalance_ratio,
         )
-        self.model.fit(X=X, y=y, h5_file=h5_file, h5_idxs=h5_idxs)
+        self._model.fit(X, y)
+        logger.success("LazyClassifier (agnostic) — fit complete")
 
-    def predict_proba(self, X=None, h5_file=None, h5_idxs=None):
-        y_hat_1 = np.array(self.model.predict(X=X, h5_file=h5_file, h5_idxs=h5_idxs))
-        y_hat_0 = 1 - y_hat_1
-        return np.array([y_hat_0, y_hat_1]).T
+    # ------------------------------------------------------------------
+    # Predict
+    # ------------------------------------------------------------------
 
-    def predict(self, X=None, h5_file=None, h5_idxs=None, threshold=0.5):
-        y_hat = self.predict_proba(X=X, h5_file=h5_file, h5_idxs=h5_idxs)[:, 1]
-        return np.where(y_hat >= threshold, 1, 0).astype(int)
+    def predict_proba(self, X=None, h5_file=None, h5_idxs=None) -> np.ndarray:
+        if X is None:
+            X = _load_h5(h5_file, h5_idxs)
+        logger.debug(f"predict_proba: X={X.shape}")
+        return self._model.predict_proba(X)
 
-    def save_raw(self, model_dir: str):
-        self.model.save(model_dir=model_dir)
-        self.is_saved = True
+    def predict(self, X=None, h5_file=None, h5_idxs=None, cutoff: float = None) -> np.ndarray:
+        if X is None:
+            X = _load_h5(h5_file, h5_idxs)
+        return self._model.predict(X, cutoff=cutoff)
 
-    @classmethod
-    def load_raw(cls, model_dir: str):
-        obj = cls()
-        obj.model = LazyEclecticBinaryClassifier.load(model_dir)
-        obj.is_saved = True
-        return obj
+    def predict_lift(self, X=None, h5_file=None, h5_idxs=None) -> np.ndarray:
+        if X is None:
+            X = _load_h5(h5_file, h5_idxs)
+        return self._model.predict_lift(X)
 
-    def save_onnx(self, model_dir: str, clean: bool = True):
-        if not self.is_saved:
-            self.save(model_dir=model_dir)
-        convert_to_onnx(model_dir, clean=clean)
+    def predict_logit(self, X=None, h5_file=None, h5_idxs=None) -> np.ndarray:
+        if X is None:
+            X = _load_h5(h5_file, h5_idxs)
+        return self._model.predict_logit(X)
 
-    @classmethod
-    def load_onnx(cls, model_dir: str):
-        return LazyBinaryClassifierArtifact.load(model_dir=model_dir)
+    def predict_score(self, X=None, h5_file=None, h5_idxs=None) -> np.ndarray:
+        if X is None:
+            X = _load_h5(h5_file, h5_idxs)
+        return self._model.predict_score(X)
 
-    def save(self, model_dir: str, onnx=True):
+    def predict_rank(self, X=None, h5_file=None, h5_idxs=None) -> np.ndarray:
+        if X is None:
+            X = _load_h5(h5_file, h5_idxs)
+        return self._model.predict_rank(X)
+
+    # ------------------------------------------------------------------
+    # Save / load
+    # ------------------------------------------------------------------
+
+    def save(self, model_dir: str) -> str:
         if model_dir.endswith(".zip"):
-            zip = True
+            zip_out = True
             model_dir = model_dir[:-4]
         else:
-            zip = False
-        self.save_raw(model_dir=model_dir)
-        if onnx:
-            self.save_onnx(model_dir=model_dir, clean=True)
-        if zip:
+            zip_out = False
+        logger.info(f"Saving model to {model_dir!r}")
+        os.makedirs(model_dir, exist_ok=True)
+        self._model.save(model_dir)
+        if zip_out:
             shutil.make_archive(model_dir, "zip", model_dir)
-            if os.path.exists(model_dir):
-                shutil.rmtree(model_dir)
+            shutil.rmtree(model_dir)
+            logger.success(f"Model saved → {model_dir}.zip")
             return model_dir + ".zip"
+        logger.success(f"Model saved → {model_dir}")
         return model_dir
 
     @classmethod
     def load(cls, model_dir: str):
         if model_dir.endswith(".zip"):
-            zip = True
-        else:
-            zip = False
-        if zip:
             base_dir = model_dir[:-4]
             if os.path.exists(base_dir):
                 shutil.rmtree(base_dir)
             shutil.unpack_archive(model_dir, base_dir)
             model_dir = base_dir
-        for fn in os.listdir(model_dir):
-            if fn.endswith(".onnx"):
-                return cls.load_onnx(model_dir=model_dir)
-        obj = cls.load_raw(model_dir=model_dir)
-        if zip:
-            shutil.rmtree(base_dir)
-        return obj
+        # ONNX / artifact path
+        if os.path.isfile(os.path.join(model_dir, "metadata.json")):
+            logger.info(f"Loading ONNX artifact from {model_dir!r}")
+            artifact = LazyClassifierArtifact.load(model_dir)
+            logger.success(f"Artifact loaded from {model_dir!r}")
+            return artifact
+        # Raw assembler path
+        from .assemblers.classifier import LazyClassifier as _AssemblerClassifier
+
+        obj = cls.__new__(cls)
+        obj._model = _AssemblerClassifier()
+        raise NotImplementedError(
+            "Loading a raw (non-ONNX) LazyClassifier is not yet supported. "
+            "Save with onnx=True (the default) to enable loading."
+        )
+
+
+class LazyRegressor:
+    """Placeholder — not yet implemented."""
+
+    def __init__(self, **kwargs):
+        raise NotImplementedError("LazyRegressor is not yet implemented.")

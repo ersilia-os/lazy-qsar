@@ -1,11 +1,9 @@
 import hashlib
 import os
-import json
 import shutil
 import numpy as np
 
 from .utils.logging import logger
-from .utils.samplers import compute_head_weights
 
 
 DESCRIPTOR_TYPES = {
@@ -30,15 +28,6 @@ def get_descriptor_type(descriptor_name):
     return getattr(module, class_name)
 
 
-def get_agnostic_symbols():
-    from .agnostic import (
-        LazyEclecticBinaryClassifier,
-        LazyBinaryClassifierArtifact,
-        convert_to_onnx,
-    )
-
-    return LazyEclecticBinaryClassifier, LazyBinaryClassifierArtifact, convert_to_onnx
-
 
 class ArtifactWrapper(object):
     def __init__(self, descriptors, artifacts, weights):
@@ -59,11 +48,10 @@ class ArtifactWrapper(object):
         return (y_hat >= cutoff).astype(int)
 
 
-class LazyBinaryQSAR(object):
+class LazyClassifierQSAR(object):
     def __init__(
         self,
         mode: str = "default",
-        max_heads: int = None,
     ):
         assert mode in ["default", "fast", "slow"], (
             f"Mode {mode} not recognized. Choose from 'default', 'fast', or 'slow'."
@@ -72,7 +60,6 @@ class LazyBinaryQSAR(object):
         descriptor_types = DESCRIPTORS_MODE[mode]
 
         self.mode = mode
-        self.max_heads = max_heads
         self.descriptor_types = descriptor_types
         self.descriptors = [
             get_descriptor_type(descriptor_type)() for descriptor_type in descriptor_types
@@ -94,20 +81,18 @@ class LazyBinaryQSAR(object):
         return self._feature_cache[key]
 
     def _assign_weights(self):
-        scores = [m.score for m in self.models]
-        self.weights = compute_head_weights(scores, self._n_train_samples or 0)
+        n = len(self.models)
+        self.weights = np.ones(n) / n
 
     def fit(self, smiles_list, y):
+        from .agnostic import LazyClassifier
+
         y = np.array(y, dtype=int)
-        self._n_train_samples = len(y)
         Xs = [self._transform_cached(i, smiles_list) for i in range(len(self.descriptors))]
         self.models = []
-        LazyEclecticBinaryClassifier, _, _ = get_agnostic_symbols()
         for i in range(len(self.descriptors)):
             logger.info(f"Fitting with descriptor: {self.descriptor_types[i]}")
-            model = LazyEclecticBinaryClassifier(
-                max_heads=self.max_heads,
-            )
+            model = LazyClassifier()
             model.fit(X=Xs[i], y=y)
             self.models += [model]
         self._assign_weights()
@@ -116,7 +101,7 @@ class LazyBinaryQSAR(object):
         y_hats = []
         for i in range(len(self.descriptors)):
             X = self._transform_cached(i, smiles_list)
-            y_hats.append(np.array(self.models[i].predict(X=X)))
+            y_hats.append(self.models[i].predict_proba(X=X)[:, 1])
         y_hat_1 = np.average(np.array(y_hats), axis=0, weights=self.weights)
         return np.vstack((1 - y_hat_1, y_hat_1)).T
 
@@ -150,9 +135,10 @@ class LazyBinaryQSAR(object):
             raise Exception(
                 "Could not infer mode from descriptor types found in the model directory."
             )
+        from .agnostic import LazyClassifier
+
         descriptors = []
         models = []
-        LazyEclecticBinaryClassifier, _, _ = get_agnostic_symbols()
         for descriptor_type in descriptor_types:
             model_subdir = os.path.join(model_dir, descriptor_type)
             if not os.path.exists(model_subdir):
@@ -160,7 +146,7 @@ class LazyBinaryQSAR(object):
                     f"Descriptor directory {model_subdir} does not exist."
                 )
             descriptors += [get_descriptor_type(descriptor_type).load(model_subdir)]
-            models += [LazyEclecticBinaryClassifier.load(model_subdir)]
+            models += [LazyClassifier.load(model_subdir)]
 
         obj = cls(mode=mode)
         obj.descriptors = descriptors
@@ -171,17 +157,8 @@ class LazyBinaryQSAR(object):
         return obj
 
     def save_onnx(self, model_dir: str, clean: bool = True):
-        if not self.is_saved:
-            self.save(model_dir)
-        descriptor_types = []
-        for fn in os.listdir(model_dir):
-            if fn in DESCRIPTOR_TYPES.keys():
-                descriptor_types += [fn]
-        descriptor_types = sorted(descriptor_types)
-        _, _, convert_to_onnx = get_agnostic_symbols()
-        for descriptor_type in descriptor_types:
-            model_subdir = os.path.join(model_dir, descriptor_type)
-            convert_to_onnx(model_subdir, clean=clean)
+        # ONNX is already written by save_raw() via LazyClassifier.save().
+        pass
 
     @classmethod
     def load_onnx(cls, model_dir: str):
@@ -190,10 +167,10 @@ class LazyBinaryQSAR(object):
             if fn in DESCRIPTOR_TYPES.keys():
                 descriptor_types += [fn]
         descriptor_types = sorted(descriptor_types)
+        from .agnostic import LazyClassifier
+
         descriptors = []
         artifacts = []
-        scores = []
-        _, LazyBinaryClassifierArtifact, _ = get_agnostic_symbols()
         for descriptor_type in descriptor_types:
             model_subdir = os.path.join(model_dir, descriptor_type)
             if not os.path.exists(model_subdir):
@@ -201,12 +178,9 @@ class LazyBinaryQSAR(object):
                     f"Descriptor directory {model_subdir} does not exist."
                 )
             descriptors += [get_descriptor_type(descriptor_type).load(model_subdir)]
-            artifacts += [LazyBinaryClassifierArtifact.load(model_dir=model_subdir)]
-            metadata = {}
-            with open(os.path.join(model_subdir, "metadata.json"), "r") as f:
-                metadata = json.load(f)
-                scores += [metadata["score"]]
-        weights = compute_head_weights(scores, 0)
+            artifacts += [LazyClassifier.load(model_subdir)]
+        n = len(artifacts)
+        weights = np.ones(n) / n
         return ArtifactWrapper(
             descriptors=descriptors, artifacts=artifacts, weights=weights
         )
@@ -253,3 +227,29 @@ class LazyBinaryQSAR(object):
         if zip:
             shutil.rmtree(base_dir)
         return obj
+
+
+class LazyRegressorQSAR:
+    """Placeholder — not yet implemented."""
+
+    def __init__(self, mode: str = "default"):
+        raise NotImplementedError("LazyRegressorQSAR is not yet implemented.")
+
+
+class LazyQSAR:
+    """
+    Dispatcher that returns the appropriate QSAR class based on task.
+
+    LazyQSAR(task='classification', **kwargs)  →  LazyClassifierQSAR(**kwargs)
+    LazyQSAR(task='regression', **kwargs)      →  LazyRegressorQSAR(**kwargs)
+    """
+
+    def __new__(cls, task: str = "classification", **kwargs):
+        if task == "classification":
+            return LazyClassifierQSAR(**kwargs)
+        elif task == "regression":
+            return LazyRegressorQSAR(**kwargs)
+        else:
+            raise ValueError(
+                f"Unknown task {task!r}. Choose 'classification' or 'regression'."
+            )

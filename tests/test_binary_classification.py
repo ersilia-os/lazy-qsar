@@ -6,8 +6,8 @@ import time
 import h5py
 import argparse
 
-from lazyqsar.qsar import LazyBinaryQSAR
-from lazyqsar.agnostic import LazyBinaryClassifier
+from lazyqsar.qsar import LazyClassifierQSAR
+from lazyqsar.agnostic import LazyClassifier
 from lazyqsar.descriptors.morgan import MorganFingerprint
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import roc_auc_score
@@ -86,16 +86,16 @@ def fit_and_evaluate(mode="default", clean=False, onnx=True, zip=True):
     logger.info("RF baseline ROC-AUC: {0:.4f} (train time: {1:.1f}s)".format(rf_auc, rf_time))
 
     logger.info("Using featurizer")
-    model = LazyBinaryQSAR(mode=mode)
+    model = LazyClassifierQSAR(mode=mode)
     t0 = time.time()
     model.fit(smiles_list=smiles_train, y=y_train)
     lazy_time = time.time() - t0
     model.save(output_dir_, onnx=onnx)
-    model = LazyBinaryQSAR.load(output_dir_)
+    model = LazyClassifierQSAR.load(output_dir_)
     y_pred = model.predict_proba(smiles_list=smiles_test)[:, 1]
     lazy_auc = roc_auc_score(y_test, y_pred)
 
-    logger.info("ROC-AUC: {0:.4f} (LazyQSAR, {1:.1f}s) vs {2:.4f} (RF, {3:.1f}s)".format(
+    logger.info("ROC-AUC: {0:.4f} (LazyClassifierQSAR, {1:.1f}s) vs {2:.4f} (RF, {3:.1f}s)".format(
         lazy_auc, lazy_time, rf_auc, rf_time))
     logger.info("Y pred samples: {0}".format(random.sample(list(y_pred), 10)))
     if clean:
@@ -116,7 +116,7 @@ def fit_and_evaluate_agnostic(mode="fast", clean=False, onnx=True, zip=True):
     logger.info("RF baseline ROC-AUC: {0:.4f} (train time: {1:.1f}s)".format(rf_auc, rf_time))
 
     logger.info("Using agnostic model")
-    model = LazyBinaryClassifier()
+    model = LazyClassifier()
     t0 = time.time()
     model.fit(X=X_train, y=y_train)
     lazy_time = time.time() - t0
@@ -128,11 +128,11 @@ def fit_and_evaluate_agnostic(mode="fast", clean=False, onnx=True, zip=True):
     xgb_pred = base.xgb.predict_proba(X_test_prep)[:, 1]
 
     model.save(output_dir_, onnx=onnx)
-    model = LazyBinaryClassifier.load(output_dir_)
+    model = LazyClassifier.load(output_dir_)
     y_pred = model.predict_proba(X=X_test)[:, 1]
     lazy_auc = roc_auc_score(y_test, y_pred)
 
-    print("ROC-AUC: {0:.4f} (LazyQSAR, {1:.1f}s) vs {2:.4f} (RF, {3:.1f}s)".format(
+    print("ROC-AUC: {0:.4f} (LazyClassifierQSAR, {1:.1f}s) vs {2:.4f} (RF, {3:.1f}s)".format(
         lazy_auc, lazy_time, rf_auc, rf_time), flush=True)
     n = len(lr_pred)
     lr_mean = sum(lr_pred) / n
