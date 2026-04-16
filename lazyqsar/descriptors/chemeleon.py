@@ -7,7 +7,7 @@ from ..utils.logging import logger
 
 from pathlib import Path
 from urllib.request import urlretrieve
-from lazyqsar.utils._install_extras import ensure_torch_cpu, ensure_chemprop
+from lazyqsar.utils.setup import install_torch as ensure_torch_cpu, install_chemprop as ensure_chemprop
 
 try:
     import torch
