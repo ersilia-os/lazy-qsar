@@ -33,7 +33,6 @@ The best boosting round is in .best_iteration_.
 import dataclasses
 import json
 import os
-import tempfile
 import time as _time
 
 import numpy as np

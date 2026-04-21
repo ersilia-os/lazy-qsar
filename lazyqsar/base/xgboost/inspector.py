@@ -27,7 +27,7 @@ class DatasetProfile:
 
     def __repr__(self):
         lines = [
-            f"DatasetProfile(",
+            "DatasetProfile(",
             f"  n_samples={self.n_samples}, n_features={self.n_features}, n_p_ratio={self.n_p_ratio:.2f}",
             f"  sparsity={self.sparsity:.3f}, is_sparse_counts={self.is_sparse_counts}",
             f"  binary_feature_fraction={self.binary_feature_fraction:.3f}, "

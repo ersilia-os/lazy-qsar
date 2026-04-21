@@ -34,6 +34,9 @@ class RDKitDescriptor(object):
             results.append(vals)
         return np.clip(np.array(results, dtype=np.float32), -1e5, 1e5)
 
+    def is_applicable(self, smiles_list: list) -> bool:
+        return True
+
     def save(self, dir_name: str):
         if not os.path.exists(dir_name):
             raise Exception(f"Directory {dir_name} does not exist.")

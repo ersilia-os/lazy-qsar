@@ -23,11 +23,11 @@ def _correct_prior(p1, train_prior, population_prior):
     corrected_odds = ratio * odds
     return corrected_odds / (1.0 + corrected_odds)
 
-from .preprocessor import PreprocessorArtifact
-from .xgboost import XGBoostArtifact
-from .linear import LinearArtifact
-from .rf import RandomForestArtifact
-from ..poolers.classification.inner_pooler import InnerPoolerArtifact
+from .preprocessor import PreprocessorArtifact  # noqa: E402
+from .xgboost import XGBoostArtifact  # noqa: E402
+from .linear import LinearArtifact  # noqa: E402
+from .rf import RandomForestArtifact  # noqa: E402
+from ..poolers.classification.inner_pooler import InnerPoolerArtifact  # noqa: E402
 
 
 # ---------------------------------------------------------------------------

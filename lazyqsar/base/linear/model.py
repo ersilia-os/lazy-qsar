@@ -25,8 +25,6 @@ import time as _time
 
 import joblib
 import numpy as np
-import scipy.sparse as sp
-from sklearn.exceptions import NotFittedError
 from sklearn.base import BaseEstimator
 from sklearn.feature_selection import SelectFromModel, SelectKBest, VarianceThreshold, f_classif
 from sklearn.linear_model import (
@@ -34,7 +32,6 @@ from sklearn.linear_model import (
     Lasso,
     LogisticRegression,
     LogisticRegressionCV,
-    Ridge,
     RidgeCV,
     SGDClassifier,
     SGDRegressor,

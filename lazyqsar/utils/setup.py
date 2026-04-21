@@ -53,7 +53,14 @@ def install_chemprop():
 def install_rdkit():
     logger.info("Installing RDKit...")
     subprocess.check_call([
-        sys.executable, "-m", "pip", "install", "--quiet", "rdkit",
+        sys.executable, "-m", "pip", "install", "--quiet", "rdkit==2025.9.1",
+    ])
+
+
+def install_fpsim2():
+    logger.info("Installing FPSim2...")
+    subprocess.check_call([
+        sys.executable, "-m", "pip", "install", "--quiet", "FPSim2==0.7.3",
     ])
 
 

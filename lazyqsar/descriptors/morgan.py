@@ -44,6 +44,9 @@ class MorganFingerprint(object):
             results.append(row)
         return np.array(results, dtype=np.uint8)
 
+    def is_applicable(self, smiles_list: list) -> bool:
+        return True
+
     def save(self, dir_name: str):
         if not os.path.exists(dir_name):
             raise Exception(f"Directory {dir_name} does not exist.")

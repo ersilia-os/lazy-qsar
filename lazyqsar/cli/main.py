@@ -38,18 +38,19 @@ def _setup_fit():
     print("Installing fit dependencies (sklearn, xgboost, scipy, skl2onnx, onnxmltools, joblib)...")
     subprocess.check_call([
         sys.executable, "-m", "pip", "install", "--quiet",
-        "scikit-learn", "xgboost", "scipy",
-        "onnxmltools", "onnxconverter-common", "skl2onnx", "joblib",
+        "scikit-learn==1.6.1", "xgboost", "scipy",
+        "onnxmltools", "onnxconverter-common==1.16.0", "skl2onnx==1.19.1", "joblib==1.5.1",
     ])
     print("Fit dependencies installed.")
 
 
 def _setup_descriptors():
-    from ..utils.setup import install_torch, install_chemprop, install_rdkit
+    from ..utils.setup import install_torch, install_chemprop, install_rdkit, install_fpsim2
     from ..utils.setup import download_chemeleon, download_cddd
     install_torch()
     install_chemprop()
     install_rdkit()
+    install_fpsim2()
     download_chemeleon()
     download_cddd()
 

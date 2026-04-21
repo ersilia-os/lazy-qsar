@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 
 from ..agnostic import LazyClassifier
-from ..qsar import DESCRIPTOR_TYPES, get_descriptor_type
+from ..qsar import get_descriptor_type
 from ..utils.logging import logger
 
 

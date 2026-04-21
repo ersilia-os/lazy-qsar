@@ -1,6 +1,5 @@
 from lazyqsar.base.preprocessing import (
     BaseClassifierPreprocessor as ClassifierPreprocessor,
-    BasePreprocessorArtifact as _PreprocessorArtifactBase,
 )
 from lazyqsar.utils.logging import logger
 

@@ -1,11 +1,9 @@
 import os
 import sys
-import logging
 from typing import Optional
 
 import numpy as np
 from rich.console import Console
-from rich.logging import RichHandler
 from rich.table import Table
 from rich.tree import Tree
 from rich import box
@@ -412,7 +410,7 @@ class Logger:
             title_justify="left",
             padding=(0, 1),
         )
-        has_oof = any("oof_auc" in r for r in rows)
+        has_proxy = any("proxy_auc" in r for r in rows)
         has_train = any("train_auc" in r for r in rows)
         has_quality = any("quality_auc" in r for r in rows)
         has_active = any("active" in r for r in rows)
@@ -423,8 +421,8 @@ class Logger:
         table.add_column("feat time",   justify="right", min_width=9)
         table.add_column("AD comps",    justify="right", min_width=9)
         table.add_column("AD cal max",  justify="right", min_width=10)
-        if has_oof:
-            table.add_column("OOF AUC",     justify="right", min_width=9)
+        if has_proxy:
+            table.add_column("Proxy AUC",   justify="right", min_width=10)
         if has_train:
             table.add_column("Train AUC",   justify="right", min_width=10)
         if has_quality:
@@ -441,8 +439,9 @@ class Logger:
                 str(r["ad_n_components"]),
                 f"{r['ad_cal_max']:.3f}",
             ]
-            if has_oof:
-                row.append(f"{r['oof_auc']:.4f}")
+            if has_proxy:
+                v = r.get("proxy_auc")
+                row.append(f"{v:.4f}" if v is not None else "—")
             if has_train:
                 row.append(f"{r['train_auc']:.4f}")
             if has_quality:
@@ -457,8 +456,9 @@ class Logger:
     def ad_weights_table(self, rows: list, n_samples: int) -> None:
         """
         rows : list of dicts with keys:
-            name, ad_mean, ad_std, ad_min, ad_max,
-            weight_mean, weight_std, wins, pred_mean
+            name, proxy_auc (optional), oof_auc (optional),
+            ad_mean, ad_std, ad_min, ad_max,
+            weight_mean, weight_std, vetoed, pred_mean
         """
         if not self._verbose:
             return
@@ -471,27 +471,33 @@ class Logger:
             title_justify="left",
             padding=(0, 1),
         )
-        has_oof = any("oof_auc" in r for r in rows)
+        has_oof   = any("oof_auc"   in r for r in rows)
+        has_proxy = any(r.get("proxy_auc") is not None for r in rows)
 
         table.add_column("Descriptor",       style="cyan", no_wrap=True, min_width=12)
+        if has_proxy:
+            table.add_column("Proxy AUC",    justify="right", min_width=10)
         if has_oof:
             table.add_column("OOF AUC",      justify="right", min_width=9)
         table.add_column("AD mean±std",      justify="right", min_width=13)
         table.add_column("AD [min, max]",    justify="right", min_width=14)
         table.add_column("Final W mean±std", justify="right", min_width=16)
-        table.add_column("Wins",             justify="right", min_width=8)
+        table.add_column("Vetoed",           justify="right", min_width=10)
         table.add_column("P(y=1) mean",      justify="right", min_width=12)
 
         for r in rows:
-            wins_pct = 100.0 * r["wins"] / n_samples if n_samples > 0 else 0.0
+            vetoed_pct = 100.0 * r["vetoed"] / n_samples if n_samples > 0 else 0.0
             row = [r["name"]]
+            if has_proxy:
+                v = r.get("proxy_auc")
+                row.append(f"{v:.4f}" if v is not None else "—")
             if has_oof:
                 row.append(f"{r['oof_auc']:.4f}")
             row += [
                 f"{r['ad_mean']:.3f}±{r['ad_std']:.3f}",
                 f"[{r['ad_min']:.3f}, {r['ad_max']:.3f}]",
                 f"{r['weight_mean']:.3f}±{r['weight_std']:.3f}",
-                f"{r['wins']} ({wins_pct:.0f}%)",
+                f"{r['vetoed']} ({vetoed_pct:.0f}%)",
                 f"{r['pred_mean']:.3f}",
             ]
             table.add_row(*row)
@@ -565,6 +571,49 @@ class Logger:
 
         _add(tree, directory)
         self._console.print(tree)
+
+    def proxy_screen_table(self, rows: list) -> None:
+        """
+        Summary table for descriptor proxy-CV screening.
+
+        rows : list of dicts with keys:
+            name        – descriptor name
+            n_features  – number of raw features (int or None if not computed)
+            proxy_auc   – float or None (when screening was skipped)
+            status      – "pass" | "drop" | "fallback" | "skipped"
+        """
+        if not self._verbose:
+            return
+
+        table = Table(
+            title="[bold]Descriptor screening summary[/bold]",
+            box=box.SIMPLE_HEAVY,
+            show_header=True,
+            header_style="bold magenta",
+            title_justify="left",
+            padding=(0, 1),
+        )
+        table.add_column("Descriptor", style="cyan", no_wrap=True, min_width=12)
+        table.add_column("Features",   justify="right", min_width=9)
+        table.add_column("Proxy AUC",  justify="right", min_width=10)
+        table.add_column("Status",     justify="center", min_width=10)
+
+        status_fmt = {
+            "reference": "[bold blue]★ ref[/]",
+            "pass":      "[bold green]✓ pass[/]",
+            "drop":      "[bold red]✗ drop[/]",
+            "fallback":  "[bold yellow]~ fallback[/]",
+            "skipped":   "[dim]— skipped[/]",
+        }
+
+        for r in rows:
+            n_feat = f"{r['n_features']:,}" if r.get("n_features") is not None else "—"
+            auc    = f"{r['proxy_auc']:.4f}" if r.get("proxy_auc") is not None else "—"
+            status = status_fmt.get(r.get("status", "skipped"), r.get("status", ""))
+            table.add_row(r["name"], n_feat, auc, status)
+
+        self._console.print(table)
+        self._console.line()
 
 
 logger = Logger()

@@ -1,1 +1,1 @@
-from .portfolio import Portfolio
+from .portfolio import Portfolio  # noqa: F401

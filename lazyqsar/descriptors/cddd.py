@@ -462,6 +462,14 @@ class ContinuousDataDrivenDescriptor(object):
         embeddings = np.array(outputs, dtype=np.float32)
         return embeddings
 
+    def is_applicable(self, smiles_list: list) -> bool:
+        _MAX_SMILES_LEN = 150
+        n_inapplicable = sum(
+            1 for s in smiles_list
+            if len(s) > _MAX_SMILES_LEN or not isinstance(preprocess_smiles(s), str)
+        )
+        return n_inapplicable / len(smiles_list) <= 0.001
+
     def save(self, dir_name: str):
         if not os.path.exists(dir_name):
             raise Exception(f"Directory {dir_name} does not exist.")

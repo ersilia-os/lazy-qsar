@@ -93,13 +93,20 @@ class ChemeleonDescriptor(object):
     def transform(self, smiles):
         chunk_size = 100
         R = []
-        logger.debug(f"Transforming CheMeleon descriptors in chunks of {chunk_size}...")
-        for i in range(0, len(smiles), chunk_size):
+        n_total = len(smiles)
+        milestones = {int(n_total * f / chunk_size) for f in (0.25, 0.5, 0.75)}
+        for i in range(0, n_total, chunk_size):
             chunk = smiles[i : i + chunk_size]
             X_chunk = np.array(self.chemeleon_fingerprint(chunk), dtype=np.float32)
-            R += [X_chunk]
-            logger.debug(f"Transformed {len(R) * chunk_size} samples so far...")
+            R.append(X_chunk)
+            done = len(R)
+            if done in milestones:
+                pct = int(done * chunk_size * 100 / n_total)
+                logger.debug(f"CheMeleon transform {pct}% ({done * chunk_size:,}/{n_total:,})")
         return np.concatenate(R, dtype=np.float32, axis=0)
+
+    def is_applicable(self, smiles_list: list) -> bool:
+        return True
 
     def save(self, dir_name: str):
         if not os.path.exists(dir_name):
