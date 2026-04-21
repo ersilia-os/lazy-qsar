@@ -213,10 +213,38 @@ class LazyClassifier(object):
 
         self.batch_priors_ = [m.train_prior_ for m in self.models]
         self.decision_cutoff_ = float(np.mean([m.decision_cutoff_ for m in self.models]))
+        self.oof_auc_ = self._compute_oof_auc(X, y, batch_indices)
+        self.train_auc_ = self._compute_train_auc(X, y)
         logger.success(
             f"LazyClassifier fitted — "
-            f"{n_batches} batch(es)  portfolio={self.portfolio}"
+            f"{n_batches} batch(es)  portfolio={self.portfolio}  "
+            f"OOF AUC={self.oof_auc_:.4f}  train AUC={self.train_auc_:.4f}"
         )
+
+    def _compute_train_auc(self, X, y) -> float:
+        from sklearn.metrics import roc_auc_score
+        try:
+            train_proba = self.predict_proba(X)[:, 1]
+            return float(roc_auc_score(y, train_proba))
+        except Exception:
+            return 0.5
+
+    def _compute_oof_auc(self, X, y, batch_indices) -> float:
+        from sklearn.metrics import roc_auc_score
+        try:
+            batch_aucs = []
+            for batch_clf, indices in zip(self.models, batch_indices):
+                heads = batch_clf.heads
+                if not all(hasattr(getattr(h, "model", None), "oof_probas_") for h in heads):
+                    return 0.5
+                S = np.column_stack([h.model.oof_probas_ for h in heads])
+                X_prep = batch_clf.prep.transform(X[indices])
+                W_oof = batch_clf.pooler.get_weights(X_prep)
+                pooled = (W_oof * S).sum(axis=1)
+                batch_aucs.append(roc_auc_score(y[indices], pooled))
+            return float(np.mean(batch_aucs))
+        except Exception:
+            return 0.5
 
     def predict_proba(self, X):
         logger.debug(f"predict_proba: X={X.shape}  batches={len(self.models)}")

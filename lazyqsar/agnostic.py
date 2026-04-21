@@ -61,6 +61,15 @@ class LazyClassifier:
     # Predict
     # ------------------------------------------------------------------
 
+    @property
+    def oof_auc_(self) -> float:
+        return self._model.oof_auc_
+
+    @property
+    def train_auc_(self) -> float:
+        return self._model.train_auc_
+
+
     def predict_proba(self, X=None, h5_file=None, h5_idxs=None) -> np.ndarray:
         if X is None:
             X = _load_h5(h5_file, h5_idxs)

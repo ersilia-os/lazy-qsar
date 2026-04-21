@@ -86,8 +86,8 @@ def _detect_sparse_counts(X, sparsity: float) -> bool:
     is_integer_like = float((nonzero_vals == np.floor(nonzero_vals)).mean()) > 0.95
     if not is_integer_like:
         return False
-    max_val = float(nonzero_vals.max())
-    return sparsity >= 0.85 or max_val <= 10
+    median_val = float(np.median(nonzero_vals))
+    return sparsity >= 0.85 or median_val <= 5
 
 
 def _compute_binary_feature_fraction(X, n_sample: int = 5000) -> float:

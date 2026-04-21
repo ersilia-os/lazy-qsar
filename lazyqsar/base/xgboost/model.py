@@ -958,6 +958,11 @@ def _portfolio_select(X, y: np.ndarray,
 
     Returns (best_preset_name, best_params, mean_best_iteration, scores_dict).
     """
+    # FLAML and AutoGluon were calibrated on datasets with p ≤ ~158 (FLAML center=28,
+    # scale=130) and p ≤ ~150 (AutoGluon OpenML benchmark).  Both are out-of-distribution
+    # for p > 200; skip them to avoid poorly-matched presets and excess compute.
+    _calibration_skip = {"flaml", "autogluon"} if profile.n_features > 200 else set()
+
     candidates = [
         ("heuristic", _get_params(profile, device, nthread=nthread)),
         ("default",   xgb_default_params(profile, device, nthread=nthread)),
@@ -1025,6 +1030,13 @@ def _portfolio_select(X, y: np.ndarray,
     fast_params_map: dict = {}  # name → fast_p (for logging depth info)
     skipped_names: list = []
     for name, params in candidates:
+        if name in _calibration_skip:
+            logger.debug(
+                f"[portfolio] {name:10s}: skipped (p={profile.n_features} > 200, outside calibration regime)"
+            )
+            fast_scores[name] = float("nan")
+            skipped_names.append(name)
+            continue
         fast_p = dict(params)
         fast_p["n_estimators"]          = fast_rounds
         fast_p["early_stopping_rounds"] = fast_patience

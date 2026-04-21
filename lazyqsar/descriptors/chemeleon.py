@@ -7,21 +7,32 @@ from ..utils.logging import logger
 
 from pathlib import Path
 from urllib.request import urlretrieve
-from lazyqsar.utils.setup import install_torch as ensure_torch_cpu, install_chemprop as ensure_chemprop
 
 try:
     import torch
 except ImportError:
-    ensure_torch_cpu()
-    import torch
+    raise ImportError(
+        "torch is required for ChemeleonDescriptor. "
+        'Install the full descriptor extras: pip install -e ".[all]"'
+    )
+
 try:
     import chemeleon  # noqa: F401
-except ImportError:
-    ensure_chemprop()
     from chemprop import featurizers, nn
     from chemprop.data import BatchMolGraph
     from chemprop.nn import RegressionFFN
     from chemprop.models import MPNN
+except ImportError:
+    try:
+        from chemprop import featurizers, nn
+        from chemprop.data import BatchMolGraph
+        from chemprop.nn import RegressionFFN
+        from chemprop.models import MPNN
+    except ImportError:
+        raise ImportError(
+            "chemprop is required for ChemeleonDescriptor. "
+            'Install the full descriptor extras: pip install -e ".[all]"'
+        )
 from rdkit.Chem import MolFromSmiles, Mol
 from rdkit import RDLogger
 

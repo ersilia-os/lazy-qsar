@@ -1,5 +1,4 @@
 import json
-import multiprocessing
 import os
 import numpy as np
 from rdkit import Chem
@@ -8,27 +7,6 @@ from rdkit import RDLogger
 from ..utils.logging import logger
 
 RDLogger.DisableLog("rdApp.*")
-
-# Module-level worker state (initialised once per worker process)
-_worker_mfpgen = None
-_worker_fpSize = None
-
-
-def _init_morgan_worker(radius, fpSize):
-    global _worker_mfpgen, _worker_fpSize
-    from rdkit.Chem import rdFingerprintGenerator as _rfg
-    _worker_mfpgen = _rfg.GetMorganGenerator(radius=radius, fpSize=fpSize)
-    _worker_fpSize = fpSize
-
-
-def _compute_morgan_worker(smiles):
-    from rdkit import Chem as _Chem
-    mol = _Chem.MolFromSmiles(smiles)
-    v = _worker_mfpgen.GetCountFingerprint(mol)
-    data = [0] * _worker_fpSize
-    for i, val in v.GetNonzeroElements().items():
-        data[i] = val if val < 255 else 255
-    return data
 
 
 class MorganFingerprint(object):
@@ -55,17 +33,15 @@ class MorganFingerprint(object):
         return Chem.MolFromSmiles(smiles)
 
     def transform(self, smiles):
-        n_workers = os.cpu_count() or 1
-        logger.debug(
-            f"Transforming Morgan fingerprints using {n_workers} parallel workers..."
-        )
-        chunksize = max(1, len(smiles) // (n_workers * 4))
-        with multiprocessing.Pool(
-            n_workers,
-            initializer=_init_morgan_worker,
-            initargs=(self.radius, self.n_dim),
-        ) as pool:
-            results = pool.map(_compute_morgan_worker, smiles, chunksize=chunksize)
+        logger.debug("Transforming Morgan fingerprints...")
+        results = []
+        for smi in smiles:
+            mol = Chem.MolFromSmiles(smi)
+            v = self.mfpgen.GetCountFingerprint(mol)
+            row = [0] * self.n_dim
+            for i, val in v.GetNonzeroElements().items():
+                row[i] = val if val < 255 else 255
+            results.append(row)
         return np.array(results, dtype=np.uint8)
 
     def save(self, dir_name: str):
