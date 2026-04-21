@@ -729,7 +729,7 @@ def _run_batch(csv_path: str, modes: list[str], repo_dir: str, output_dir: str, 
 
         print(f"\n  RUN   {tag} " + "─" * max(1, 76 - len(tag) - 8))
         try:
-            train_dataset(pathogen, dataset, mode, repo_dir, output_dir, models_output_dir)
+            train_dataset(pathogen, dataset, mode, repo_dir, output_dir)
             done += 1
         except Exception as exc:
             print(f"  FAIL  {tag} — {exc}")
@@ -764,13 +764,10 @@ if __name__ == "__main__":
         "--output_dir",
         required=True,
         metavar="PATH",
-        help="Directory where results CSVs are written (<output_dir>/<pathogen>_<dataset>_<mode>.csv).",
-    )
-    parser.add_argument(
-        "--models_output_dir",
-        required=True,
-        metavar="PATH",
-        help="Directory where trained models are saved (<models_output_dir>/<pathogen>/<dataset>/<mode>/).",
+        help=(
+            "Root output directory. Models are written to <output_dir>/models/<pathogen>/ "
+            "and results CSVs to <output_dir>/<pathogen>_<dataset>_<mode>.csv."
+        ),
     )
 
     # --- single-run args ---
