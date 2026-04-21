@@ -37,7 +37,9 @@ class DatasetProfile:
         if self.task == "classification":
             lines.append(f"  imbalance_ratio={self.imbalance_ratio:.2f}")
         else:
-            lines.append(f"  y_skewness={self.y_skewness:.3f}, y_all_positive={self.y_all_positive}")
+            lines.append(
+                f"  y_skewness={self.y_skewness:.3f}, y_all_positive={self.y_all_positive}"
+            )
         lines.append(f"  feature_signal_p90={self.feature_signal_p90:.3f}")
         lines.append(")")
         return "\n".join(lines)
@@ -79,8 +81,9 @@ def _compute_binary_feature_fraction(X, n_sample: int = 5000) -> float:
     return float(is_binary.mean())
 
 
-def _estimate_feature_signal(X, y: np.ndarray, n_sample: int = 5000,
-                              p_sample: int = 500):
+def _estimate_feature_signal(
+    X, y: np.ndarray, n_sample: int = 5000, p_sample: int = 500
+):
     n, p = X.shape
     n_s = min(n_sample, n)
     rng = np.random.RandomState(42)
@@ -131,7 +134,9 @@ def inspect(X, y, task: Optional[str] = None) -> DatasetProfile:
     if task == "classification":
         unique, counts = np.unique(y, return_counts=True)
         if len(unique) != 2:
-            raise ValueError(f"classification requires exactly 2 classes, found {len(unique)}")
+            raise ValueError(
+                f"classification requires exactly 2 classes, found {len(unique)}"
+            )
         label_counts = dict(zip(unique, counts))
         pos_count = label_counts.get(1, counts.min())
         neg_count = label_counts.get(0, counts.max())

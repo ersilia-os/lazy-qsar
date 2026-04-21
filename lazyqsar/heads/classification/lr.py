@@ -3,7 +3,6 @@ from lazyqsar.utils.logging import logger
 
 
 class Head(object):
-
     def __init__(self, calibrated=True):
         self.model = LinearClassifier(calibrated=calibrated)
 

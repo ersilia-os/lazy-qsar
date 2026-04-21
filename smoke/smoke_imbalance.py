@@ -11,6 +11,7 @@ Verifies:
 Usage:
     python smoke_imbalance.py
 """
+
 import os
 import tempfile
 
@@ -126,8 +127,12 @@ for name, arr in [
 assert np.allclose(proba.sum(axis=1), 1.0, atol=1e-6), "predict_proba not normalized"
 assert np.allclose(score.sum(axis=1), 1.0, atol=1e-6), "predict_score not normalized"
 assert rank[:, 1].min() >= 0.0 and rank[:, 1].max() <= 1.0, "rank out of [0,1]"
-assert logit[y_test == 1, 1].mean() > logit[y_test == 0, 1].mean(), "logit does not separate classes"
-assert lift[y_test == 1, 1].mean() > lift[y_test == 0, 1].mean(), "lift does not separate classes"
+assert logit[y_test == 1, 1].mean() > logit[y_test == 0, 1].mean(), (
+    "logit does not separate classes"
+)
+assert lift[y_test == 1, 1].mean() > lift[y_test == 0, 1].mean(), (
+    "lift does not separate classes"
+)
 
 
 # -------------------------------------------------------------------
@@ -174,6 +179,7 @@ print("\nSmoke test PASSED\n")
 # Calibration plot
 # -------------------------------------------------------------------
 import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.patheffects as pe
@@ -184,7 +190,9 @@ fig, (ax_cal, ax_hist) = plt.subplots(
 )
 
 ax_cal.plot([0, 1], [0, 1], "k--", lw=1, label="Perfect calibration")
-frac_pos, mean_pred = calibration_curve(y_test, proba[:, 1], n_bins=10, strategy="uniform")
+frac_pos, mean_pred = calibration_curve(
+    y_test, proba[:, 1], n_bins=10, strategy="uniform"
+)
 ax_cal.plot(
     mean_pred,
     frac_pos,
@@ -200,7 +208,9 @@ ax_cal.legend(fontsize=9)
 ax_cal.set_ylim(-0.05, 1.05)
 ax_cal.grid(True, alpha=0.3)
 
-ax_hist.hist(proba[:, 1], bins=20, range=(0, 1), alpha=0.7, color="#4e79a7", label="Lazy")
+ax_hist.hist(
+    proba[:, 1], bins=20, range=(0, 1), alpha=0.7, color="#4e79a7", label="Lazy"
+)
 ax_hist.set_xlabel("Mean predicted probability")
 ax_hist.set_ylabel("Count")
 ax_hist.legend(fontsize=8)

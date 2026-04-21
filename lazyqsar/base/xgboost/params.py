@@ -112,8 +112,9 @@ from typing import Dict, Any
 from .inspector import DatasetProfile
 
 
-def get_params(profile: DatasetProfile, device: str = "cpu",
-               nthread: int = -1) -> Dict[str, Any]:
+def get_params(
+    profile: DatasetProfile, device: str = "cpu", nthread: int = -1
+) -> Dict[str, Any]:
     """
     Return a dict of XGBoost parameters for the given dataset profile.
 
@@ -221,7 +222,7 @@ def get_params(profile: DatasetProfile, device: str = "cpu",
     # ------------------------------------------------------------------
     if profile.is_sparse_counts and p > 200:
         params["grow_policy"] = "lossguide"
-        params["max_depth"] = 0          # unlimited; max_leaves takes over
+        params["max_depth"] = 0  # unlimited; max_leaves takes over
         # max_leaves raised to give enough tree capacity on small datasets.
         # Old formula (n//50) gave only 16 leaves for n<800, capping the
         # model at ~36 samples/leaf — too coarse for underdetermined data.
@@ -382,10 +383,10 @@ def get_params(profile: DatasetProfile, device: str = "cpu",
     if p > 200:
         if profile.is_sparse_counts:
             csn_floor = 0.1 if profile.n_p_ratio < 1.0 else 0.05
-            csn = round(max(csn_floor, min(0.3, 1.0 / (p ** 0.5))), 3)
+            csn = round(max(csn_floor, min(0.3, 1.0 / (p**0.5))), 3)
         else:
             # Dense: compensate for bytree so bytree × csn ≈ sqrt(p)/p.
-            csn = round(max(0.05, min(0.3, 1.0 / (p ** 0.5 * cst))), 3)
+            csn = round(max(0.05, min(0.3, 1.0 / (p**0.5 * cst))), 3)
         params["colsample_bynode"] = csn
 
     # Note: colsample_bylevel is intentionally NOT set when colsample_bynode

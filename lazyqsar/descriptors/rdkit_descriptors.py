@@ -13,7 +13,9 @@ RDLogger.DisableLog("rdApp.*")
 class RDKitDescriptor(object):
     def __init__(self):
         self.featurizer_name = "rdkit"
-        self._descriptor_names = sorted([desc_name for desc_name, _ in Descriptors._descList])
+        self._descriptor_names = sorted(
+            [desc_name for desc_name, _ in Descriptors._descList]
+        )
         self.calculator = MoleculeDescriptors.MolecularDescriptorCalculator(
             self._descriptor_names
         )

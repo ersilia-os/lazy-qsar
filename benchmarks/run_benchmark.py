@@ -8,6 +8,7 @@ Usage:
     python benchmarks/run_benchmark.py --data-dir /path/to/tdc/binary
     python benchmarks/run_benchmark.py --mode agnostic --datasets bioavailability_ma ames
 """
+
 import argparse
 import os
 import shutil
@@ -22,7 +23,12 @@ import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.calibration import calibration_curve
-from sklearn.metrics import average_precision_score, roc_auc_score, roc_curve, precision_recall_curve
+from sklearn.metrics import (
+    average_precision_score,
+    roc_auc_score,
+    roc_curve,
+    precision_recall_curve,
+)
 from sklearn.model_selection import train_test_split
 
 warnings.filterwarnings("ignore")
@@ -81,6 +87,7 @@ MODEL_COLORS = {m: _PALETTE[i] for i, m in enumerate(MODEL_ORDER)}
 # Data helpers
 # ---------------------------------------------------------------------------
 
+
 def load_dataset(path: Path):
     """Load a TDC .tab file → (smiles list, binary y array)."""
     df = pd.read_csv(path, sep="\t")
@@ -110,6 +117,7 @@ def compute_morgan(smiles_list, radius=2, n_bits=2048):
 # Calibration helper
 # ---------------------------------------------------------------------------
 
+
 def compute_ece(y_true, proba, n_bins=10):
     """Expected Calibration Error: weighted mean |actual_pos_rate - mean_pred_prob| per bin."""
     bins = np.linspace(0, 1, n_bins + 1)
@@ -126,6 +134,7 @@ def compute_ece(y_true, proba, n_bins=10):
 # ---------------------------------------------------------------------------
 # File tree printer
 # ---------------------------------------------------------------------------
+
 
 def _tree_lines(directory, prefix=""):
     """Yield lines for a file tree rooted at directory."""
@@ -163,6 +172,7 @@ def print_file_tree(directory, output_file=None):
 # Benchmark core
 # ---------------------------------------------------------------------------
 
+
 def _fit_predict(model, fit_fn, predict_fn):
     """Time fit and inference separately. Returns (proba, fit_time, infer_time)."""
     t0 = time.time()
@@ -191,36 +201,55 @@ def run_dataset(name, smiles, y, mode, output_dir, is_first_dataset=False):
     results = []
     curves = []
 
-    def _record(model_name, proba, t_fit, t_infer, error=None,
-                save_time=None, load_time=None):
+    def _record(
+        model_name, proba, t_fit, t_infer, error=None, save_time=None, load_time=None
+    ):
         if error is not None:
-            results.append({
-                "dataset": name, "model": model_name,
-                "roc_auc": np.nan, "pr_auc": np.nan, "ece": np.nan,
-                "fit_time": np.nan, "infer_time": np.nan,
-                "save_time": np.nan, "load_time": np.nan,
-                "error": str(error)[:120],
-            })
+            results.append(
+                {
+                    "dataset": name,
+                    "model": model_name,
+                    "roc_auc": np.nan,
+                    "pr_auc": np.nan,
+                    "ece": np.nan,
+                    "fit_time": np.nan,
+                    "infer_time": np.nan,
+                    "save_time": np.nan,
+                    "load_time": np.nan,
+                    "error": str(error)[:120],
+                }
+            )
             return
         fpr, tpr, _ = roc_curve(y_test, proba)
         precision, recall, _ = precision_recall_curve(y_test, proba)
-        frac_pos, mean_pred = calibration_curve(y_test, proba, n_bins=10, strategy="uniform")
-        results.append({
-            "dataset": name, "model": model_name,
-            "roc_auc": round(roc_auc_score(y_test, proba), 4),
-            "pr_auc": round(average_precision_score(y_test, proba), 4),
-            "ece": compute_ece(y_test, proba),
-            "fit_time": t_fit,
-            "infer_time": t_infer,
-            "save_time": save_time,
-            "load_time": load_time,
-        })
-        curves.append({
-            "dataset": name, "model": model_name,
-            "fpr": fpr, "tpr": tpr,
-            "precision": precision, "recall": recall,
-            "cal_frac_pos": frac_pos, "cal_mean_pred": mean_pred,
-        })
+        frac_pos, mean_pred = calibration_curve(
+            y_test, proba, n_bins=10, strategy="uniform"
+        )
+        results.append(
+            {
+                "dataset": name,
+                "model": model_name,
+                "roc_auc": round(roc_auc_score(y_test, proba), 4),
+                "pr_auc": round(average_precision_score(y_test, proba), 4),
+                "ece": compute_ece(y_test, proba),
+                "fit_time": t_fit,
+                "infer_time": t_infer,
+                "save_time": save_time,
+                "load_time": load_time,
+            }
+        )
+        curves.append(
+            {
+                "dataset": name,
+                "model": model_name,
+                "fpr": fpr,
+                "tpr": tpr,
+                "precision": precision,
+                "recall": recall,
+                "cal_frac_pos": frac_pos,
+                "cal_mean_pred": mean_pred,
+            }
+        )
 
     lazy_clf = None  # keep reference for ONNX roundtrip
 
@@ -228,6 +257,7 @@ def run_dataset(name, smiles, y, mode, output_dir, is_first_dataset=False):
         # LazyClassifier (agnostic, Morgan fingerprints)
         try:
             from lazyqsar.agnostic import LazyClassifier
+
             clf = LazyClassifier()
             proba, t_fit, t_infer = _fit_predict(
                 clf,
@@ -242,6 +272,7 @@ def run_dataset(name, smiles, y, mode, output_dir, is_first_dataset=False):
         # LazyClassifier without calibration — speed comparison
         try:
             from lazyqsar.agnostic import LazyClassifier
+
             clf_nocal = LazyClassifier(calibrated=False)
             proba, t_fit, t_infer = _fit_predict(
                 clf_nocal,
@@ -256,6 +287,7 @@ def run_dataset(name, smiles, y, mode, output_dir, is_first_dataset=False):
         if lazy_clf is not None:
             try:
                 from lazyqsar.agnostic import LazyClassifier
+
                 tmp_dir = tempfile.mkdtemp(prefix="lazy_onnx_")
                 model_path = os.path.join(tmp_dir, "model")
                 try:
@@ -277,9 +309,12 @@ def run_dataset(name, smiles, y, mode, output_dir, is_first_dataset=False):
                     t_infer_onnx = round(time.time() - t2, 4)
 
                     _record(
-                        "LazyClassifier (ONNX)", proba_onnx,
-                        t_fit=None, t_infer=t_infer_onnx,
-                        save_time=save_time, load_time=load_time,
+                        "LazyClassifier (ONNX)",
+                        proba_onnx,
+                        t_fit=None,
+                        t_infer=t_infer_onnx,
+                        save_time=save_time,
+                        load_time=load_time,
                     )
                 finally:
                     shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -288,7 +323,9 @@ def run_dataset(name, smiles, y, mode, output_dir, is_first_dataset=False):
 
         # LR baseline
         try:
-            clf = LogisticRegression(max_iter=1000, class_weight="balanced", solver="lbfgs")
+            clf = LogisticRegression(
+                max_iter=1000, class_weight="balanced", solver="lbfgs"
+            )
             proba, t_fit, t_infer = _fit_predict(
                 clf,
                 lambda m: m.fit(X_train, y_train),
@@ -301,6 +338,7 @@ def run_dataset(name, smiles, y, mode, output_dir, is_first_dataset=False):
         # XGB baseline
         try:
             from xgboost import XGBClassifier
+
             clf = XGBClassifier(eval_metric="logloss", verbosity=0, n_jobs=-1)
             proba, t_fit, t_infer = _fit_predict(
                 clf,
@@ -327,6 +365,7 @@ def run_dataset(name, smiles, y, mode, output_dir, is_first_dataset=False):
         # LazyClassifierQSAR (SMILES → rdkit + morgan descriptors)
         try:
             from lazyqsar.qsar import LazyClassifierQSAR
+
             clf = LazyClassifierQSAR(mode="fast")
             proba, t_fit, t_infer = _fit_predict(
                 clf,
@@ -344,6 +383,7 @@ def run_dataset(name, smiles, y, mode, output_dir, is_first_dataset=False):
 # Summary helpers
 # ---------------------------------------------------------------------------
 
+
 def build_pivot(all_results, metric="roc_auc"):
     df = pd.DataFrame(all_results)
     present = [m for m in MODEL_ORDER if m in df["model"].unique()]
@@ -360,6 +400,7 @@ def mean_rank_table(pivot):
 # Plotting helpers
 # ---------------------------------------------------------------------------
 
+
 def _bar_annotations(ax, rects, fmt="{:.3f}", fontsize=5, rotation=90):
     """Add value labels on top of each bar."""
     for rect in rects:
@@ -370,8 +411,10 @@ def _bar_annotations(ax, rects, fmt="{:.3f}", fontsize=5, rotation=90):
             rect.get_x() + rect.get_width() / 2,
             h + 0.005,
             fmt.format(h),
-            ha="center", va="bottom",
-            fontsize=fontsize, rotation=rotation,
+            ha="center",
+            va="bottom",
+            fontsize=fontsize,
+            rotation=rotation,
         )
 
 
@@ -385,8 +428,14 @@ def plot_bars(pivot, output_path, title, annotate=True):
     width = 0.8 / len(models)
     for i, (model, color) in enumerate(zip(models, colors)):
         offset = (i - len(models) / 2 + 0.5) * width
-        rects = ax.bar(x + offset, pivot[model], width=width * 0.9,
-                       label=model, color=color, alpha=0.85)
+        rects = ax.bar(
+            x + offset,
+            pivot[model],
+            width=width * 0.9,
+            label=model,
+            color=color,
+            alpha=0.85,
+        )
         if annotate:
             _bar_annotations(ax, rects)
     ax.set_xticks(x)
@@ -407,8 +456,11 @@ def plot_timing_bars(all_results, output_path):
 
     df = pd.DataFrame(all_results)
     datasets = sorted(df["dataset"].unique())
-    models_fit = [m for m in MODEL_ORDER
-                  if m != "LazyClassifier (ONNX)" and m in df["model"].unique()]
+    models_fit = [
+        m
+        for m in MODEL_ORDER
+        if m != "LazyClassifier (ONNX)" and m in df["model"].unique()
+    ]
     models_infer = [m for m in MODEL_ORDER if m in df["model"].unique()]
 
     fig, (ax_fit, ax_infer) = plt.subplots(2, 1, figsize=(16, 8), sharex=False)
@@ -420,10 +472,21 @@ def plot_timing_bars(all_results, output_path):
             vals = []
             for ds in datasets:
                 row = df_sub[(df_sub["dataset"] == ds) & (df_sub["model"] == model)]
-                vals.append(float(row[metric].iloc[0]) if len(row) > 0 and not row[metric].isna().all() else np.nan)
+                vals.append(
+                    float(row[metric].iloc[0])
+                    if len(row) > 0 and not row[metric].isna().all()
+                    else np.nan
+                )
             offset = (i - len(models) / 2 + 0.5) * width
             color = MODEL_COLORS.get(model, "#888888")
-            ax.bar(x + offset, vals, width=width * 0.9, label=model, color=color, alpha=0.85)
+            ax.bar(
+                x + offset,
+                vals,
+                width=width * 0.9,
+                label=model,
+                color=color,
+                alpha=0.85,
+            )
         ax.set_xticks(x)
         ax.set_xticklabels(datasets, rotation=40, ha="right", fontsize=7)
         ax.set_ylabel(metric.replace("_", " ") + " (s)", fontsize=9)
@@ -433,8 +496,22 @@ def plot_timing_bars(all_results, output_path):
         ax.legend(fontsize=7, ncol=3)
         ax.grid(axis="y", alpha=0.3)
 
-    _draw_panel(ax_fit, df, models_fit, "fit_time", "Fit time by dataset (log scale)", log_scale=True)
-    _draw_panel(ax_infer, df, models_infer, "infer_time", "Inference time by dataset (log scale)", log_scale=True)
+    _draw_panel(
+        ax_fit,
+        df,
+        models_fit,
+        "fit_time",
+        "Fit time by dataset (log scale)",
+        log_scale=True,
+    )
+    _draw_panel(
+        ax_infer,
+        df,
+        models_infer,
+        "infer_time",
+        "Inference time by dataset (log scale)",
+        log_scale=True,
+    )
 
     plt.tight_layout()
     fig.savefig(output_path, dpi=150)
@@ -467,8 +544,10 @@ def plot_radar(all_results, output_path):
         model_vals[model] = (roc, pr, 1 - ece, ft)
 
     # Normalize speed: 1/fit_time, scaled so max = 1
-    speeds_raw = {m: 1.0 / v[3] if (v[3] and not np.isnan(v[3])) else 0.0
-                  for m, v in model_vals.items()}
+    speeds_raw = {
+        m: 1.0 / v[3] if (v[3] and not np.isnan(v[3])) else 0.0
+        for m, v in model_vals.items()
+    }
     max_speed = max(speeds_raw.values()) if speeds_raw else 1.0
     if max_speed == 0:
         max_speed = 1.0
@@ -507,7 +586,10 @@ def plot_rank_scatter(pivot_roc, output_path):
     for i, model in enumerate(reversed(models)):
         vals = ranks[model].dropna().values
         ax.boxplot(
-            vals, positions=[i], vert=False, widths=0.5,
+            vals,
+            positions=[i],
+            vert=False,
+            widths=0.5,
             patch_artist=True,
             boxprops={"facecolor": MODEL_COLORS.get(model, "#888"), "alpha": 0.4},
             medianprops={"color": MODEL_COLORS.get(model, "#888"), "linewidth": 2},
@@ -516,8 +598,14 @@ def plot_rank_scatter(pivot_roc, output_path):
             flierprops={"marker": ""},
         )
         jitter = np.random.default_rng(42).uniform(-0.15, 0.15, len(vals))
-        ax.scatter(vals, np.full(len(vals), i) + jitter,
-                   color=MODEL_COLORS.get(model, "#888"), s=18, alpha=0.7, zorder=3)
+        ax.scatter(
+            vals,
+            np.full(len(vals), i) + jitter,
+            color=MODEL_COLORS.get(model, "#888"),
+            s=18,
+            alpha=0.7,
+            zorder=3,
+        )
 
     ax.set_yticks(range(len(models)))
     ax.set_yticklabels(list(reversed(models)), fontsize=9)
@@ -546,8 +634,13 @@ def plot_roc_curves(all_curves, output_path):
         ax = axes[ax_idx]
         ds_curves = [c for c in all_curves if c["dataset"] == ds]
         for c in ds_curves:
-            ax.plot(c["fpr"], c["tpr"], label=c["model"],
-                    color=MODEL_COLORS.get(c["model"], "#888"), lw=1.2)
+            ax.plot(
+                c["fpr"],
+                c["tpr"],
+                label=c["model"],
+                color=MODEL_COLORS.get(c["model"], "#888"),
+                lw=1.2,
+            )
         ax.plot([0, 1], [0, 1], "k--", lw=0.5)
         ax.set_title(ds, fontsize=8)
         ax.set_xlabel("FPR", fontsize=7)
@@ -557,8 +650,10 @@ def plot_roc_curves(all_curves, output_path):
     for ax_idx in range(len(datasets), len(axes)):
         axes[ax_idx].set_visible(False)
 
-    handles = [plt.Line2D([0], [0], color=MODEL_COLORS.get(m, "#888"), label=m, lw=1.5)
-               for m in models]
+    handles = [
+        plt.Line2D([0], [0], color=MODEL_COLORS.get(m, "#888"), label=m, lw=1.5)
+        for m in models
+    ]
     fig.legend(handles=handles, loc="lower right", fontsize=8, ncol=len(models))
     fig.suptitle("ROC Curves by Dataset", fontsize=11, y=1.01)
     plt.tight_layout()
@@ -582,8 +677,13 @@ def plot_pr_curves(all_curves, output_path):
         ax = axes[ax_idx]
         ds_curves = [c for c in all_curves if c["dataset"] == ds]
         for c in ds_curves:
-            ax.plot(c["recall"], c["precision"], label=c["model"],
-                    color=MODEL_COLORS.get(c["model"], "#888"), lw=1.2)
+            ax.plot(
+                c["recall"],
+                c["precision"],
+                label=c["model"],
+                color=MODEL_COLORS.get(c["model"], "#888"),
+                lw=1.2,
+            )
         ax.set_title(ds, fontsize=8)
         ax.set_xlabel("Recall", fontsize=7)
         ax.set_ylabel("Precision", fontsize=7)
@@ -592,8 +692,10 @@ def plot_pr_curves(all_curves, output_path):
     for ax_idx in range(len(datasets), len(axes)):
         axes[ax_idx].set_visible(False)
 
-    handles = [plt.Line2D([0], [0], color=MODEL_COLORS.get(m, "#888"), label=m, lw=1.5)
-               for m in models]
+    handles = [
+        plt.Line2D([0], [0], color=MODEL_COLORS.get(m, "#888"), label=m, lw=1.5)
+        for m in models
+    ]
     fig.legend(handles=handles, loc="lower right", fontsize=8, ncol=len(models))
     fig.suptitle("PR Curves by Dataset", fontsize=11, y=1.01)
     plt.tight_layout()
@@ -618,9 +720,13 @@ def plot_calibration_curves(all_curves, output_path):
         ds_curves = [c for c in all_curves if c["dataset"] == ds]
         for c in ds_curves:
             ax.plot(
-                c["cal_mean_pred"], c["cal_frac_pos"],
-                "o-", label=c["model"],
-                color=MODEL_COLORS.get(c["model"], "#888"), lw=1.2, ms=3,
+                c["cal_mean_pred"],
+                c["cal_frac_pos"],
+                "o-",
+                label=c["model"],
+                color=MODEL_COLORS.get(c["model"], "#888"),
+                lw=1.2,
+                ms=3,
             )
         ax.plot([0, 1], [0, 1], "k--", lw=0.8)
         ax.set_title(ds, fontsize=8)
@@ -633,8 +739,10 @@ def plot_calibration_curves(all_curves, output_path):
     for ax_idx in range(len(datasets), len(axes)):
         axes[ax_idx].set_visible(False)
 
-    handles = [plt.Line2D([0], [0], color=MODEL_COLORS.get(m, "#888"), label=m, lw=1.5)
-               for m in models]
+    handles = [
+        plt.Line2D([0], [0], color=MODEL_COLORS.get(m, "#888"), label=m, lw=1.5)
+        for m in models
+    ]
     handles.append(plt.Line2D([0], [0], color="k", ls="--", label="Perfect"))
     fig.legend(handles=handles, loc="lower right", fontsize=8, ncol=len(models) + 1)
     fig.suptitle("Calibration Curves by Dataset", fontsize=11, y=1.01)
@@ -646,6 +754,7 @@ def plot_calibration_curves(all_curves, output_path):
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -701,11 +810,13 @@ def main():
         print(f"  {name}")
         smiles, y = load_dataset(tab_path)
         pos_rate = y.mean()
-        print(f"  n={len(y):,}  pos={pos_rate:.1%}  neg={1-pos_rate:.1%}")
+        print(f"  n={len(y):,}  pos={pos_rate:.1%}  neg={1 - pos_rate:.1%}")
         print(f"{'─' * 70}")
 
         results, curves = run_dataset(
-            name, smiles, y,
+            name,
+            smiles,
+            y,
             mode=args.mode,
             output_dir=str(output_dir),
             is_first_dataset=(ds_idx == 0),
@@ -770,9 +881,11 @@ def main():
         sub = df[df["model"] == model]
         if len(sub) == 0:
             continue
-        row = {"model": model,
-               "mean_fit_time": sub["fit_time"].mean(),
-               "mean_infer_time": sub["infer_time"].mean()}
+        row = {
+            "model": model,
+            "mean_fit_time": sub["fit_time"].mean(),
+            "mean_infer_time": sub["infer_time"].mean(),
+        }
         if model == "LazyClassifier (ONNX)":
             row["mean_save_time"] = sub["save_time"].mean()
             row["mean_load_time"] = sub["load_time"].mean()
@@ -797,6 +910,7 @@ def main():
     # ------------------------------------------------------------------
     try:
         import matplotlib
+
         matplotlib.use("Agg")
 
         bar_roc_path = output_dir / "benchmark_bars_auroc.png"

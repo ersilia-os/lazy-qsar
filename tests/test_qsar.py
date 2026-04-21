@@ -21,8 +21,8 @@ from lazyqsar.qsar import LazyClassifierQSAR, LazyRegressorQSAR, LazyQSAR
 # LazyQSAR dispatcher
 # ---------------------------------------------------------------------------
 
-class TestLazyQSARDispatcher:
 
+class TestLazyQSARDispatcher:
     def test_classification_type(self):
         obj = LazyQSAR(task="classification", mode="fast")
         assert isinstance(obj, LazyClassifierQSAR)
@@ -45,8 +45,8 @@ class TestLazyQSARDispatcher:
 # LazyRegressorQSAR stub
 # ---------------------------------------------------------------------------
 
-class TestLazyRegressorQSAR:
 
+class TestLazyRegressorQSAR:
     def test_raises_on_instantiation(self):
         with pytest.raises(NotImplementedError):
             LazyRegressorQSAR()
@@ -60,8 +60,8 @@ class TestLazyRegressorQSAR:
 # LazyClassifierQSAR instantiation
 # ---------------------------------------------------------------------------
 
-class TestLazyClassifierQSAR:
 
+class TestLazyClassifierQSAR:
     def test_instantiate_fast_mode(self):
         model = LazyClassifierQSAR(mode="fast")
         assert model.mode == "fast"

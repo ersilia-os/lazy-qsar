@@ -29,8 +29,9 @@ def get_descriptor_type(descriptor_name):
     return getattr(module, class_name)
 
 
-def _build_weight_matrix(Y, R, A, oof_aucs, proxy_aucs, rank_error_curves,
-                         active_indices, ad_hard_cutoffs):
+def _build_weight_matrix(
+    Y, R, A, oof_aucs, proxy_aucs, rank_error_curves, active_indices, ad_hard_cutoffs
+):
     """Compute normalized weight matrix W (B, D_active).
 
     Parameters
@@ -66,8 +67,9 @@ def _build_weight_matrix(Y, R, A, oof_aucs, proxy_aucs, rank_error_curves,
     if A is not None:
         # Per-sample reliability from rank→error curves, or |rank−0.5|×2 fallback
         if R is not None:
-            if (rank_error_curves
-                    and all(rank_error_curves[i] is not None for i in active_indices)):
+            if rank_error_curves and all(
+                rank_error_curves[i] is not None for i in active_indices
+            ):
                 reliability = np.zeros((B, D), dtype=np.float64)
                 for j, i in enumerate(active_indices):
                     r_knots, e_knots = rank_error_curves[i]
@@ -100,21 +102,29 @@ def _smiles_md5(smiles_list):
 
 
 class ArtifactWrapper(object):
-    def __init__(self, descriptors, artifacts, ad_artifacts=None,
-                 active_descriptors=None, ad_hard_cutoffs=None,
-                 oof_aucs=None, proxy_aucs=None,
-                 rank_error_curves=None, population_prior=0.5,
-                 descriptor_types=None):
+    def __init__(
+        self,
+        descriptors,
+        artifacts,
+        ad_artifacts=None,
+        active_descriptors=None,
+        ad_hard_cutoffs=None,
+        oof_aucs=None,
+        proxy_aucs=None,
+        rank_error_curves=None,
+        population_prior=0.5,
+        descriptor_types=None,
+    ):
         self.descriptors = descriptors
         self.artifacts = artifacts
         self.ad_artifacts = ad_artifacts
         self.active_descriptors = active_descriptors  # list[bool] or None
-        self.ad_hard_cutoffs = ad_hard_cutoffs        # list[float] or None
-        self.oof_aucs = oof_aucs                      # list[float|None]
-        self.proxy_aucs = proxy_aucs                  # list[float|None]
-        self.rank_error_curves = rank_error_curves    # list[(r_knots, e_knots)|None]
+        self.ad_hard_cutoffs = ad_hard_cutoffs  # list[float] or None
+        self.oof_aucs = oof_aucs  # list[float|None]
+        self.proxy_aucs = proxy_aucs  # list[float|None]
+        self.rank_error_curves = rank_error_curves  # list[(r_knots, e_knots)|None]
         self.population_prior = population_prior
-        self.descriptor_types = descriptor_types      # list[str] or None
+        self.descriptor_types = descriptor_types  # list[str] or None
         self._ensemble_cache = {}
 
     def _compute_ensemble(self, smiles_list):
@@ -145,37 +155,58 @@ class ArtifactWrapper(object):
         B = len(smiles_list)
         D = len(active_indices)
         Y = np.stack(y_hats, axis=1).astype(np.float64)
-        R = np.stack(rank_preds, axis=1).astype(np.float64) if all(
-            r is not None for r in rank_preds) else None
-        S = np.stack(score_preds, axis=1).astype(np.float64) if all(
-            s is not None for s in score_preds) else Y.copy()
-        A = np.stack(ad_scores, axis=1).astype(np.float64) if len(
-            ad_scores) == D else None
+        R = (
+            np.stack(rank_preds, axis=1).astype(np.float64)
+            if all(r is not None for r in rank_preds)
+            else None
+        )
+        S = (
+            np.stack(score_preds, axis=1).astype(np.float64)
+            if all(s is not None for s in score_preds)
+            else Y.copy()
+        )
+        A = (
+            np.stack(ad_scores, axis=1).astype(np.float64)
+            if len(ad_scores) == D
+            else None
+        )
 
         W, base = _build_weight_matrix(
-            Y, R, A,
-            self.oof_aucs, self.proxy_aucs, self.rank_error_curves,
-            active_indices, self.ad_hard_cutoffs,
+            Y,
+            R,
+            A,
+            self.oof_aucs,
+            self.proxy_aucs,
+            self.rank_error_curves,
+            active_indices,
+            self.ad_hard_cutoffs,
         )
 
         if A is not None:
-            names = self.descriptor_types or [str(i) for i in range(len(self.descriptors))]
+            names = self.descriptor_types or [
+                str(i) for i in range(len(self.descriptors))
+            ]
             rows = []
             for j, i in enumerate(active_indices):
-                rows.append({
-                    "name":        names[i],
-                    "oof_auc":     float(self.oof_aucs[i]) if self.oof_aucs else float("nan"),
-                    "proxy_auc":   float(self.proxy_aucs[i]) if (
-                        self.proxy_aucs and self.proxy_aucs[i] is not None) else None,
-                    "ad_mean":     float(A[:, j].mean()),
-                    "ad_std":      float(A[:, j].std()),
-                    "ad_min":      float(A[:, j].min()),
-                    "ad_max":      float(A[:, j].max()),
-                    "weight_mean": float(W[:, j].mean()),
-                    "weight_std":  float(W[:, j].std()),
-                    "vetoed":      int((W[:, j] == 0).sum()),
-                    "pred_mean":   float(Y[:, j].mean()),
-                })
+                rows.append(
+                    {
+                        "name": names[i],
+                        "oof_auc": float(self.oof_aucs[i])
+                        if self.oof_aucs
+                        else float("nan"),
+                        "proxy_auc": float(self.proxy_aucs[i])
+                        if (self.proxy_aucs and self.proxy_aucs[i] is not None)
+                        else None,
+                        "ad_mean": float(A[:, j].mean()),
+                        "ad_std": float(A[:, j].std()),
+                        "ad_min": float(A[:, j].min()),
+                        "ad_max": float(A[:, j].max()),
+                        "weight_mean": float(W[:, j].mean()),
+                        "weight_std": float(W[:, j].std()),
+                        "vetoed": int((W[:, j] == 0).sum()),
+                        "pred_mean": float(Y[:, j].mean()),
+                    }
+                )
             logger.ad_weights_table(rows, n_samples=B)
 
         if R is None:
@@ -210,8 +241,9 @@ class ArtifactWrapper(object):
     def predict_lift(self, smiles_list):
         prior = self.population_prior
         proba = self.predict_proba(smiles_list)
-        return np.column_stack([proba[:, 0] / max(1 - prior, 1e-7),
-                                proba[:, 1] / max(prior, 1e-7)])
+        return np.column_stack(
+            [proba[:, 0] / max(1 - prior, 1e-7), proba[:, 1] / max(prior, 1e-7)]
+        )
 
     def predict(self, smiles_list, cutoff=0.5):
         return (self.predict_proba(smiles_list)[:, 1] >= cutoff).astype(int)
@@ -240,7 +272,9 @@ class LazyClassifierQSAR(object):
         if key not in self._feature_cache:
             self._feature_cache[key] = self.descriptors[i].transform(smiles_list)
         else:
-            logger.debug(f"Using cached features for descriptor: {self.descriptor_types[i]}")
+            logger.debug(
+                f"Using cached features for descriptor: {self.descriptor_types[i]}"
+            )
         return self._feature_cache[key]
 
     def fit(self, smiles_list, y):
@@ -260,8 +294,8 @@ class LazyClassifierQSAR(object):
 
         applicable = DescriptorPortfolio(self.mode).select(smiles_list, y=y)
         self.descriptor_types = [name for name, _, _, _ in applicable]
-        self.descriptors      = [desc for _, desc, _, _ in applicable]
-        self.proxy_aucs_      = [pauc for _, _, _, pauc in applicable]
+        self.descriptors = [desc for _, desc, _, _ in applicable]
+        self.proxy_aucs_ = [pauc for _, _, _, pauc in applicable]
 
         # Pre-populate feature cache with matrices computed during screening.
         smiles_hash = self._smiles_hash(smiles_list)
@@ -312,7 +346,9 @@ class LazyClassifierQSAR(object):
                 _ki = np.round(np.linspace(0, len(_rs) - 1, _nk)).astype(int)
                 _hw = max(1, len(_rs) // (_nk * 2))
                 _r_knots = _rs[_ki]
-                _e_knots = np.array([_es[max(0, k - _hw):k + _hw + 1].mean() for k in _ki])
+                _e_knots = np.array(
+                    [_es[max(0, k - _hw) : k + _hw + 1].mean() for k in _ki]
+                )
                 self._rank_error_curves_.append((_r_knots.tolist(), _e_knots.tolist()))
             except Exception:
                 self._rank_error_curves_.append(None)
@@ -320,7 +356,7 @@ class LazyClassifierQSAR(object):
             oof_auc = model.oof_auc_
             train_auc = model.train_auc_
             gap = train_auc - oof_auc
-            quality = oof_auc - gap   # α=1: quality = 2*oof - train
+            quality = oof_auc - gap  # α=1: quality = 2*oof - train
 
             self.oof_aucs_.append(oof_auc)
             self.train_aucs_.append(train_auc)
@@ -338,25 +374,26 @@ class LazyClassifierQSAR(object):
                 f"AD comps={ad.pca_.n_components_}"
             )
 
-            desc_rows.append({
-                "name": desc_name,
-                "n_features": X.shape[1],
-                "sparsity": sparsity,
-                "feat_time": feat_time,
-                "ad_n_components": ad.pca_.n_components_,
-                "ad_cal_min": float(ad.cal_knots_[0]),
-                "ad_cal_max": float(ad.cal_knots_[-1]),
-                "proxy_auc": self.proxy_aucs_[i],
-                "train_auc": train_auc,
-                "quality_auc": quality,
-            })
+            desc_rows.append(
+                {
+                    "name": desc_name,
+                    "n_features": X.shape[1],
+                    "sparsity": sparsity,
+                    "feat_time": feat_time,
+                    "ad_n_components": ad.pca_.n_components_,
+                    "ad_cal_min": float(ad.cal_knots_[0]),
+                    "ad_cal_max": float(ad.cal_knots_[-1]),
+                    "proxy_auc": self.proxy_aucs_[i],
+                    "train_auc": train_auc,
+                    "quality_auc": quality,
+                }
+            )
 
         # Descriptor-level pruning: drop if OOF AUC < floor OR < best - gap
         best_oof = max(self.oof_aucs_)
         _floor, _gap = 0.55, 0.10
         active_mask = [
-            (auc >= _floor) and (auc >= best_oof - _gap)
-            for auc in self.oof_aucs_
+            (auc >= _floor) and (auc >= best_oof - _gap) for auc in self.oof_aucs_
         ]
         if not any(active_mask):
             active_mask = [True] * len(self.oof_aucs_)
@@ -375,7 +412,9 @@ class LazyClassifierQSAR(object):
         if cache_key in self._ensemble_cache:
             return self._ensemble_cache[cache_key]
 
-        active_mask = getattr(self, "active_descriptors_", [True] * len(self.descriptor_types))
+        active_mask = getattr(
+            self, "active_descriptors_", [True] * len(self.descriptor_types)
+        )
         ad_hard_cutoffs = getattr(self, "ad_hard_cutoffs_", None)
 
         active_indices = [i for i, a in enumerate(active_mask) if a]
@@ -400,40 +439,55 @@ class LazyClassifierQSAR(object):
         B = len(smiles_list)
         D = len(active_indices)
         Y = np.stack(y_hats, axis=1).astype(np.float64)
-        R = np.stack(rank_preds, axis=1).astype(np.float64) if all(
-            r is not None for r in rank_preds) else None
-        S = np.stack(score_preds, axis=1).astype(np.float64) if all(
-            s is not None for s in score_preds) else Y.copy()
-        A = np.stack(ad_scores, axis=1).astype(np.float64) if len(
-            ad_scores) == D else None
+        R = (
+            np.stack(rank_preds, axis=1).astype(np.float64)
+            if all(r is not None for r in rank_preds)
+            else None
+        )
+        S = (
+            np.stack(score_preds, axis=1).astype(np.float64)
+            if all(s is not None for s in score_preds)
+            else Y.copy()
+        )
+        A = (
+            np.stack(ad_scores, axis=1).astype(np.float64)
+            if len(ad_scores) == D
+            else None
+        )
 
         W, base = _build_weight_matrix(
-            Y, R, A,
+            Y,
+            R,
+            A,
             getattr(self, "oof_aucs_", None),
             getattr(self, "proxy_aucs_", None),
             getattr(self, "_rank_error_curves_", None),
-            active_indices, ad_hard_cutoffs,
+            active_indices,
+            ad_hard_cutoffs,
         )
 
         if A is not None:
-            oof_aucs   = getattr(self, "oof_aucs_", None)
+            oof_aucs = getattr(self, "oof_aucs_", None)
             proxy_aucs = getattr(self, "proxy_aucs_", None)
             rows = []
             for j, i in enumerate(active_indices):
-                rows.append({
-                    "name":        self.descriptor_types[i],
-                    "oof_auc":     float(oof_aucs[i]) if oof_aucs else float("nan"),
-                    "proxy_auc":   float(proxy_aucs[i]) if (
-                        proxy_aucs and proxy_aucs[i] is not None) else None,
-                    "ad_mean":     float(A[:, j].mean()),
-                    "ad_std":      float(A[:, j].std()),
-                    "ad_min":      float(A[:, j].min()),
-                    "ad_max":      float(A[:, j].max()),
-                    "weight_mean": float(W[:, j].mean()),
-                    "weight_std":  float(W[:, j].std()),
-                    "vetoed":      int((W[:, j] == 0).sum()),
-                    "pred_mean":   float(Y[:, j].mean()),
-                })
+                rows.append(
+                    {
+                        "name": self.descriptor_types[i],
+                        "oof_auc": float(oof_aucs[i]) if oof_aucs else float("nan"),
+                        "proxy_auc": float(proxy_aucs[i])
+                        if (proxy_aucs and proxy_aucs[i] is not None)
+                        else None,
+                        "ad_mean": float(A[:, j].mean()),
+                        "ad_std": float(A[:, j].std()),
+                        "ad_min": float(A[:, j].min()),
+                        "ad_max": float(A[:, j].max()),
+                        "weight_mean": float(W[:, j].mean()),
+                        "weight_std": float(W[:, j].std()),
+                        "vetoed": int((W[:, j] == 0).sum()),
+                        "pred_mean": float(Y[:, j].mean()),
+                    }
+                )
             logger.ad_weights_table(rows, n_samples=B)
 
         if R is None:
@@ -468,8 +522,9 @@ class LazyClassifierQSAR(object):
     def predict_lift(self, smiles_list):
         prior = getattr(self, "population_prior_", 0.5)
         proba = self.predict_proba(smiles_list)
-        return np.column_stack([proba[:, 0] / max(1 - prior, 1e-7),
-                                proba[:, 1] / max(prior, 1e-7)])
+        return np.column_stack(
+            [proba[:, 0] / max(1 - prior, 1e-7), proba[:, 1] / max(prior, 1e-7)]
+        )
 
     def predict(self, smiles_list, threshold=0.5):
         return (self.predict_proba(smiles_list)[:, 1] >= threshold).astype(int)
@@ -479,37 +534,53 @@ class LazyClassifierQSAR(object):
         meta = {
             "mode": self.mode,
             "descriptor_types": self.descriptor_types,
-            "population_prior": float(self.population_prior_) if hasattr(self, "population_prior_") else 0.5,
+            "population_prior": float(self.population_prior_)
+            if hasattr(self, "population_prior_")
+            else 0.5,
             "oof_aucs": {
                 name: float(auc)
                 for name, auc in zip(self.descriptor_types, self.oof_aucs_)
-            } if hasattr(self, "oof_aucs_") else {},
+            }
+            if hasattr(self, "oof_aucs_")
+            else {},
             "proxy_aucs": {
                 name: float(auc)
                 for name, auc in zip(self.descriptor_types, self.proxy_aucs_)
                 if auc is not None
-            } if hasattr(self, "proxy_aucs_") else {},
+            }
+            if hasattr(self, "proxy_aucs_")
+            else {},
             "train_aucs": {
                 name: float(auc)
                 for name, auc in zip(self.descriptor_types, self.train_aucs_)
-            } if hasattr(self, "train_aucs_") else {},
+            }
+            if hasattr(self, "train_aucs_")
+            else {},
             "quality_aucs": {
                 name: float(auc)
                 for name, auc in zip(self.descriptor_types, self.quality_aucs_)
-            } if hasattr(self, "quality_aucs_") else {},
+            }
+            if hasattr(self, "quality_aucs_")
+            else {},
             "active_descriptors": {
                 name: bool(active)
                 for name, active in zip(self.descriptor_types, self.active_descriptors_)
-            } if hasattr(self, "active_descriptors_") else {},
+            }
+            if hasattr(self, "active_descriptors_")
+            else {},
             "ad_hard_cutoffs": {
                 name: float(c)
                 for name, c in zip(self.descriptor_types, self.ad_hard_cutoffs_)
-            } if hasattr(self, "ad_hard_cutoffs_") else {},
+            }
+            if hasattr(self, "ad_hard_cutoffs_")
+            else {},
             "rank_error_curves": {
                 name: curve
                 for name, curve in zip(self.descriptor_types, self._rank_error_curves_)
                 if curve is not None
-            } if hasattr(self, "_rank_error_curves_") else {},
+            }
+            if hasattr(self, "_rank_error_curves_")
+            else {},
         }
         with open(os.path.join(model_dir, "metadata.json"), "w") as f:
             json.dump(meta, f, indent=2)
@@ -577,32 +648,42 @@ class LazyClassifierQSAR(object):
         if os.path.isfile(meta_path):
             with open(meta_path) as f:
                 meta = json.load(f)
-            oof_map    = meta.get("oof_aucs", {})
-            proxy_map  = meta.get("proxy_aucs", {})
-            train_map  = meta.get("train_aucs", {})
+            oof_map = meta.get("oof_aucs", {})
+            proxy_map = meta.get("proxy_aucs", {})
+            train_map = meta.get("train_aucs", {})
             quality_map = meta.get("quality_aucs", {})
             active_map = meta.get("active_descriptors", {})
             cutoff_map = meta.get("ad_hard_cutoffs", {})
-            curve_map  = meta.get("rank_error_curves", {})
-            obj.population_prior_    = float(meta.get("population_prior", 0.5))
-            obj.oof_aucs_            = [oof_map.get(d, 1.0) for d in descriptor_types]
-            obj.proxy_aucs_          = [proxy_map.get(d) for d in descriptor_types]
-            obj.train_aucs_          = [train_map.get(d, 0.0) for d in descriptor_types]
-            obj.quality_aucs_        = [quality_map.get(d, oof_map.get(d, 1.0)) for d in descriptor_types]
-            obj.active_descriptors_  = [active_map.get(d, True) for d in descriptor_types]
-            obj.ad_hard_cutoffs_     = [cutoff_map.get(d, 0.0) for d in descriptor_types] if cutoff_map else None
-            obj._rank_error_curves_  = [
-                (np.array(curve_map[d][0]), np.array(curve_map[d][1])) if d in curve_map else None
+            curve_map = meta.get("rank_error_curves", {})
+            obj.population_prior_ = float(meta.get("population_prior", 0.5))
+            obj.oof_aucs_ = [oof_map.get(d, 1.0) for d in descriptor_types]
+            obj.proxy_aucs_ = [proxy_map.get(d) for d in descriptor_types]
+            obj.train_aucs_ = [train_map.get(d, 0.0) for d in descriptor_types]
+            obj.quality_aucs_ = [
+                quality_map.get(d, oof_map.get(d, 1.0)) for d in descriptor_types
+            ]
+            obj.active_descriptors_ = [
+                active_map.get(d, True) for d in descriptor_types
+            ]
+            obj.ad_hard_cutoffs_ = (
+                [cutoff_map.get(d, 0.0) for d in descriptor_types]
+                if cutoff_map
+                else None
+            )
+            obj._rank_error_curves_ = [
+                (np.array(curve_map[d][0]), np.array(curve_map[d][1]))
+                if d in curve_map
+                else None
                 for d in descriptor_types
             ]
         else:
-            obj.population_prior_   = 0.5
-            obj.oof_aucs_           = [1.0] * len(descriptor_types)
-            obj.proxy_aucs_         = [None] * len(descriptor_types)
-            obj.train_aucs_         = [0.0] * len(descriptor_types)
-            obj.quality_aucs_       = [1.0] * len(descriptor_types)
+            obj.population_prior_ = 0.5
+            obj.oof_aucs_ = [1.0] * len(descriptor_types)
+            obj.proxy_aucs_ = [None] * len(descriptor_types)
+            obj.train_aucs_ = [0.0] * len(descriptor_types)
+            obj.quality_aucs_ = [1.0] * len(descriptor_types)
             obj.active_descriptors_ = [True] * len(descriptor_types)
-            obj.ad_hard_cutoffs_    = None
+            obj.ad_hard_cutoffs_ = None
             obj._rank_error_curves_ = [None] * len(descriptor_types)
         return obj
 
@@ -649,21 +730,37 @@ class LazyClassifierQSAR(object):
         if os.path.isfile(meta_path):
             with open(meta_path) as f:
                 meta = json.load(f)
-            oof_map    = meta.get("oof_aucs", {})
-            proxy_map  = meta.get("proxy_aucs", {})
+            oof_map = meta.get("oof_aucs", {})
+            proxy_map = meta.get("proxy_aucs", {})
             quality_map = meta.get("quality_aucs", {})
             active_map = meta.get("active_descriptors", {})
             cutoff_map = meta.get("ad_hard_cutoffs", {})
-            curve_map  = meta.get("rank_error_curves", {})
-            population_prior   = float(meta.get("population_prior", 0.5))
-            oof_aucs           = [quality_map.get(d, oof_map.get(d, 1.0)) for d in descriptor_types]
-            proxy_aucs         = [proxy_map.get(d) for d in descriptor_types]
-            active_descriptors = [active_map.get(d, True) for d in descriptor_types] if active_map else None
-            ad_hard_cutoffs    = [cutoff_map.get(d, 0.0) for d in descriptor_types] if cutoff_map else None
-            rank_error_curves  = [
-                (np.array(curve_map[d][0]), np.array(curve_map[d][1])) if d in curve_map else None
-                for d in descriptor_types
-            ] if curve_map else None
+            curve_map = meta.get("rank_error_curves", {})
+            population_prior = float(meta.get("population_prior", 0.5))
+            oof_aucs = [
+                quality_map.get(d, oof_map.get(d, 1.0)) for d in descriptor_types
+            ]
+            proxy_aucs = [proxy_map.get(d) for d in descriptor_types]
+            active_descriptors = (
+                [active_map.get(d, True) for d in descriptor_types]
+                if active_map
+                else None
+            )
+            ad_hard_cutoffs = (
+                [cutoff_map.get(d, 0.0) for d in descriptor_types]
+                if cutoff_map
+                else None
+            )
+            rank_error_curves = (
+                [
+                    (np.array(curve_map[d][0]), np.array(curve_map[d][1]))
+                    if d in curve_map
+                    else None
+                    for d in descriptor_types
+                ]
+                if curve_map
+                else None
+            )
         return ArtifactWrapper(
             descriptors=descriptors,
             artifacts=artifacts,

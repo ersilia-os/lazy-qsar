@@ -60,8 +60,9 @@ def _add_task_params(params: Dict[str, Any], profile: DatasetProfile) -> None:
         params["eval_metric"] = "rmse"
 
 
-def xgb_default_params(profile: DatasetProfile, device: str,
-                       nthread: int = -1) -> Dict[str, Any]:
+def xgb_default_params(
+    profile: DatasetProfile, device: str, nthread: int = -1
+) -> Dict[str, Any]:
     """
     XGBoost out-of-the-box defaults.
 
@@ -74,26 +75,28 @@ def xgb_default_params(profile: DatasetProfile, device: str,
     params: Dict[str, Any] = {
         "tree_method": "hist",
         "device": "cuda" if device == "gpu" else "cpu",
-        "learning_rate": 0.3,       # XGBoost default
-        "max_depth": 6,             # XGBoost default
-        "min_child_weight": 1,      # XGBoost default
-        "subsample": 1.0,           # XGBoost default
-        "colsample_bytree": 1.0,    # XGBoost default
-        "reg_alpha": 0.0,           # XGBoost default
-        "reg_lambda": 1.0,          # XGBoost default
+        "learning_rate": 0.3,  # XGBoost default
+        "max_depth": 6,  # XGBoost default
+        "min_child_weight": 1,  # XGBoost default
+        "subsample": 1.0,  # XGBoost default
+        "colsample_bytree": 1.0,  # XGBoost default
+        "reg_alpha": 0.0,  # XGBoost default
+        "reg_lambda": 1.0,  # XGBoost default
         "max_bin": max_bin,
         "n_estimators": 2000,
         "early_stopping_rounds": 50,
     }
     if device == "cpu":
         import os
+
         params["nthread"] = (os.cpu_count() or 1) if nthread == -1 else nthread
     _add_task_params(params, profile)
     return params
 
 
-def flaml_params(profile: DatasetProfile, device: str,
-                 nthread: int = -1) -> Dict[str, Any]:
+def flaml_params(
+    profile: DatasetProfile, device: str, nthread: int = -1
+) -> Dict[str, Any]:
     """
     FLAML configuration via 1-NN meta-feature matching.
 
@@ -118,8 +121,8 @@ def flaml_params(profile: DatasetProfile, device: str,
     n_classes = 2 if profile.task == "classification" else 0
 
     center = np.array(data["preprocessing"]["center"])
-    scale  = np.array(data["preprocessing"]["scale"])
-    query  = np.array([n, p, n_classes, pct_numeric])
+    scale = np.array(data["preprocessing"]["scale"])
+    query = np.array([n, p, n_classes, pct_numeric])
     q_norm = (query - center) / scale
 
     best_dist, best_idx = float("inf"), 0
@@ -128,38 +131,40 @@ def flaml_params(profile: DatasetProfile, device: str,
         d = float(np.dot(q_norm - feat, q_norm - feat))  # squared L2
         if d < best_dist:
             best_dist = d
-            best_idx  = nb["choice"][0]
+            best_idx = nb["choice"][0]
 
     hp = data["portfolio"][best_idx]
     lr = float(hp["learning_rate"])
     max_bin = 128 if n > 100_000 else 256
 
     params: Dict[str, Any] = {
-        "tree_method":       "hist",
-        "device":            "cuda" if device == "gpu" else "cpu",
-        "grow_policy":       "lossguide",
-        "max_depth":         0,   # unlimited; max_leaves controls capacity
-        "max_leaves":        max(64, min(n // 10, int(hp["max_leaves"]))),
-        "learning_rate":     lr,
-        "min_child_weight":  max(1.0, float(hp["min_child_weight"])),
-        "subsample":         float(hp["subsample"]),
+        "tree_method": "hist",
+        "device": "cuda" if device == "gpu" else "cpu",
+        "grow_policy": "lossguide",
+        "max_depth": 0,  # unlimited; max_leaves controls capacity
+        "max_leaves": max(64, min(n // 10, int(hp["max_leaves"]))),
+        "learning_rate": lr,
+        "min_child_weight": max(1.0, float(hp["min_child_weight"])),
+        "subsample": float(hp["subsample"]),
         "colsample_bylevel": float(hp["colsample_bylevel"]),
-        "colsample_bytree":  float(hp["colsample_bytree"]),
-        "reg_alpha":         float(hp["reg_alpha"]),
-        "reg_lambda":        float(hp["reg_lambda"]),
-        "max_bin":           max_bin,
-        "n_estimators":      2000,
+        "colsample_bytree": float(hp["colsample_bytree"]),
+        "reg_alpha": float(hp["reg_alpha"]),
+        "reg_lambda": float(hp["reg_lambda"]),
+        "max_bin": max_bin,
+        "n_estimators": 2000,
         "early_stopping_rounds": min(200, max(50, int(round(50 * 0.1 / lr)))),
     }
     if device == "cpu":
         import os
+
         params["nthread"] = (os.cpu_count() or 1) if nthread == -1 else nthread
     _add_task_params(params, profile)
     return params
 
 
-def autogluon_params(profile: DatasetProfile, device: str,
-                     nthread: int = -1) -> Dict[str, Any]:
+def autogluon_params(
+    profile: DatasetProfile, device: str, nthread: int = -1
+) -> Dict[str, Any]:
     """
     AutoGluon zeroshot 2023 XGBoost configuration, selected by dataset characteristics.
 
@@ -192,7 +197,7 @@ def autogluon_params(profile: DatasetProfile, device: str,
     early_stopping_rounds is set proportionally to the learning rate
     (same formula as flaml_params): min(200, max(50, round(50 × 0.1 / lr))).
     """
-    n   = profile.n_samples
+    n = profile.n_samples
     is_sparse = profile.is_sparse_counts or profile.binary_feature_fraction > 0.7
 
     if n < 2_000:
@@ -222,28 +227,30 @@ def autogluon_params(profile: DatasetProfile, device: str,
     early_stopping_rounds = min(200, max(50, int(round(50 * 0.1 / lr))))
 
     params: Dict[str, Any] = {
-        "tree_method":      "hist",
-        "device":           "cuda" if device == "gpu" else "cpu",
-        "learning_rate":    lr,
-        "max_depth":        max_depth,
+        "tree_method": "hist",
+        "device": "cuda" if device == "gpu" else "cpu",
+        "learning_rate": lr,
+        "max_depth": max_depth,
         "min_child_weight": min_child_weight,
         "colsample_bytree": colsample_bytree,
-        "subsample":        1.0,
-        "reg_alpha":        0.0,
-        "reg_lambda":       1.0,
-        "max_bin":          max_bin,
-        "n_estimators":     2000,
+        "subsample": 1.0,
+        "reg_alpha": 0.0,
+        "reg_lambda": 1.0,
+        "max_bin": max_bin,
+        "n_estimators": 2000,
         "early_stopping_rounds": early_stopping_rounds,
     }
     if device == "cpu":
         import os
+
         params["nthread"] = (os.cpu_count() or 1) if nthread == -1 else nthread
     _add_task_params(params, profile)
     return params
 
 
-def rf_params(profile: DatasetProfile, device: str,
-              nthread: int = -1) -> Dict[str, Any]:
+def rf_params(
+    profile: DatasetProfile, device: str, nthread: int = -1
+) -> Dict[str, Any]:
     """
     XGBoost configured as a boosted Random Forest.
 
@@ -277,7 +284,7 @@ def rf_params(profile: DatasetProfile, device: str,
     p = profile.n_features
     # Exact sklearn sqrt(p) rule — no floor so large-p datasets (e.g. ECFP4)
     # get proper feature diversity rather than the previous 0.05 clamp.
-    csn = round(min(0.5, 1.0 / (p ** 0.5)), 4)
+    csn = round(min(0.5, 1.0 / (p**0.5)), 4)
     max_bin = 128 if n > 100_000 else 256
 
     # Adaptive depth: sklearn RF grows to purity; approximate this for small n
@@ -292,24 +299,25 @@ def rf_params(profile: DatasetProfile, device: str,
         max_depth = 6
 
     params: Dict[str, Any] = {
-        "tree_method":      "hist",
-        "device":           "cuda" if device == "gpu" else "cpu",
+        "tree_method": "hist",
+        "device": "cuda" if device == "gpu" else "cpu",
         # num_parallel_tree intentionally absent: tested and found to hurt AUC
         # while tripling cost; colsample_bynode + subsample provide RF diversity.
-        "subsample":        0.632,   # bootstrap approximation (was 0.8)
-        "colsample_bynode": csn,     # exact sqrt(p)/p, no floor (was clamped at 0.05)
+        "subsample": 0.632,  # bootstrap approximation (was 0.8)
+        "colsample_bynode": csn,  # exact sqrt(p)/p, no floor (was clamped at 0.05)
         "colsample_bytree": 1.0,
-        "learning_rate":    0.1,
-        "max_depth":        max_depth,
+        "learning_rate": 0.1,
+        "max_depth": max_depth,
         "min_child_weight": 1,
-        "reg_alpha":        0.0,
-        "reg_lambda":       1.0,
-        "max_bin":          max_bin,
-        "n_estimators":     2000,
+        "reg_alpha": 0.0,
+        "reg_lambda": 1.0,
+        "max_bin": max_bin,
+        "n_estimators": 2000,
         "early_stopping_rounds": 50,
     }
     if device == "cpu":
         import os
+
         params["nthread"] = (os.cpu_count() or 1) if nthread == -1 else nthread
     _add_task_params(params, profile)
     return params

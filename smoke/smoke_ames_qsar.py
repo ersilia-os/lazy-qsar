@@ -28,7 +28,7 @@ def _load(split):
 
 
 smiles_train, y_train = _load("train")
-smiles_test,  y_test  = _load("test")
+smiles_test, y_test = _load("test")
 
 model = LazyClassifierQSAR(mode="slow")
 model.fit(smiles_train, y_train)

@@ -33,11 +33,17 @@ def _bedroc_rie_components(n: int, n_a: int, alpha: float) -> tuple[float, float
         np.exp(-alpha / n) * (1.0 - np.exp(-alpha)) / (1.0 - np.exp(-alpha / n))
     )
 
-    top_geo = np.exp(-alpha / n) * (1.0 - np.exp(-alpha * Ra)) / (1.0 - np.exp(-alpha / n))
+    top_geo = (
+        np.exp(-alpha / n) * (1.0 - np.exp(-alpha * Ra)) / (1.0 - np.exp(-alpha / n))
+    )
     rie_max = top_geo / denom
 
     start = n - n_a + 1
-    bot_geo = np.exp(-alpha * start / n) * (1.0 - np.exp(-alpha * Ra)) / (1.0 - np.exp(-alpha / n))
+    bot_geo = (
+        np.exp(-alpha * start / n)
+        * (1.0 - np.exp(-alpha * Ra))
+        / (1.0 - np.exp(-alpha / n))
+    )
     rie_min = bot_geo / denom
     return float(rie_min), float(rie_max)
 
@@ -119,10 +125,13 @@ def aupr_score(y_true: np.ndarray, y_score: np.ndarray) -> float:
     so callers only need to import from this module.
     """
     from sklearn.metrics import average_precision_score
+
     return float(average_precision_score(np.asarray(y_true), np.asarray(y_score)))
 
 
-def composite_metrics(y_true: np.ndarray, y_score: np.ndarray, alpha: float = 20.0) -> dict:
+def composite_metrics(
+    y_true: np.ndarray, y_score: np.ndarray, alpha: float = 20.0
+) -> dict:
     """
     Return raw metrics, random baselines, normalized excess components, and composite.
 
@@ -142,7 +151,11 @@ def composite_metrics(y_true: np.ndarray, y_score: np.ndarray, alpha: float = 20
     else:
         prevalence = float(np.mean(y_true))
         unique = np.unique(y_true)
-        auroc = _AUROC_RANDOM_BASELINE if unique.size < 2 else float(roc_auc_score(y_true, y_score))
+        auroc = (
+            _AUROC_RANDOM_BASELINE
+            if unique.size < 2
+            else float(roc_auc_score(y_true, y_score))
+        )
         aupr = float(prevalence) if unique.size < 2 else aupr_score(y_true, y_score)
         bedroc = bedroc_score(y_true, y_score, alpha=alpha)
 
@@ -169,7 +182,9 @@ def composite_metrics(y_true: np.ndarray, y_score: np.ndarray, alpha: float = 20
     }
 
 
-def composite_score(y_true: np.ndarray, y_score: np.ndarray, alpha: float = 20.0) -> float:
+def composite_score(
+    y_true: np.ndarray, y_score: np.ndarray, alpha: float = 20.0
+) -> float:
     """
     Composite classification score = mean normalized excess over random.
 

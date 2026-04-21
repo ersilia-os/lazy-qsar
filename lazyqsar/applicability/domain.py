@@ -82,19 +82,23 @@ class ApplicabilityDomain:
             raise ValueError(f"Need at least 2 training samples, got {n}.")
 
         # StandardScaler — fitted independently, not shared with any model
-        self.scaler_mean_ = X.mean(axis=0).astype(np.float32)       # (p,)
+        self.scaler_mean_ = X.mean(axis=0).astype(np.float32)  # (p,)
         std = X.std(axis=0)
-        std[std < 1e-12] = 1.0                                        # avoid /0
-        self.scaler_scale_ = std.astype(np.float32)                  # (p,)
+        std[std < 1e-12] = 1.0  # avoid /0
+        self.scaler_scale_ = std.astype(np.float32)  # (p,)
         X = (X - self.scaler_mean_) / self.scaler_scale_
 
-        k = self.n_components if self.n_components is not None else min(max(1, int(p ** 0.5)), 100, p, n - 1)
+        k = (
+            self.n_components
+            if self.n_components is not None
+            else min(max(1, int(p**0.5)), 100, p, n - 1)
+        )
         k = max(1, k)
 
         self.pca_ = PCA(n_components=k, whiten=False)
-        X_pca = self.pca_.fit_transform(X)          # (n, k)
+        X_pca = self.pca_.fit_transform(X)  # (n, k)
 
-        self.centroid_ = X_pca.mean(axis=0)          # (k,)
+        self.centroid_ = X_pca.mean(axis=0)  # (k,)
 
         cov = np.cov(X_pca.T) if k > 1 else np.var(X_pca, axis=0).reshape(1, 1)
         if cov.ndim == 0:
@@ -106,7 +110,7 @@ class ApplicabilityDomain:
         except np.linalg.LinAlgError:
             self.precision_ = np.linalg.pinv(cov)
 
-        train_dists = self._mahal(X_pca)             # (n,)
+        train_dists = self._mahal(X_pca)  # (n,)
         self.cal_knots_ = np.quantile(
             train_dists, np.linspace(0.0, 1.0, _N_CAL_KNOTS)
         ).astype(np.float32)
@@ -122,9 +126,9 @@ class ApplicabilityDomain:
 
     def _mahal(self, X_pca: np.ndarray) -> np.ndarray:
         """Mahalanobis distances from centroid_ for already-projected X."""
-        delta = X_pca - self.centroid_               # (n, k)
-        P_delta = delta @ self.precision_            # (n, k)
-        dist_sq = (P_delta * delta).sum(axis=1)      # (n,)
+        delta = X_pca - self.centroid_  # (n, k)
+        P_delta = delta @ self.precision_  # (n, k)
+        dist_sq = (P_delta * delta).sum(axis=1)  # (n,)
         return np.sqrt(np.clip(dist_sq, 0.0, None))
 
     def score(self, X) -> np.ndarray:
@@ -158,92 +162,89 @@ class ApplicabilityDomain:
         import onnx
         from onnx import helper, TensorProto, numpy_helper
 
-        scaler_mean = self.scaler_mean_.astype(np.float32)           # (p,)
-        scaler_scale = self.scaler_scale_.astype(np.float32)        # (p,)
-        pca_mean   = self.pca_.mean_.astype(np.float32)             # (p,)
+        scaler_mean = self.scaler_mean_.astype(np.float32)  # (p,)
+        scaler_scale = self.scaler_scale_.astype(np.float32)  # (p,)
+        pca_mean = self.pca_.mean_.astype(np.float32)  # (p,)
         # store components transposed for MatMul: (p, k)
-        pca_comp_T = self.pca_.components_.T.astype(np.float32)     # (p, k)
-        centroid   = self.centroid_.astype(np.float32)              # (k,)
-        precision  = self.precision_.astype(np.float32)             # (k, k)
-        cal_knots  = self.cal_knots_.astype(np.float32)             # (N_cal,)
+        pca_comp_T = self.pca_.components_.T.astype(np.float32)  # (p, k)
+        centroid = self.centroid_.astype(np.float32)  # (k,)
+        precision = self.precision_.astype(np.float32)  # (k, k)
+        cal_knots = self.cal_knots_.astype(np.float32)  # (N_cal,)
 
-        p     = pca_mean.shape[0]
-        k     = centroid.shape[0]
+        p = pca_mean.shape[0]
+        k = centroid.shape[0]
         N_cal = cal_knots.shape[0]
 
         def init(name, arr):
             return numpy_helper.from_array(arr, name=name)
 
         initializers = [
-            init("scaler_mean",  scaler_mean),
+            init("scaler_mean", scaler_mean),
             init("scaler_scale", scaler_scale),
-            init("pca_mean",     pca_mean),
-            init("pca_comp_T",   pca_comp_T),
-            init("centroid",     centroid),
-            init("precision",    precision),
-            init("cal_knots",    cal_knots),
-            init("ones_k",       np.ones((k, 1),     dtype=np.float32)),
-            init("ones_cal",     np.ones((N_cal, 1), dtype=np.float32)),
-            init("n_cal_f",      np.array(N_cal,     dtype=np.float32)),
-            init("shape_B",      np.array([-1],       dtype=np.int64)),
-            init("shape_B1",     np.array([-1, 1],    dtype=np.int64)),
-            init("shape_1N",     np.array([1, N_cal], dtype=np.int64)),
+            init("pca_mean", pca_mean),
+            init("pca_comp_T", pca_comp_T),
+            init("centroid", centroid),
+            init("precision", precision),
+            init("cal_knots", cal_knots),
+            init("ones_k", np.ones((k, 1), dtype=np.float32)),
+            init("ones_cal", np.ones((N_cal, 1), dtype=np.float32)),
+            init("n_cal_f", np.array(N_cal, dtype=np.float32)),
+            init("shape_B", np.array([-1], dtype=np.int64)),
+            init("shape_B1", np.array([-1, 1], dtype=np.int64)),
+            init("shape_1N", np.array([1, N_cal], dtype=np.int64)),
         ]
 
         nodes = [
             # ── StandardScaler ──────────────────────────────────────
             # x_sc = (X - scaler_mean) / scaler_scale   [B, p]
-            helper.make_node("Sub",    ["X",     "scaler_mean"],  ["x_centered"]),
-            helper.make_node("Div",    ["x_centered", "scaler_scale"], ["x_sc"]),
-
+            helper.make_node("Sub", ["X", "scaler_mean"], ["x_centered"]),
+            helper.make_node("Div", ["x_centered", "scaler_scale"], ["x_sc"]),
             # ── PCA projection ──────────────────────────────────────
             # x_c = x_sc - pca_mean                 [B, p]
-            helper.make_node("Sub",    ["x_sc",       "pca_mean"],   ["x_c"]),
+            helper.make_node("Sub", ["x_sc", "pca_mean"], ["x_c"]),
             # x_pca = x_c @ pca_comp_T             [B, k]
-            helper.make_node("MatMul", ["x_c",        "pca_comp_T"], ["x_pca"]),
-
+            helper.make_node("MatMul", ["x_c", "pca_comp_T"], ["x_pca"]),
             # ── Mahalanobis distance ─────────────────────────────────
             # delta = x_pca - centroid              [B, k]
-            helper.make_node("Sub",    ["x_pca",      "centroid"],   ["delta"]),
+            helper.make_node("Sub", ["x_pca", "centroid"], ["delta"]),
             # P_delta = delta @ precision           [B, k]
-            helper.make_node("MatMul", ["delta",      "precision"],  ["P_delta"]),
+            helper.make_node("MatMul", ["delta", "precision"], ["P_delta"]),
             # elem = P_delta * delta  (elementwise) [B, k]
-            helper.make_node("Mul",    ["P_delta",    "delta"],      ["elem"]),
+            helper.make_node("Mul", ["P_delta", "delta"], ["elem"]),
             # dist_sq_2d = elem @ ones_k            [B, 1]
-            helper.make_node("MatMul", ["elem",       "ones_k"],     ["dist_sq_2d"]),
+            helper.make_node("MatMul", ["elem", "ones_k"], ["dist_sq_2d"]),
             # dist_sq = reshape → [B]
-            helper.make_node("Reshape",["dist_sq_2d", "shape_B"],    ["dist_sq"]),
+            helper.make_node("Reshape", ["dist_sq_2d", "shape_B"], ["dist_sq"]),
             # clip negatives (numerical noise)
-            helper.make_node("Relu",   ["dist_sq"],                  ["dist_sq_nn"]),
+            helper.make_node("Relu", ["dist_sq"], ["dist_sq_nn"]),
             # dist = sqrt(dist_sq_nn)               [B]
-            helper.make_node("Sqrt",   ["dist_sq_nn"],               ["dist"]),
-
+            helper.make_node("Sqrt", ["dist_sq_nn"], ["dist"]),
             # ── Calibration (survival function) ─────────────────────
             # dist_2d  = reshape dist  → [B, 1]
-            helper.make_node("Reshape",["dist",       "shape_B1"],   ["dist_2d"]),
+            helper.make_node("Reshape", ["dist", "shape_B1"], ["dist_2d"]),
             # cal_2d   = reshape knots → [1, N_cal]
-            helper.make_node("Reshape",["cal_knots",  "shape_1N"],   ["cal_2d"]),
+            helper.make_node("Reshape", ["cal_knots", "shape_1N"], ["cal_2d"]),
             # in_domain = dist_2d < cal_2d          [B, N_cal] bool
-            helper.make_node("Less",   ["dist_2d",    "cal_2d"],     ["in_domain_bool"]),
+            helper.make_node("Less", ["dist_2d", "cal_2d"], ["in_domain_bool"]),
             # cast to float32
-            helper.make_node("Cast",   ["in_domain_bool"],           ["in_domain"],
-                             to=TensorProto.FLOAT),
+            helper.make_node(
+                "Cast", ["in_domain_bool"], ["in_domain"], to=TensorProto.FLOAT
+            ),
             # sum over calibration axis: in_domain @ ones_cal → [B, 1]
-            helper.make_node("MatMul", ["in_domain",  "ones_cal"],   ["sum_2d"]),
+            helper.make_node("MatMul", ["in_domain", "ones_cal"], ["sum_2d"]),
             # reshape → [B]
-            helper.make_node("Reshape",["sum_2d",     "shape_B"],    ["sum_1d"]),
+            helper.make_node("Reshape", ["sum_2d", "shape_B"], ["sum_1d"]),
             # score = sum / N_cal                   [B]
-            helper.make_node("Div",    ["sum_1d",     "n_cal_f"],    ["score"]),
+            helper.make_node("Div", ["sum_1d", "n_cal_f"], ["score"]),
         ]
 
-        X_input    = helper.make_tensor_value_info("X",     TensorProto.FLOAT, [None, p])
-        score_out  = helper.make_tensor_value_info("score", TensorProto.FLOAT, [None])
+        X_input = helper.make_tensor_value_info("X", TensorProto.FLOAT, [None, p])
+        score_out = helper.make_tensor_value_info("score", TensorProto.FLOAT, [None])
 
-        graph = helper.make_graph(nodes, "applicability_domain",
-                                  [X_input], [score_out], initializers)
-        model = helper.make_model(
-            graph, opset_imports=[helper.make_opsetid("", 13)]
+        graph = helper.make_graph(
+            nodes, "applicability_domain", [X_input], [score_out], initializers
         )
+        model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
         model.ir_version = 7
 
         onnx.checker.check_model(model)
@@ -270,6 +271,7 @@ class ApplicabilityDomain:
 # Inference-only artifact (onnxruntime only)
 # ---------------------------------------------------------------------------
 
+
 class ApplicabilityDomainArtifact:
     """
     Inference-only applicability domain loaded from a saved ONNX model.
@@ -291,6 +293,7 @@ class ApplicabilityDomainArtifact:
             inst.metadata = json.load(fh)
 
         import onnxruntime as rt
+
         onnx_path = os.path.join(directory, "applicability_domain.onnx")
         inst._session = rt.InferenceSession(
             onnx_path, providers=["CPUExecutionProvider"]

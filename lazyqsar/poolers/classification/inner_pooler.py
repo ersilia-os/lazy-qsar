@@ -19,7 +19,6 @@ def _softmax(x: np.ndarray) -> np.ndarray:
 
 
 class InnerClassifierPooler(object):
-
     def __init__(self, portfolio: list):
         self.portfolio = portfolio
         self._n_heads = len(portfolio)
@@ -75,7 +74,11 @@ class InnerClassifierPooler(object):
     def predict_proba(self, R, X_prep=None):
         if self._n_heads == 1:
             return np.column_stack([1 - R[:, 0], R[:, 0]])
-        W = self.get_weights(X_prep) if X_prep is not None else np.full(R.shape, 1.0 / self._n_heads)
+        W = (
+            self.get_weights(X_prep)
+            if X_prep is not None
+            else np.full(R.shape, 1.0 / self._n_heads)
+        )
         p1 = (W * R).sum(axis=1)
         return np.column_stack([1 - p1, p1])
 
@@ -106,7 +109,6 @@ class InnerClassifierPooler(object):
 
 
 class InnerPoolerArtifact(object):
-
     def __init__(self, data: dict):
         self._n_heads = len(data["portfolio"])
         if "gate_coef" in data:
@@ -125,7 +127,11 @@ class InnerPoolerArtifact(object):
     def predict_proba(self, R, X_prep=None):
         if self._n_heads == 1:
             return np.column_stack([1 - R[:, 0], R[:, 0]])
-        W = self.get_weights(X_prep) if X_prep is not None else np.full(R.shape, 1.0 / self._n_heads)
+        W = (
+            self.get_weights(X_prep)
+            if X_prep is not None
+            else np.full(R.shape, 1.0 / self._n_heads)
+        )
         p1 = (W * R).sum(axis=1)
         return np.column_stack([1 - p1, p1])
 

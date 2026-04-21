@@ -28,9 +28,9 @@ def select_scaler(profile: PreprocessingProfile) -> str:
 
 _SCALER_FACTORIES = {
     "standard": StandardScaler,
-    "robust":   RobustScaler,
-    "power":    lambda: PowerTransformer(method="yeo-johnson"),
-    "max_abs":  MaxAbsScaler,
+    "robust": RobustScaler,
+    "power": lambda: PowerTransformer(method="yeo-johnson"),
+    "max_abs": MaxAbsScaler,
 }
 
 

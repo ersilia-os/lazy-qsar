@@ -31,8 +31,12 @@ _DEFAULT_DECISION_CUTOFF = 0.5
 _CALIBRATION_ISOTONIC_MIN_MINORITY = 500
 _RANKER_MAX_KNOTS = 10_000
 _IMBALANCE_BALANCED_SUBSAMPLE_RATIO = 3.0
-_PORTFOLIO_MIN_N = 200    # below this skip OOB comparison; OOB is unreliable on tiny datasets
-_PORTFOLIO_MIN_GAIN = 0.005  # base AUC margin; heuristic must beat default by at least this
+_PORTFOLIO_MIN_N = (
+    200  # below this skip OOB comparison; OOB is unreliable on tiny datasets
+)
+_PORTFOLIO_MIN_GAIN = (
+    0.005  # base AUC margin; heuristic must beat default by at least this
+)
 
 
 def _min_gain_threshold(y: np.ndarray) -> float:
@@ -80,7 +84,9 @@ def _rf_onnx_bool_attr_compat():
         tree_ensemble.add_node = original_add_node
 
 
-def _learn_balanced_accuracy_cutoff(y_true: np.ndarray, p1: np.ndarray) -> tuple[float, str]:
+def _learn_balanced_accuracy_cutoff(
+    y_true: np.ndarray, p1: np.ndarray
+) -> tuple[float, str]:
     y_arr = np.asarray(y_true, dtype=int)
     p_arr = np.asarray(p1, dtype=float)
     mask = np.isfinite(p_arr)
@@ -93,14 +99,21 @@ def _learn_balanced_accuracy_cutoff(y_true: np.ndarray, p1: np.ndarray) -> tuple
     if unique.size == 0:
         return _DEFAULT_DECISION_CUTOFF, "default_0.5"
 
-    candidates = np.unique(np.concatenate([
-        unique,
-        np.array([
-            np.nextafter(unique[0], -np.inf),
-            _DEFAULT_DECISION_CUTOFF,
-            np.nextafter(unique[-1], np.inf),
-        ], dtype=float),
-    ]))
+    candidates = np.unique(
+        np.concatenate(
+            [
+                unique,
+                np.array(
+                    [
+                        np.nextafter(unique[0], -np.inf),
+                        _DEFAULT_DECISION_CUTOFF,
+                        np.nextafter(unique[-1], np.inf),
+                    ],
+                    dtype=float,
+                ),
+            ]
+        )
+    )
 
     best_threshold = _DEFAULT_DECISION_CUTOFF
     best_key = None
@@ -119,7 +132,8 @@ def _apply_calibrator_artifact(proba: np.ndarray, cal: dict) -> np.ndarray:
     if cal["method"] == "isotonic":
         p1 = np.clip(
             np.interp(raw_p1, cal["X_thresholds"], cal["y_thresholds"]),
-            0, 1,
+            0,
+            1,
         )
     else:
         A, B = cal["coef"], cal["intercept"]
@@ -188,7 +202,9 @@ class BaseRFClassifier(BaseEstimator):
                 return self.calibrate(X, y)
         return self._fit_raw(X, y)
 
-    def _make_estimator(self, class_weight, params: dict, oob_score: bool = False) -> RandomForestClassifier:
+    def _make_estimator(
+        self, class_weight, params: dict, oob_score: bool = False
+    ) -> RandomForestClassifier:
         return RandomForestClassifier(
             n_estimators=params["n_estimators"],
             max_depth=params.get("max_depth", None),
@@ -223,8 +239,8 @@ class BaseRFClassifier(BaseEstimator):
         all_presets = {}
         for _name, _p in [
             ("heuristic", self._resolve_params(heuristic_rf_params(profile))),
-            ("default",   self._resolve_params(default_rf_params())),
-            ("flaml",     self._resolve_params(flaml_rf_params(profile))),
+            ("default", self._resolve_params(default_rf_params())),
+            ("flaml", self._resolve_params(flaml_rf_params(profile))),
             ("autogluon", self._resolve_params(autogluon_rf_params(profile))),
         ]:
             if _name in _skip:
@@ -290,7 +306,9 @@ class BaseRFClassifier(BaseEstimator):
             self._estimator.fit(X, y)
             self.selected_preset_ = "default"
             self.params_ = d_params
-            logger.info(f"RF portfolio skipped (n={n} < {_PORTFOLIO_MIN_N}), using default directly")
+            logger.info(
+                f"RF portfolio skipped (n={n} < {_PORTFOLIO_MIN_N}), using default directly"
+            )
 
         self.timing_ = {"fit": _time.perf_counter() - _t_fit}
         self.classes_ = np.array([0, 1])
@@ -351,20 +369,28 @@ class BaseRFClassifier(BaseEstimator):
     def score(self, X, y) -> float:
         return roc_auc_score(y, self.predict_proba(X)[:, 1])
 
-    def calibrate(self, X, y, n_splits: int | None = None, random_state: int = 42) -> "BaseRFClassifier":
+    def calibrate(
+        self, X, y, n_splits: int | None = None, random_state: int = 42
+    ) -> "BaseRFClassifier":
         X = check_array(X, dtype="numeric", accept_sparse="csr")
         y = np.asarray(y, dtype=int)
         n = len(y)
-        k, fold_splits = make_stratified_oof_splits(y, n_splits=n_splits, random_state=random_state)
+        k, fold_splits = make_stratified_oof_splits(
+            y, n_splits=n_splits, random_state=random_state
+        )
 
-        logger.info(f"BaseRFClassifier.calibrate: full fit on n={n} (forest fit runs once)")
+        logger.info(
+            f"BaseRFClassifier.calibrate: full fit on n={n} (forest fit runs once)"
+        )
         self._fit_raw(X, y)
 
         oof_raw = np.full(n, np.nan, dtype=float)
         logger.info(f"calibrate: {k}-fold OOF | fold_solver=RandomForestClassifier")
         fold_times = []
         for fold_idx, (train_idx, val_idx) in enumerate(fold_splits):
-            logger.debug(f"  Fold {fold_idx + 1}/{k}: train={len(train_idx)}  val={len(val_idx)}")
+            logger.debug(
+                f"  Fold {fold_idx + 1}/{k}: train={len(train_idx)}  val={len(val_idx)}"
+            )
             _t_fold = _time.perf_counter()
             fold_est = self._make_estimator(self.class_weight_, self.params_)
             fold_est.fit(X[train_idx], y[train_idx])
@@ -393,7 +419,9 @@ class BaseRFClassifier(BaseEstimator):
             self._ranker_knots = sorted_scores[idx]
         else:
             self._ranker_knots = sorted_scores
-        self.decision_cutoff_, self.decision_cutoff_source_ = _learn_balanced_accuracy_cutoff(y, oof_raw)
+        self.decision_cutoff_, self.decision_cutoff_source_ = (
+            _learn_balanced_accuracy_cutoff(y, oof_raw)
+        )
         logger.success(
             f"Calibrator fitted ({self.calibrator_method_}, minority={minority_count}) on OOF predictions."
         )
@@ -428,8 +456,12 @@ class BaseRFClassifier(BaseEstimator):
             "n_estimators": params.get("n_estimators", self.n_estimators),
             "selected_preset": getattr(self, "selected_preset_", "unknown"),
             "n_features_in": self.n_features_in_,
-            "decision_cutoff": float(getattr(self, "decision_cutoff_", _DEFAULT_DECISION_CUTOFF)),
-            "decision_cutoff_source": getattr(self, "decision_cutoff_source_", "default_0.5"),
+            "decision_cutoff": float(
+                getattr(self, "decision_cutoff_", _DEFAULT_DECISION_CUTOFF)
+            ),
+            "decision_cutoff_source": getattr(
+                self, "decision_cutoff_source_", "default_0.5"
+            ),
         }
         if hasattr(self, "calibrator_"):
             if self.calibrator_method_ == "isotonic":
@@ -472,14 +504,20 @@ class BaseRFArtifact:
         artifact.task = artifact.metadata["task"]
         artifact._format = artifact.metadata.get("format", "onnx")
         artifact._cal = artifact.metadata.get("calibrator", None)
-        artifact.decision_cutoff = float(artifact.metadata.get("decision_cutoff", _DEFAULT_DECISION_CUTOFF))
-        artifact.decision_cutoff_source = artifact.metadata.get("decision_cutoff_source", "default_0.5")
+        artifact.decision_cutoff = float(
+            artifact.metadata.get("decision_cutoff", _DEFAULT_DECISION_CUTOFF)
+        )
+        artifact.decision_cutoff_source = artifact.metadata.get(
+            "decision_cutoff_source", "default_0.5"
+        )
 
         if artifact._format == "onnx":
             import onnxruntime as rt
 
             onnx_path = os.path.join(directory, "randomforest.onnx")
-            artifact._session = rt.InferenceSession(onnx_path, providers=["CPUExecutionProvider"])
+            artifact._session = rt.InferenceSession(
+                onnx_path, providers=["CPUExecutionProvider"]
+            )
         else:
             joblib_path = os.path.join(directory, "randomforest.joblib")
             artifact._estimator = joblib.load(joblib_path)
@@ -492,7 +530,9 @@ class BaseRFArtifact:
             outputs = self._session.run(None, {input_name: X_f32})
             prob_raw = outputs[1]
             if isinstance(prob_raw, list):
-                proba = np.array([[d[k] for k in sorted(d)] for d in prob_raw], dtype=np.float64)
+                proba = np.array(
+                    [[d[k] for k in sorted(d)] for d in prob_raw], dtype=np.float64
+                )
             else:
                 proba = np.asarray(prob_raw, dtype=np.float64)
                 if proba.ndim == 1:
@@ -514,7 +554,9 @@ class BaseRFArtifact:
             outputs = self._session.run(None, {input_name: X_f32})
             prob_raw = outputs[1]
             if isinstance(prob_raw, list):
-                return np.array([[d[k] for k in sorted(d)] for d in prob_raw], dtype=np.float64)
+                return np.array(
+                    [[d[k] for k in sorted(d)] for d in prob_raw], dtype=np.float64
+                )
             proba = np.asarray(prob_raw, dtype=np.float64)
             if proba.ndim == 1:
                 return np.column_stack([1 - proba, proba])
@@ -530,5 +572,7 @@ class BaseRFArtifact:
         if "ranker" not in self.metadata:
             raise RuntimeError("No ranker stored in this artifact.")
         knots = np.asarray(self.metadata["ranker"]["knots"])
-        rank_1 = np.interp(self.predict_score(X)[:, 1], knots, np.linspace(0.0, 1.0, len(knots)))
+        rank_1 = np.interp(
+            self.predict_score(X)[:, 1], knots, np.linspace(0.0, 1.0, len(knots))
+        )
         return np.column_stack([1 - rank_1, rank_1])

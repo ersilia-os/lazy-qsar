@@ -52,6 +52,7 @@ _HEURISTIC = "heuristic"
 # Dataset profile
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class RFProfile:
     n_samples: int
@@ -103,7 +104,9 @@ def _detect_sparse_counts(X, sparsity: float) -> bool:
     if sparsity < 0.5:
         return False
     n_sample = min(5000, X.shape[0])
-    sample = X[:n_sample].toarray() if hasattr(X, "toarray") else np.asarray(X[:n_sample])
+    sample = (
+        X[:n_sample].toarray() if hasattr(X, "toarray") else np.asarray(X[:n_sample])
+    )
     nonzero_vals = sample[sample != 0]
     if nonzero_vals.size == 0:
         return False
@@ -143,6 +146,7 @@ def profile_rf_dataset(X, y) -> RFProfile:
 # ---------------------------------------------------------------------------
 # Presets
 # ---------------------------------------------------------------------------
+
 
 def heuristic_rf_params(profile: RFProfile) -> dict:
     """
@@ -248,8 +252,8 @@ def flaml_rf_params(profile: RFProfile) -> dict:
     p = profile.n_features
 
     center = np.array(_fd.BINARY["preprocessing"]["center"])
-    scale  = np.array(_fd.BINARY["preprocessing"]["scale"])
-    query  = np.array([float(n), float(p), 2.0, profile.pct_numeric])
+    scale = np.array(_fd.BINARY["preprocessing"]["scale"])
+    query = np.array([float(n), float(p), 2.0, profile.pct_numeric])
     q_norm = (query - center) / scale
 
     best_dist, best_idx = float("inf"), 0
@@ -258,7 +262,7 @@ def flaml_rf_params(profile: RFProfile) -> dict:
         d = float(np.dot(q_norm - feat, q_norm - feat))
         if d < best_dist:
             best_dist = d
-            best_idx  = nb["choice"][0]
+            best_idx = nb["choice"][0]
 
     hp = _fd.BINARY["portfolio"][best_idx]
     if not hp:

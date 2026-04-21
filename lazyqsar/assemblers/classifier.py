@@ -18,13 +18,17 @@ def _correct_prior(p1, train_prior, population_prior):
         return p1
     if train_prior <= 0.0 or train_prior >= 1.0:
         return p1
-    ratio = (population_prior / train_prior) / ((1.0 - population_prior) / (1.0 - train_prior))
+    ratio = (population_prior / train_prior) / (
+        (1.0 - population_prior) / (1.0 - train_prior)
+    )
     odds = p1 / np.clip(1.0 - p1, 1e-15, None)
     corrected_odds = ratio * odds
     return corrected_odds / (1.0 + corrected_odds)
 
 
-def _plan_batches(X, y, max_batch_size=100_000, max_imbalance_ratio=100, random_state=42):
+def _plan_batches(
+    X, y, max_batch_size=100_000, max_imbalance_ratio=100, random_state=42
+):
     """
     Returns a list of index arrays, one per batch.
 
@@ -50,8 +54,10 @@ def _plan_batches(X, y, max_batch_size=100_000, max_imbalance_ratio=100, random_
     if ratio <= max_imbalance_ratio:
         if n <= max_batch_size:
             return [np.arange(n)]
-        return [np.arange(start, min(start + max_batch_size, n))
-                for start in range(0, n, max_batch_size)]
+        return [
+            np.arange(start, min(start + max_batch_size, n))
+            for start in range(0, n, max_batch_size)
+        ]
 
     # Imbalanced path: all positives + equally-distributed negative partitions
     rng = np.random.default_rng(random_state)
@@ -63,8 +69,9 @@ def _plan_batches(X, y, max_batch_size=100_000, max_imbalance_ratio=100, random_
 
 
 class _BatchLazyClassifier(object):
-
-    def __init__(self, portfolio: list, calibrated: bool = True, max_rounds: int | None = None):
+    def __init__(
+        self, portfolio: list, calibrated: bool = True, max_rounds: int | None = None
+    ):
         self.prep = Preprocessor()
         self.heads = []
         for head_name in portfolio:
@@ -96,7 +103,11 @@ class _BatchLazyClassifier(object):
         _t_pooler = _time.perf_counter()
         self.pooler.fit(S, y, X_prep=X)
         t_pooler = _time.perf_counter() - _t_pooler
-        cutoffs = [h.model.decision_cutoff_ for h in self.heads if hasattr(getattr(h, "model", None), "decision_cutoff_")]
+        cutoffs = [
+            h.model.decision_cutoff_
+            for h in self.heads
+            if hasattr(getattr(h, "model", None), "decision_cutoff_")
+        ]
         self.decision_cutoff_ = float(np.mean(cutoffs)) if cutoffs else 0.5
 
         # Build and display per-step timing table
@@ -105,25 +116,53 @@ class _BatchLazyClassifier(object):
             t = getattr(getattr(head, "model", None), "timing_", {})
             if head_name == "xgb":
                 if "portfolio_select" in t:
-                    steps.append(("XGB \u2014 portfolio select (stage 1+2)", t["portfolio_select"], False))
-                steps.append(("XGB \u2014 phase-2 refit", t.get("phase2_refit", 0.0), False))
+                    steps.append(
+                        (
+                            "XGB \u2014 portfolio select (stage 1+2)",
+                            t["portfolio_select"],
+                            False,
+                        )
+                    )
+                steps.append(
+                    ("XGB \u2014 phase-2 refit", t.get("phase2_refit", 0.0), False)
+                )
                 if "calibration_total" in t:
                     folds = t.get("calibration_folds", [])
-                    steps.append((f"XGB \u2014 calibration ({len(folds)} folds)", t["calibration_total"], False))
+                    steps.append(
+                        (
+                            f"XGB \u2014 calibration ({len(folds)} folds)",
+                            t["calibration_total"],
+                            False,
+                        )
+                    )
                     for fi, ft in enumerate(folds):
                         steps.append((f"fold {fi + 1}/{len(folds)}", ft, True))
             elif head_name == "lr":
-                steps.append(("LR \u2014 hyperparam search", t.get("hparam_search", 0.0), False))
+                steps.append(
+                    ("LR \u2014 hyperparam search", t.get("hparam_search", 0.0), False)
+                )
                 if "calibration_total" in t:
                     folds = t.get("calibration_folds", [])
-                    steps.append((f"LR \u2014 calibration ({len(folds)} folds)", t["calibration_total"], False))
+                    steps.append(
+                        (
+                            f"LR \u2014 calibration ({len(folds)} folds)",
+                            t["calibration_total"],
+                            False,
+                        )
+                    )
                     for fi, ft in enumerate(folds):
                         steps.append((f"fold {fi + 1}/{len(folds)}", ft, True))
             elif head_name == "rf":
                 steps.append(("RF \u2014 fit", t.get("fit", 0.0), False))
                 if "calibration_total" in t:
                     folds = t.get("calibration_folds", [])
-                    steps.append((f"RF \u2014 calibration ({len(folds)} folds)", t["calibration_total"], False))
+                    steps.append(
+                        (
+                            f"RF \u2014 calibration ({len(folds)} folds)",
+                            t["calibration_total"],
+                            False,
+                        )
+                    )
                     for fi, ft in enumerate(folds):
                         steps.append((f"fold {fi + 1}/{len(folds)}", ft, True))
         steps.append(("Pooler \u2014 gating network", t_pooler, False))
@@ -165,8 +204,13 @@ class _BatchLazyClassifier(object):
 
 
 class LazyClassifier(object):
-
-    def __init__(self, max_batch_size=100_000, calibrated=True, max_rounds=None, max_imbalance_ratio=100):
+    def __init__(
+        self,
+        max_batch_size=100_000,
+        calibrated=True,
+        max_rounds=None,
+        max_imbalance_ratio=100,
+    ):
         self.max_batch_size = max_batch_size
         self.max_imbalance_ratio = max_imbalance_ratio
         self.calibrated = calibrated
@@ -181,7 +225,9 @@ class LazyClassifier(object):
         self.portfolio = p.get()
         logger.dataset_table(X.shape, y=y, portfolio=self.portfolio)
 
-        batch_indices = _plan_batches(X, y, self.max_batch_size, self.max_imbalance_ratio)
+        batch_indices = _plan_batches(
+            X, y, self.max_batch_size, self.max_imbalance_ratio
+        )
 
         n_pos_total = int((y == 1).sum())
         n_neg_total = int((y == 0).sum())
@@ -206,13 +252,18 @@ class LazyClassifier(object):
                 f"Batch {batch_idx + 1}/{n_batches} — "
                 f"n={len(batch_X):,}  portfolio={self.portfolio}"
             )
-            batch_classifier = _BatchLazyClassifier(portfolio=self.portfolio, calibrated=self.calibrated,
-                                                     max_rounds=self.max_rounds)
+            batch_classifier = _BatchLazyClassifier(
+                portfolio=self.portfolio,
+                calibrated=self.calibrated,
+                max_rounds=self.max_rounds,
+            )
             batch_classifier.fit(batch_X, batch_y)
             self.models.append(batch_classifier)
 
         self.batch_priors_ = [m.train_prior_ for m in self.models]
-        self.decision_cutoff_ = float(np.mean([m.decision_cutoff_ for m in self.models]))
+        self.decision_cutoff_ = float(
+            np.mean([m.decision_cutoff_ for m in self.models])
+        )
         self.oof_auc_ = self._compute_oof_auc(X, y, batch_indices)
         self.train_auc_ = self._compute_train_auc(X, y)
         logger.success(
@@ -223,6 +274,7 @@ class LazyClassifier(object):
 
     def _compute_train_auc(self, X, y) -> float:
         from sklearn.metrics import roc_auc_score
+
         try:
             train_proba = self.predict_proba(X)[:, 1]
             return float(roc_auc_score(y, train_proba))
@@ -231,11 +283,14 @@ class LazyClassifier(object):
 
     def _compute_oof_auc(self, X, y, batch_indices) -> float:
         from sklearn.metrics import roc_auc_score
+
         try:
             batch_aucs = []
             for batch_clf, indices in zip(self.models, batch_indices):
                 heads = batch_clf.heads
-                if not all(hasattr(getattr(h, "model", None), "oof_probas_") for h in heads):
+                if not all(
+                    hasattr(getattr(h, "model", None), "oof_probas_") for h in heads
+                ):
                     return 0.5
                 S = np.column_stack([h.model.oof_probas_ for h in heads])
                 X_prep = batch_clf.prep.transform(X[indices])
@@ -248,20 +303,24 @@ class LazyClassifier(object):
 
     def predict_proba(self, X):
         logger.debug(f"predict_proba: X={X.shape}  batches={len(self.models)}")
-        R = np.array([
-            _correct_prior(m.predict_proba(X)[:, 1], tp, self.population_prior_)
-            for m, tp in zip(self.models, self.batch_priors_)
-        ])
+        R = np.array(
+            [
+                _correct_prior(m.predict_proba(X)[:, 1], tp, self.population_prior_)
+                for m, tp in zip(self.models, self.batch_priors_)
+            ]
+        )
         proba = R.mean(axis=0)
         return np.array([1 - proba, proba]).T
 
     def predict_lift(self, X) -> np.ndarray:
         """Return lift over population prior, shape (n_samples, 2)."""
         proba = self.predict_proba(X)
-        return np.column_stack([
-            proba[:, 0] / (1.0 - self.population_prior_),
-            proba[:, 1] / self.population_prior_,
-        ])
+        return np.column_stack(
+            [
+                proba[:, 0] / (1.0 - self.population_prior_),
+                proba[:, 1] / self.population_prior_,
+            ]
+        )
 
     def predict_logit(self, X):
         p = np.clip(self.predict_proba(X)[:, 1], 1e-7, 1.0 - 1e-7)

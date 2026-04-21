@@ -19,6 +19,7 @@ import tempfile
 import time
 
 import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
@@ -30,11 +31,12 @@ from lazyqsar.qsar import LazyClassifierQSAR, _softmax_weights
 logger.set_verbosity(True)
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "tests", "data")
-OUT_DIR   = os.path.dirname(__file__)
-MODE      = "fast"   # change to "slow" when chemeleon/chemprop is working
+OUT_DIR = os.path.dirname(__file__)
+MODE = "fast"  # change to "slow" when chemeleon/chemprop is working
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
+
 
 def _load_csv(split):
     path = os.path.join(DATA_DIR, f"bioavailability_ma_{split}.csv")
@@ -66,27 +68,31 @@ def _per_descriptor_breakdown(model, smiles_list):
         preds.append(mod.predict_proba(X=X)[:, 1])
         ad_scores.append(ad.score(X))
 
-    P = np.stack(preds,     axis=0)    # (D, B)
+    P = np.stack(preds, axis=0)  # (D, B)
     A = np.stack(ad_scores, axis=0).T  # (B, D)
-    W = _softmax_weights(A)            # (B, D)
+    W = _softmax_weights(A)  # (B, D)
     return model.descriptor_types, P, A, W
 
 
 def _print_descriptor_table(desc_names, P, A, W, y_true, combined_auc):
     width = 78
     print("\n" + "═" * width)
-    print(f"  {'Descriptor':<12}  {'AUC (solo)':>10}  {'AD mean±std':>14}  "
-          f"{'Weight mean±std':>16}  {'Wins':>6}")
+    print(
+        f"  {'Descriptor':<12}  {'AUC (solo)':>10}  {'AD mean±std':>14}  "
+        f"{'Weight mean±std':>16}  {'Wins':>6}"
+    )
     print("─" * width)
     for d, name in enumerate(desc_names):
         solo_auc = roc_auc_score(y_true, P[d])
         ad_mean, ad_std = float(A[:, d].mean()), float(A[:, d].std())
-        w_mean,  w_std  = float(W[:, d].mean()), float(W[:, d].std())
+        w_mean, w_std = float(W[:, d].mean()), float(W[:, d].std())
         wins = int((W.argmax(axis=1) == d).sum())
-        print(f"  {name:<12}  {solo_auc:>10.4f}  "
-              f"{ad_mean:>6.3f}±{ad_std:<6.3f}  "
-              f"{w_mean:>7.3f}±{w_std:<7.3f}  "
-              f"{wins:>6}")
+        print(
+            f"  {name:<12}  {solo_auc:>10.4f}  "
+            f"{ad_mean:>6.3f}±{ad_std:<6.3f}  "
+            f"{w_mean:>7.3f}±{w_std:<7.3f}  "
+            f"{wins:>6}"
+        )
     print("─" * width)
     print(f"  {'combined':<12}  {combined_auc:>10.4f}")
     print("═" * width + "\n")
@@ -99,7 +105,7 @@ def _print_winner_breakdown(desc_names, W):
     for d, name in enumerate(desc_names):
         n = int((winner_idx == d).sum())
         bar = "█" * int(round(n / B * 40))
-        print(f"    {name:<12}  {n:>4} / {B}  ({n/B:>5.1%})  {bar}")
+        print(f"    {name:<12}  {n:>4} / {B}  ({n / B:>5.1%})  {bar}")
     print()
 
 
@@ -126,13 +132,13 @@ print(f"  LazyClassifierQSAR  ·  mode={MODE}  ·  Bioavailability (Ma)")
 print("═" * 78 + "\n")
 
 smiles_train, y_train = _load_csv("train")
-smiles_test,  y_test  = _load_csv("test")
+smiles_test, y_test = _load_csv("test")
 
 print(f"  Train: {len(y_train):,} molecules  (pos={y_train.mean():.1%})")
 print(f"  Test : {len(y_test):,} molecules   (pos={y_test.mean():.1%})\n")
 
 # ── Fit ───────────────────────────────────────────────────────────────────────
-t0    = time.perf_counter()
+t0 = time.perf_counter()
 model = LazyClassifierQSAR(mode=MODE)
 model.fit(smiles_train, y_train)
 fit_time = time.perf_counter() - t0
@@ -165,10 +171,13 @@ with tempfile.TemporaryDirectory() as tmp:
     save_time = time.perf_counter() - t_save
 
     for desc in desc_names:
-        ad_onnx = os.path.join(model_dir, desc, "applicability_domain",
-                               "applicability_domain.onnx")
+        ad_onnx = os.path.join(
+            model_dir, desc, "applicability_domain", "applicability_domain.onnx"
+        )
         assert os.path.isfile(ad_onnx), f"Missing AD ONNX for {desc}"
-    print(f"  Saved in {save_time:.1f}s — AD ONNX present for all {len(desc_names)} descriptors")
+    print(
+        f"  Saved in {save_time:.1f}s — AD ONNX present for all {len(desc_names)} descriptors"
+    )
 
     t_load = time.perf_counter()
     artifact = LazyClassifierQSAR.load(model_dir)
@@ -176,8 +185,8 @@ with tempfile.TemporaryDirectory() as tmp:
     print(f"  Loaded in {load_time:.1f}s")
 
     proba_onnx = artifact.predict_proba(smiles_test)
-    onnx_auc   = roc_auc_score(y_test, proba_onnx[:, 1])
-    max_diff   = float(np.abs(proba_combined[:, 1] - proba_onnx[:, 1]).max())
+    onnx_auc = roc_auc_score(y_test, proba_onnx[:, 1])
+    max_diff = float(np.abs(proba_combined[:, 1] - proba_onnx[:, 1]).max())
     print(f"  ONNX AUC = {onnx_auc:.4f}  max|diff vs sklearn| = {max_diff:.4e}\n")
 
 # ── Plots ─────────────────────────────────────────────────────────────────────
@@ -202,15 +211,22 @@ ax.grid(True, alpha=0.25, axis="y")
 
 ax = axes[2]
 solo_aucs = [roc_auc_score(y_test, P[d]) for d in range(D)]
-colors    = ["#4e79a7", "#f28e2b", "#e15759", "#76b7b2"][:D]
+colors = ["#4e79a7", "#f28e2b", "#e15759", "#76b7b2"][:D]
 bars = ax.bar(desc_names, solo_aucs, color=colors, alpha=0.8)
-ax.axhline(combined_auc, color="black", lw=1.5, ls="--",
-           label=f"Combined ({combined_auc:.3f})")
+ax.axhline(
+    combined_auc, color="black", lw=1.5, ls="--", label=f"Combined ({combined_auc:.3f})"
+)
 y_margin = 0.03
 ax.set_ylim(max(0, min(solo_aucs) - y_margin), min(1.0, combined_auc + y_margin))
 for bar, auc in zip(bars, solo_aucs):
-    ax.text(bar.get_x() + bar.get_width() / 2, auc + 0.002,
-            f"{auc:.3f}", ha="center", va="bottom", fontsize=9)
+    ax.text(
+        bar.get_x() + bar.get_width() / 2,
+        auc + 0.002,
+        f"{auc:.3f}",
+        ha="center",
+        va="bottom",
+        fontsize=9,
+    )
 ax.set_ylabel("AUC (ROC)")
 ax.set_title("Solo vs combined AUC")
 ax.legend(fontsize=9)

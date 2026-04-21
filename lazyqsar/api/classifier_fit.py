@@ -65,7 +65,9 @@ def fit(data_dir: str, model_dir: str, models_txt: str = None, mode: str = "defa
     data_dir = os.path.abspath(data_dir)
     model_dir = os.path.abspath(model_dir)
 
-    logger.info(f"Fitting models in mode '{mode}' | data: {data_dir} | output: {model_dir}")
+    logger.info(
+        f"Fitting models in mode '{mode}' | data: {data_dir} | output: {model_dir}"
+    )
 
     if os.path.exists(model_dir):
         raise FileExistsError(
@@ -112,7 +114,9 @@ def fit(data_dir: str, model_dir: str, models_txt: str = None, mode: str = "defa
     for descriptor_type in descriptor_types:
         X = np.load(os.path.join(model_dir, f"{descriptor_type}.npy"))
         for task_name in task_names:
-            logger.info(f"Fitting task '{task_name}' with descriptor '{descriptor_type}'")
+            logger.info(
+                f"Fitting task '{task_name}' with descriptor '{descriptor_type}'"
+            )
             idxs = [all_smiles2idx[s] for s in data[task_name][0]]
             y = data[task_name][1]
             X_task = X[idxs]

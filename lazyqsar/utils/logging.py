@@ -17,11 +17,7 @@ _loguru.level("ERROR", color="<white><bold><bg red>")
 _loguru.level("CRITICAL", color="<white><bold><bg red>")
 _loguru.level("SUCCESS", color="<black><bold><bg green>")
 
-_FORMAT = (
-    "<green>{time:HH:mm:ss}</green> "
-    "<level>{level: <8}</level> "
-    "{message}"
-)
+_FORMAT = "<green>{time:HH:mm:ss}</green> <level>{level: <8}</level> {message}"
 
 
 class Logger:
@@ -226,7 +222,10 @@ class Logger:
         table.add_row("Imbalance", f"{profile.imbalance_ratio:.2f}:1")
         table.add_row("Sparsity", f"{profile.sparsity:.3f}")
         table.add_row("Binary fraction", f"{profile.binary_feature_fraction:.3f}")
-        table.add_row("Signal mean/p90", f"{profile.feature_signal_strength:.3f} / {profile.feature_signal_p90:.3f}")
+        table.add_row(
+            "Signal mean/p90",
+            f"{profile.feature_signal_strength:.3f} / {profile.feature_signal_p90:.3f}",
+        )
         table.add_row(
             "Scores",
             f"lr={scores.get('lr', 0)}  xgb={scores.get('xgb', 0)}  rf={scores.get('rf', 0)}",
@@ -252,11 +251,11 @@ class Logger:
         if not self._verbose:
             return
 
-        is_rf = (model == "rf")
+        is_rf = model == "rf"
         title = (
             "[bold]Portfolio — OOB comparison[/bold]"
-            if is_rf else
-            "[bold]Portfolio — Stage 1 comparison[/bold]"
+            if is_rf
+            else "[bold]Portfolio — Stage 1 comparison[/bold]"
         )
         table = Table(
             title=title,
@@ -269,13 +268,13 @@ class Logger:
         table.add_column("Preset", style="cyan", no_wrap=True, min_width=9)
         if is_rf:
             table.add_column("n_est", justify="right", width=6, no_wrap=True)
-            table.add_column("mln",   justify="right", width=6, no_wrap=True)
+            table.add_column("mln", justify="right", width=6, no_wrap=True)
             table.add_column("max_f", justify="right", width=7, no_wrap=True)
         else:
-            table.add_column("LR",    justify="right", width=7, no_wrap=True)
+            table.add_column("LR", justify="right", width=7, no_wrap=True)
             table.add_column("Depth", justify="right", width=6, no_wrap=True)
-        table.add_column("Score",  justify="right", width=8)
-        table.add_column("Gain",   justify="right", width=8)
+        table.add_column("Score", justify="right", width=8)
+        table.add_column("Gain", justify="right", width=8)
         table.add_column("Status", no_wrap=True, min_width=14)
 
         preset_order = ["heuristic", "default", "flaml", "autogluon"]
@@ -313,7 +312,11 @@ class Logger:
             if is_nan:
                 status = "[dim]skipped[/dim]"
             elif name == winner:
-                status = "[bold green]✓ selected[/]" if name != "default" else "[bold green]✓ default[/]"
+                status = (
+                    "[bold green]✓ selected[/]"
+                    if name != "default"
+                    else "[bold green]✓ default[/]"
+                )
             elif name == "default":
                 status = "[dim]baseline[/dim]"
             else:
@@ -325,7 +328,14 @@ class Logger:
                     status = "[dim]—[/dim]"
 
             row_style = "bold" if name == winner else ""
-            table.add_row(name, *param_cols, score_str, f"[{gain_style}]{gain_str}[/]", status, style=row_style)
+            table.add_row(
+                name,
+                *param_cols,
+                score_str,
+                f"[{gain_style}]{gain_str}[/]",
+                status,
+                style=row_style,
+            )
 
         self._console.print(table)
         footer_parts = [f"threshold = {threshold:.4f}", f"n_train = {n_tr:,}"]
@@ -335,7 +345,6 @@ class Logger:
             footer_parts.append("mln = max_leaf_nodes")
         self._console.print("  [dim]" + "  |  ".join(footer_parts) + "[/dim]")
         self._console.line()
-
 
     def inner_pooler_table(
         self,
@@ -353,8 +362,8 @@ class Logger:
         gating = mean_weights is not None
         title = (
             "[bold]Ensemble heads[/bold] [dim](per-sample gating)[/dim]"
-            if gating else
-            "[bold]Ensemble heads[/bold]"
+            if gating
+            else "[bold]Ensemble heads[/bold]"
         )
 
         table = Table(
@@ -415,20 +424,20 @@ class Logger:
         has_quality = any("quality_auc" in r for r in rows)
         has_active = any("active" in r for r in rows)
 
-        table.add_column("Descriptor",  style="cyan", no_wrap=True, min_width=12)
-        table.add_column("p",           justify="right", min_width=6)
-        table.add_column("sparsity",    justify="right", min_width=8)
-        table.add_column("feat time",   justify="right", min_width=9)
-        table.add_column("AD comps",    justify="right", min_width=9)
-        table.add_column("AD cal max",  justify="right", min_width=10)
+        table.add_column("Descriptor", style="cyan", no_wrap=True, min_width=12)
+        table.add_column("p", justify="right", min_width=6)
+        table.add_column("sparsity", justify="right", min_width=8)
+        table.add_column("feat time", justify="right", min_width=9)
+        table.add_column("AD comps", justify="right", min_width=9)
+        table.add_column("AD cal max", justify="right", min_width=10)
         if has_proxy:
-            table.add_column("Proxy AUC",   justify="right", min_width=10)
+            table.add_column("Proxy AUC", justify="right", min_width=10)
         if has_train:
-            table.add_column("Train AUC",   justify="right", min_width=10)
+            table.add_column("Train AUC", justify="right", min_width=10)
         if has_quality:
             table.add_column("Quality AUC", justify="right", min_width=12)
         if has_active:
-            table.add_column("Active",      justify="center", min_width=7)
+            table.add_column("Active", justify="center", min_width=7)
 
         for r in rows:
             row = [
@@ -471,19 +480,19 @@ class Logger:
             title_justify="left",
             padding=(0, 1),
         )
-        has_oof   = any("oof_auc"   in r for r in rows)
+        has_oof = any("oof_auc" in r for r in rows)
         has_proxy = any(r.get("proxy_auc") is not None for r in rows)
 
-        table.add_column("Descriptor",       style="cyan", no_wrap=True, min_width=12)
+        table.add_column("Descriptor", style="cyan", no_wrap=True, min_width=12)
         if has_proxy:
-            table.add_column("Proxy AUC",    justify="right", min_width=10)
+            table.add_column("Proxy AUC", justify="right", min_width=10)
         if has_oof:
-            table.add_column("OOF AUC",      justify="right", min_width=9)
-        table.add_column("AD mean±std",      justify="right", min_width=13)
-        table.add_column("AD [min, max]",    justify="right", min_width=14)
+            table.add_column("OOF AUC", justify="right", min_width=9)
+        table.add_column("AD mean±std", justify="right", min_width=13)
+        table.add_column("AD [min, max]", justify="right", min_width=14)
         table.add_column("Final W mean±std", justify="right", min_width=16)
-        table.add_column("Vetoed",           justify="right", min_width=10)
-        table.add_column("P(y=1) mean",      justify="right", min_width=12)
+        table.add_column("Vetoed", justify="right", min_width=10)
+        table.add_column("P(y=1) mean", justify="right", min_width=12)
 
         for r in rows:
             vetoed_pct = 100.0 * r["vetoed"] / n_samples if n_samples > 0 else 0.0
@@ -532,7 +541,9 @@ class Logger:
         for name, t, is_subtask in steps:
             label = f"  {name}" if is_subtask else name
             t_str = f"{t:.2f}"
-            pct_str = "" if is_subtask else (f"{100*t/total:.0f}%" if total > 0 else "—")
+            pct_str = (
+                "" if is_subtask else (f"{100 * t / total:.0f}%" if total > 0 else "—")
+            )
             style = "dim" if is_subtask else ""
             table.add_row(label, t_str, pct_str, style=style)
         table.add_row(
@@ -561,7 +572,7 @@ class Logger:
         def _add(node, path):
             entries = sorted(os.listdir(path))
             subdirs = [e for e in entries if os.path.isdir(os.path.join(path, e))]
-            files   = [e for e in entries if os.path.isfile(os.path.join(path, e))]
+            files = [e for e in entries if os.path.isfile(os.path.join(path, e))]
             for d in subdirs:
                 child = node.add(f"[bold cyan]{d}/[/bold cyan]")
                 _add(child, os.path.join(path, d))
@@ -594,21 +605,21 @@ class Logger:
             padding=(0, 1),
         )
         table.add_column("Descriptor", style="cyan", no_wrap=True, min_width=12)
-        table.add_column("Features",   justify="right", min_width=9)
-        table.add_column("Proxy AUC",  justify="right", min_width=10)
-        table.add_column("Status",     justify="center", min_width=10)
+        table.add_column("Features", justify="right", min_width=9)
+        table.add_column("Proxy AUC", justify="right", min_width=10)
+        table.add_column("Status", justify="center", min_width=10)
 
         status_fmt = {
             "reference": "[bold blue]★ ref[/]",
-            "pass":      "[bold green]✓ pass[/]",
-            "drop":      "[bold red]✗ drop[/]",
-            "fallback":  "[bold yellow]~ fallback[/]",
-            "skipped":   "[dim]— skipped[/]",
+            "pass": "[bold green]✓ pass[/]",
+            "drop": "[bold red]✗ drop[/]",
+            "fallback": "[bold yellow]~ fallback[/]",
+            "skipped": "[dim]— skipped[/]",
         }
 
         for r in rows:
             n_feat = f"{r['n_features']:,}" if r.get("n_features") is not None else "—"
-            auc    = f"{r['proxy_auc']:.4f}" if r.get("proxy_auc") is not None else "—"
+            auc = f"{r['proxy_auc']:.4f}" if r.get("proxy_auc") is not None else "—"
             status = status_fmt.get(r.get("status", "skipped"), r.get("status", ""))
             table.add_row(r["name"], n_feat, auc, status)
 

@@ -11,7 +11,6 @@ _SELECTOR_VERSION = "rule_v1"
 
 
 class Portfolio(object):
-
     def __init__(self):
         self.portfolio = ["xgb", "rf"]
         self.selector_version_ = _SELECTOR_VERSION
@@ -37,7 +36,9 @@ class Portfolio(object):
             )
             return ["lr", "xgb", "rf"], reasons
         if profile.n_p_ratio < 1.0:
-            reasons.append(f"hard guard -> include lr (n/p={profile.n_p_ratio:.2f} < 1.0)")
+            reasons.append(
+                f"hard guard -> include lr (n/p={profile.n_p_ratio:.2f} < 1.0)"
+            )
             return ["lr", "xgb", "rf"], reasons
         if profile.n_features >= 2000 and profile.n_p_ratio < 5.0:
             reasons.append(
@@ -87,7 +88,9 @@ class Portfolio(object):
             reasons.append("xgb +3: enough samples for trees")
         if profile.feature_signal_p90 >= 0.15:
             scores["xgb"] += 2
-            reasons.append(f"xgb +2: strong feature signal p90={profile.feature_signal_p90:.2f}")
+            reasons.append(
+                f"xgb +2: strong feature signal p90={profile.feature_signal_p90:.2f}"
+            )
         if 0.1 <= profile.binary_feature_fraction < 0.8 and profile.sparsity < 0.95:
             scores["xgb"] += 2
             reasons.append("xgb +2: mixed feature types without extreme sparsity")
@@ -129,12 +132,18 @@ class Portfolio(object):
         if scores["lr"] >= scores["xgb"] or gap < 2:
             portfolio = ["lr", "xgb", "rf"]
             if gap < 2:
-                reasons = reasons + [f"decision: score gap {gap} < 2 -> keep lr, while xgb and rf stay mandatory"]
+                reasons = reasons + [
+                    f"decision: score gap {gap} < 2 -> keep lr, while xgb and rf stay mandatory"
+                ]
             else:
-                reasons = reasons + ["decision: lr signal strong, while xgb and rf stay mandatory"]
+                reasons = reasons + [
+                    "decision: lr signal strong, while xgb and rf stay mandatory"
+                ]
         else:
             portfolio = ["xgb", "rf"]
-            reasons = reasons + [f"decision: xgb leads by {gap} -> keep xgb and mandatory rf"]
+            reasons = reasons + [
+                f"decision: xgb leads by {gap} -> keep xgb and mandatory rf"
+            ]
 
         self.selector_reasons_ = reasons
         self.portfolio = portfolio
@@ -181,8 +190,12 @@ class Portfolio(object):
             instance.profile_ = None
         else:
             instance.portfolio = payload.get("portfolio", ["xgb", "rf"])
-            instance.selector_version_ = payload.get("selector_version", _SELECTOR_VERSION)
-            instance.selector_scores_ = payload.get("scores", {"lr": 0, "xgb": 0, "rf": 0})
+            instance.selector_version_ = payload.get(
+                "selector_version", _SELECTOR_VERSION
+            )
+            instance.selector_scores_ = payload.get(
+                "scores", {"lr": 0, "xgb": 0, "rf": 0}
+            )
             instance.selector_reasons_ = payload.get("reasons", [])
             instance.profile_ = payload.get("profile")
         logger.debug(f"Portfolio loaded from {directory}: {instance.portfolio}")
@@ -190,7 +203,6 @@ class Portfolio(object):
 
 
 class PortfolioArtifact(object):
-
     def __init__(self, portfolio):
         self.portfolio = portfolio
 

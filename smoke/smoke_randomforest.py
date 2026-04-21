@@ -5,7 +5,7 @@ Smoke test for BaseRFClassifier, including ONNX roundtrip.
 Usage:
     python smoke_randomforest.py
 """
-import os
+
 import tempfile
 
 import numpy as np

@@ -58,10 +58,12 @@ def build_reducer(reducer_name: str, profile: PreprocessingProfile):
     if reducer_name == "variance_threshold":
         return VarianceThreshold(threshold=1e-6)
     if reducer_name == "correlation_filter":
-        return Pipeline([
-            ("vt", VarianceThreshold(threshold=1e-6)),
-            ("select", CorrelationFilter(threshold=0.90)),
-        ])
+        return Pipeline(
+            [
+                ("vt", VarianceThreshold(threshold=1e-6)),
+                ("select", CorrelationFilter(threshold=0.90)),
+            ]
+        )
     raise ValueError(
         f"Unknown reducer {reducer_name!r}. "
         f"Valid options: variance_threshold, correlation_filter"

@@ -13,7 +13,11 @@ def _load_h5(h5_file: str, h5_idxs=None) -> np.ndarray:
         keys = list(f.keys())
         for candidate in ("X", "data", "values", "Values"):
             if candidate in keys:
-                return f[candidate][:].astype("float32") if h5_idxs is None else f[candidate][h5_idxs].astype("float32")
+                return (
+                    f[candidate][:].astype("float32")
+                    if h5_idxs is None
+                    else f[candidate][h5_idxs].astype("float32")
+                )
         raise ValueError(f"No recognised dataset key in {h5_file!r}. Found: {keys}")
 
 
@@ -25,7 +29,12 @@ class LazyClassifier:
     Wraps the internal assembler and saves/loads via ONNX.
     """
 
-    def __init__(self, calibrated: bool = True, max_rounds: int | None = None, max_imbalance_ratio: int = 100):
+    def __init__(
+        self,
+        calibrated: bool = True,
+        max_rounds: int | None = None,
+        max_imbalance_ratio: int = 100,
+    ):
         self._model = None
         self.calibrated = calibrated
         self.max_rounds = max_rounds
@@ -69,14 +78,15 @@ class LazyClassifier:
     def train_auc_(self) -> float:
         return self._model.train_auc_
 
-
     def predict_proba(self, X=None, h5_file=None, h5_idxs=None) -> np.ndarray:
         if X is None:
             X = _load_h5(h5_file, h5_idxs)
         logger.debug(f"predict_proba: X={X.shape}")
         return self._model.predict_proba(X)
 
-    def predict(self, X=None, h5_file=None, h5_idxs=None, cutoff: float = None) -> np.ndarray:
+    def predict(
+        self, X=None, h5_file=None, h5_idxs=None, cutoff: float = None
+    ) -> np.ndarray:
         if X is None:
             X = _load_h5(h5_file, h5_idxs)
         return self._model.predict(X, cutoff=cutoff)

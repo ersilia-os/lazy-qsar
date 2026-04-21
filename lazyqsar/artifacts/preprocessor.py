@@ -31,7 +31,9 @@ class PreprocessorArtifact:
         self = cls.__new__(cls)
         with open(json_path) as f:
             self.metadata = json.load(f)
-        self._session = rt.InferenceSession(onnx_path, providers=["CPUExecutionProvider"])
+        self._session = rt.InferenceSession(
+            onnx_path, providers=["CPUExecutionProvider"]
+        )
         self._input_name = self._session.get_inputs()[0].name
         return self
 

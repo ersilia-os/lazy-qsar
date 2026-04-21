@@ -33,7 +33,9 @@ class LinearArtifact:
         with open(json_path) as f:
             self.metadata = json.load(f)
         self.task = self.metadata["task"]
-        self._session = rt.InferenceSession(onnx_path, providers=["CPUExecutionProvider"])
+        self._session = rt.InferenceSession(
+            onnx_path, providers=["CPUExecutionProvider"]
+        )
         self._input_name = self._session.get_inputs()[0].name
         self._cal = self.metadata.get("calibrator", None)
         self._ranker = self.metadata.get("ranker", None)
@@ -65,8 +67,11 @@ class LinearArtifact:
                 raw_p1 = proba[:, 1]
                 if self._cal["method"] == "isotonic":
                     p1 = np.clip(
-                        np.interp(raw_p1, self._cal["X_thresholds"], self._cal["y_thresholds"]),
-                        0, 1,
+                        np.interp(
+                            raw_p1, self._cal["X_thresholds"], self._cal["y_thresholds"]
+                        ),
+                        0,
+                        1,
                     )
                 else:  # platt
                     A, B = self._cal["coef"], self._cal["intercept"]
@@ -102,5 +107,7 @@ class LinearArtifact:
         if self._ranker is None:
             raise RuntimeError("No ranker stored in this artifact.")
         knots = np.asarray(self._ranker["knots"])
-        rank_1 = np.interp(self.predict_score(X)[:, 1], knots, np.linspace(0.0, 1.0, len(knots)))
+        rank_1 = np.interp(
+            self.predict_score(X)[:, 1], knots, np.linspace(0.0, 1.0, len(knots))
+        )
         return np.column_stack([1 - rank_1, rank_1])

@@ -15,9 +15,9 @@ from ..utils.logging import logger
 RDLogger.DisableLog("rdApp.*")
 
 _CLAMP_ONNX_URL = "https://ersilia-models.s3.eu-central-1.amazonaws.com/eos3l5f/model/checkpoints/clamp_clip/compound_encoder.onnx"
-_FP_SIZE  = 8192
-_N_DIM    = 768
-_RADIUS   = 2
+_FP_SIZE = 8192
+_N_DIM = 768
+_RADIUS = 2
 
 
 def _smiles_to_fp(smi: str) -> np.ndarray:
@@ -34,8 +34,12 @@ def _smiles_to_fp(smi: str) -> np.ndarray:
     # morganc: count-based Morgan fingerprint (radius 2, with chirality/bond types/features)
     try:
         counts = AllChem.GetMorganFingerprint(
-            mol, _RADIUS,
-            useChirality=True, useBondTypes=True, useFeatures=True, useCounts=True,
+            mol,
+            _RADIUS,
+            useChirality=True,
+            useBondTypes=True,
+            useFeatures=True,
+            useCounts=True,
         ).GetNonzeroElements()
         for k, c in counts.items():
             v[int(k) % _FP_SIZE] += float(c)
@@ -44,7 +48,9 @@ def _smiles_to_fp(smi: str) -> np.ndarray:
 
     # rdkc: count-based RDKit path fingerprint (maxPath=6)
     try:
-        counts = AllChem.UnfoldedRDKFingerprintCountBased(mol, maxPath=6).GetNonzeroElements()
+        counts = AllChem.UnfoldedRDKFingerprintCountBased(
+            mol, maxPath=6
+        ).GetNonzeroElements()
         for k, c in counts.items():
             v[int(k) % _FP_SIZE] += float(c)
     except Exception:
@@ -82,7 +88,7 @@ class ClampDescriptor:
         self._session = ort.InferenceSession(
             str(model_path), providers=["CPUExecutionProvider"]
         )
-        self._in_name  = self._session.get_inputs()[0].name
+        self._in_name = self._session.get_inputs()[0].name
         self._out_name = self._session.get_outputs()[0].name
 
     def transform(self, smiles_list: list, chunk_size: int = 100) -> np.ndarray:
@@ -98,7 +104,9 @@ class ClampDescriptor:
             done = len(chunks)
             if done in milestones:
                 pct = int(done * chunk_size * 100 / n_total)
-                logger.debug(f"CLAMP transform {pct}% ({done * chunk_size:,}/{n_total:,})")
+                logger.debug(
+                    f"CLAMP transform {pct}% ({done * chunk_size:,}/{n_total:,})"
+                )
         return np.concatenate(chunks, axis=0).astype(np.float32)
 
     def is_applicable(self, smiles_list: list) -> bool:

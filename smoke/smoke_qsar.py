@@ -14,6 +14,7 @@ logger.set_verbosity(True)
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "tests", "data")
 
+
 def _load(split):
     path = os.path.join(DATA_DIR, f"bioavailability_ma_{split}.csv")
     with open(path) as f:
@@ -25,8 +26,9 @@ def _load(split):
             labels.append(int(row[1]))
     return smiles, np.array(labels)
 
+
 smiles_train, y_train = _load("train")
-smiles_test,  y_test  = _load("test")
+smiles_test, y_test = _load("test")
 
 model = LazyClassifierQSAR(mode="slow")
 model.fit(smiles_train, y_train)

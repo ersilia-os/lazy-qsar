@@ -102,7 +102,9 @@ class ChemeleonDescriptor(object):
             done = len(R)
             if done in milestones:
                 pct = int(done * chunk_size * 100 / n_total)
-                logger.debug(f"CheMeleon transform {pct}% ({done * chunk_size:,}/{n_total:,})")
+                logger.debug(
+                    f"CheMeleon transform {pct}% ({done * chunk_size:,}/{n_total:,})"
+                )
         return np.concatenate(R, dtype=np.float32, axis=0)
 
     def is_applicable(self, smiles_list: list) -> bool:

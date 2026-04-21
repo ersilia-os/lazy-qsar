@@ -18,10 +18,13 @@ def _correct_prior(p1, train_prior, population_prior):
         return p1
     if train_prior <= 0.0 or train_prior >= 1.0:
         return p1
-    ratio = (population_prior / train_prior) / ((1.0 - population_prior) / (1.0 - train_prior))
+    ratio = (population_prior / train_prior) / (
+        (1.0 - population_prior) / (1.0 - train_prior)
+    )
     odds = p1 / np.clip(1.0 - p1, 1e-15, None)
     corrected_odds = ratio * odds
     return corrected_odds / (1.0 + corrected_odds)
+
 
 from .preprocessor import PreprocessorArtifact  # noqa: E402
 from .xgboost import XGBoostArtifact  # noqa: E402
@@ -33,6 +36,7 @@ from ..poolers.classification.inner_pooler import InnerPoolerArtifact  # noqa: E
 # ---------------------------------------------------------------------------
 # Helpers used by LazyClassifierArtifact
 # ---------------------------------------------------------------------------
+
 
 def _load_head(directory: str, head_name: str):
     if head_name == "xgb":
@@ -79,6 +83,7 @@ class _BatchArtifact:
 # Top-level artifact: matches LazyClassifier.save() output
 # ---------------------------------------------------------------------------
 
+
 class LazyClassifierArtifact:
     """
     Inference-only loader for a model saved by LazyClassifier.save().
@@ -115,7 +120,8 @@ class LazyClassifierArtifact:
         else:
             all_cutoffs = [
                 h.metadata.get("decision_cutoff", 0.5)
-                for b in self._batches for h in b.heads
+                for b in self._batches
+                for h in b.heads
             ]
             self._decision_cutoff = float(np.mean(all_cutoffs)) if all_cutoffs else 0.5
         return self
@@ -123,10 +129,12 @@ class LazyClassifierArtifact:
     def predict_proba(self, X) -> np.ndarray:
         """Return class probabilities, shape (n_samples, 2)."""
         if self._population_prior is not None and self._batch_priors is not None:
-            R = np.array([
-                _correct_prior(b.predict_proba(X)[:, 1], tp, self._population_prior)
-                for b, tp in zip(self._batches, self._batch_priors)
-            ])
+            R = np.array(
+                [
+                    _correct_prior(b.predict_proba(X)[:, 1], tp, self._population_prior)
+                    for b, tp in zip(self._batches, self._batch_priors)
+                ]
+            )
         else:
             R = np.array([b.predict_proba(X)[:, 1] for b in self._batches])
         proba = R.mean(axis=0)
@@ -142,10 +150,12 @@ class LazyClassifierArtifact:
         if self._population_prior is None:
             raise RuntimeError("No population_prior stored in this artifact.")
         proba = self.predict_proba(X)
-        return np.column_stack([
-            proba[:, 0] / (1.0 - self._population_prior),
-            proba[:, 1] / self._population_prior,
-        ])
+        return np.column_stack(
+            [
+                proba[:, 0] / (1.0 - self._population_prior),
+                proba[:, 1] / self._population_prior,
+            ]
+        )
 
     def predict_logit(self, X) -> np.ndarray:
         """Return logit of calibrated probabilities averaged across batches, shape (n_samples, 2)."""
