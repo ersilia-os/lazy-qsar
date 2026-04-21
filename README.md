@@ -57,17 +57,27 @@ Instantiate `LazyClassifierQSAR` with a mode of choice:
 
 | Mode | Descriptors used | Speed |
 |------|-----------------|-------|
-| `fast` | Morgan fingerprints, RDKit | Fastest, no deep-learning descriptors |
-| `default` | CDDD, Chemeleon, RDKit | Balanced |
-| `slow` | CDDD, Chemeleon, Morgan, RDKit | Most thorough |
+| `fast` | Morgan fingerprints | Fastest, no deep-learning descriptors |
+| `slow` | CDDD, Chemeleon, CLAMP, Morgan, RDKit | Most thorough |
 
 ```python
 from lazyqsar.qsar import LazyClassifierQSAR
 
-model = LazyClassifierQSAR(mode="default")
+model = LazyClassifierQSAR(mode="slow")
 model.fit(smiles_list=smiles_train, y=y_train)
 y_hat = model.predict_proba(smiles_list=smiles_test)[:, 1]
 ```
+
+All predict methods are available on both `LazyClassifierQSAR` and `LazyClassifier`:
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `predict_proba(smiles_list)` | `(N, 2)` | Calibrated class probabilities |
+| `predict(smiles_list)` | `(N,)` | Binary labels at threshold 0.5 |
+| `predict_logit(smiles_list)` | `(N, 2)` | Log-odds scores |
+| `predict_rank(smiles_list)` | `(N, 2)` | Rank quantiles (0–1) |
+| `predict_score(smiles_list)` | `(N, 2)` | Raw model scores |
+| `predict_lift(smiles_list)` | `(N, 2)` | Probability / population prior |
 
 #### Custom descriptors
 
@@ -113,7 +123,7 @@ The same save/load interface applies to `LazyClassifierQSAR`:
 ```python
 from lazyqsar.qsar import LazyClassifierQSAR
 
-model = LazyClassifierQSAR(mode="default")
+model = LazyClassifierQSAR(mode="slow")
 model.fit(smiles_list=smiles_train, y=y_train)
 model.save(model_dir)
 
@@ -142,7 +152,7 @@ Additional flags:
 
 | Flag | Description |
 |------|-------------|
-| `--mode fast\|default\|slow` | Select descriptor mode |
+| `--mode fast\|slow` | Select descriptor mode |
 | `--agnostic` | Use descriptor-agnostic `LazyClassifier` |
 | `--no-onnx` | Skip ONNX conversion |
 | `--no-zip` | Skip ZIP archive save/load |
@@ -171,7 +181,7 @@ lazyqsar setup --fit --descriptors  # both
 The `--input` directory must contain one CSV per task. Each CSV must have SMILES in the first column and binary labels (0/1) in the second column, with a header row.
 
 ```bash
-lazyqsar fit --task classification --input $DATA_DIR --output $MODEL_DIR --mode default
+lazyqsar fit --task classification --input $DATA_DIR --output $MODEL_DIR --mode slow
 ```
 
 Optionally pass `--models_txt` listing task names (CSV stems) to train, one per line. Without it, all CSVs in the directory are used.
@@ -229,11 +239,17 @@ checkpoints/
 │   │       └── pooler.json
 │   ├── chemeleon/
 │   │   └── (same structure)
+│   ├── clamp/
+│   │   └── (same structure)
+│   ├── morgan/
+│   │   └── (same structure)
 │   └── rdkit/
 │       └── (same structure)
 └── task2/
     └── (same structure)
 ```
+
+`fast` mode produces only a `morgan/` subdirectory per task.
 
 The `code/main.py` script should look like this:
 

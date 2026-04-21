@@ -177,9 +177,9 @@ def main():
     p_fit.add_argument(
         "--mode",
         type=str,
-        default="default",
-        choices=["fast", "default", "slow"],
-        help="Descriptor mode (default: default).",
+        default="slow",
+        choices=["fast", "slow"],
+        help="Descriptor mode: fast (Morgan only) or slow (all descriptors). Default: slow.",
     )
     p_fit.add_argument(
         "--models_txt",
