@@ -506,7 +506,7 @@ def plot_rank_scatter(pivot_roc, output_path):
 
     for i, model in enumerate(reversed(models)):
         vals = ranks[model].dropna().values
-        bp = ax.boxplot(
+        ax.boxplot(
             vals, positions=[i], vert=False, widths=0.5,
             patch_artist=True,
             boxprops={"facecolor": MODEL_COLORS.get(model, "#888"), "alpha": 0.4},
@@ -683,7 +683,7 @@ def main():
 
     if not data_dir.exists():
         print(f"ERROR: data directory not found:\n  {data_dir}")
-        print(f"\nSet --data-dir to the directory containing the .tab files.")
+        print("\nSet --data-dir to the directory containing the .tab files.")
         print(f"Expected location: {_DEFAULT_DATA_DIR}")
         sys.exit(1)
 

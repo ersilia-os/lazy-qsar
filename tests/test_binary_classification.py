@@ -147,7 +147,6 @@ def fit_and_evaluate_agnostic(mode="fast", clean=False, onnx=True, zip=True):
     print("\nLR vs XGB predicted probabilities (Pearson r={:.3f}):".format(corr))
     print("  {:<5} | {}".format("LR\\XGB", " " * width))
     edges = [i / bins for i in range(bins + 1)]
-    header_labels = "".join("{:<4}".format("{:.1f}".format(edges[i])) for i in range(0, bins + 1, 2))
     print("  {:<5} | 0{}1".format("", " " * (width - 2)))
     grid = [[0] * bins for _ in range(bins)]
     for i in range(len(lr_pred)):
