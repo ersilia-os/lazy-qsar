@@ -1,5 +1,6 @@
 # Developer ignores
 .claude/
+*.onnx
 development/
 .DS_Store
 calibration_*.png
