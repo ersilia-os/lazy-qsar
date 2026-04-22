@@ -8,6 +8,7 @@ from ..preprocessors.classification.prep import Preprocessor
 from ..heads.classification.lr import Head as LRHead
 from ..heads.classification.xgb import Head as XGBHead
 from ..heads.classification.rf import Head as RFHead
+from ..heads.classification.svc import Head as SVCHead
 from ..poolers.classification import InnerPooler
 from lazyqsar.utils.logging import logger
 
@@ -74,6 +75,8 @@ class _BatchLazyClassifier(object):
                 self.heads += [XGBHead(calibrated=calibrated, max_rounds=max_rounds)]
             elif head_name == "rf":
                 self.heads += [RFHead(calibrated=calibrated)]
+            elif head_name == "svc":
+                self.heads += [SVCHead(calibrated=calibrated)]
             else:
                 raise ValueError(f"Unknown head {head_name}.")
         self.portfolio = portfolio
@@ -124,6 +127,15 @@ class _BatchLazyClassifier(object):
                 if "calibration_total" in t:
                     folds = t.get("calibration_folds", [])
                     steps.append((f"RF \u2014 calibration ({len(folds)} folds)", t["calibration_total"], False))
+                    for fi, ft in enumerate(folds):
+                        steps.append((f"fold {fi + 1}/{len(folds)}", ft, True))
+            elif head_name == "svc":
+                if "portfolio_select" in t:
+                    steps.append(("SVC \u2014 portfolio select", t["portfolio_select"], False))
+                steps.append(("SVC \u2014 phase-2 refit", t.get("phase2_refit", 0.0), False))
+                if "calibration_total" in t:
+                    folds = t.get("calibration_folds", [])
+                    steps.append((f"SVC \u2014 calibration ({len(folds)} folds)", t["calibration_total"], False))
                     for fi, ft in enumerate(folds):
                         steps.append((f"fold {fi + 1}/{len(folds)}", ft, True))
         steps.append(("Pooler \u2014 gating network", t_pooler, False))

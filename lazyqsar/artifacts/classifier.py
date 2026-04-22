@@ -27,6 +27,7 @@ from .preprocessor import PreprocessorArtifact
 from .xgboost import XGBoostArtifact
 from .linear import LinearArtifact
 from .rf import RandomForestArtifact
+from .svc import SVCArtifact
 from ..poolers.classification.inner_pooler import InnerPoolerArtifact
 
 
@@ -41,6 +42,8 @@ def _load_head(directory: str, head_name: str):
         return LinearArtifact.load(directory)
     if head_name == "rf":
         return RandomForestArtifact.load(directory)
+    if head_name == "svc":
+        return SVCArtifact.load(directory)
     raise ValueError(f"Unknown head {head_name!r}")
 
 

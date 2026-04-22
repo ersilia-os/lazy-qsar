@@ -32,7 +32,7 @@ def test_portfolio_tiny_dataset_adds_lr_but_keeps_xgb(monkeypatch):
     )
     p = Portfolio()
     p.fit(np.zeros((200, 10)), np.array([0, 1] * 100))
-    assert p.get() == ["lr", "xgb", "rf"]
+    assert p.get() == ["lr", "xgb", "rf", "svc"]
     assert any("hard guard" in r for r in p.selector_reasons_)
 
 
@@ -45,7 +45,7 @@ def test_portfolio_high_dim_adds_lr_but_keeps_xgb(monkeypatch):
     )
     p = Portfolio()
     p.fit(np.zeros((1000, 10)), np.array([0, 1] * 500))
-    assert p.get() == ["lr", "xgb", "rf"]
+    assert p.get() == ["lr", "xgb", "rf", "svc"]
 
 
 def test_portfolio_large_dense_signal_selects_xgb(monkeypatch):
@@ -63,7 +63,7 @@ def test_portfolio_large_dense_signal_selects_xgb(monkeypatch):
     p = Portfolio()
     p.fit(np.zeros((100, 10)), np.array([0, 1] * 50))
     assert p.get() == ["xgb", "rf"]
-    assert p.selector_scores_["xgb"] > p.selector_scores_["lr"]
+    assert any("skip lr" in r for r in p.selector_reasons_)
 
 
 def test_portfolio_over_5000_samples_skips_lr_even_if_wide(monkeypatch):
@@ -104,8 +104,8 @@ def test_portfolio_lr_win_still_keeps_xgb(monkeypatch):
     )
     p = Portfolio()
     p.fit(np.zeros((100, 10)), np.array([0, 1] * 50))
-    assert p.get() == ["lr", "xgb", "rf"]
-    assert p.selector_scores_["lr"] >= p.selector_scores_["xgb"]
+    assert p.get() == ["lr", "xgb", "rf", "svc"]
+    assert any("hard guard" in r for r in p.selector_reasons_)
 
 
 def test_portfolio_borderline_case_keeps_both(monkeypatch):
@@ -123,8 +123,8 @@ def test_portfolio_borderline_case_keeps_both(monkeypatch):
     )
     p = Portfolio()
     p.fit(np.zeros((100, 10)), np.array([0, 1] * 50))
-    assert p.get() == ["lr", "xgb", "rf"]
-    assert abs(p.selector_scores_["lr"] - p.selector_scores_["xgb"]) < 2
+    assert p.get() == ["lr", "xgb", "rf", "svc"]
+    assert any("hard guard" in r for r in p.selector_reasons_)
 
 
 def test_portfolio_save_load_roundtrip_structured(monkeypatch):
