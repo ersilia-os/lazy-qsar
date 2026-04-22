@@ -1,11 +1,9 @@
 import os
 import sys
-import logging
 from typing import Optional
 
 import numpy as np
 from rich.console import Console
-from rich.logging import RichHandler
 from rich.table import Table
 from rich.tree import Tree
 from rich import box
@@ -19,11 +17,7 @@ _loguru.level("ERROR", color="<white><bold><bg red>")
 _loguru.level("CRITICAL", color="<white><bold><bg red>")
 _loguru.level("SUCCESS", color="<black><bold><bg green>")
 
-_FORMAT = (
-    "<green>{time:HH:mm:ss}</green> "
-    "<level>{level: <8}</level> "
-    "{message}"
-)
+_FORMAT = "<green>{time:HH:mm:ss}</green> <level>{level: <8}</level> {message}"
 
 
 class Logger:
@@ -148,28 +142,6 @@ class Logger:
         self._console.print(table)
         self._console.line()
 
-    def heads_table(self, portfolio: list, weights: list, n_samples: int) -> None:
-        """Display a Rich table summarising heads and their ensemble weights."""
-        if not self._verbose:
-            return
-        table = Table(
-            title="[bold]Ensemble heads[/bold]",
-            box=box.SIMPLE_HEAVY,
-            show_header=True,
-            header_style="bold magenta",
-            title_justify="left",
-            padding=(0, 1),
-        )
-        table.add_column("Head", style="cyan", no_wrap=True, min_width=6)
-        table.add_column("Weight", justify="right", width=8)
-
-        for head, w in zip(portfolio, weights):
-            table.add_row(head, f"{w:.3f}")
-
-        self._console.print(table)
-        self._console.print(f"  [dim]n_samples = {n_samples:,}[/dim]")
-        self._console.line()
-
     def batch_table(self, batches: list, strategy: str = "sequential") -> None:
         """Display a Rich table summarising batches.
 
@@ -250,7 +222,10 @@ class Logger:
         table.add_row("Imbalance", f"{profile.imbalance_ratio:.2f}:1")
         table.add_row("Sparsity", f"{profile.sparsity:.3f}")
         table.add_row("Binary fraction", f"{profile.binary_feature_fraction:.3f}")
-        table.add_row("Signal mean/p90", f"{profile.feature_signal_strength:.3f} / {profile.feature_signal_p90:.3f}")
+        table.add_row(
+            "Signal mean/p90",
+            f"{profile.feature_signal_strength:.3f} / {profile.feature_signal_p90:.3f}",
+        )
         table.add_row(
             "Scores",
             f"lr={scores.get('lr', 0)}  xgb={scores.get('xgb', 0)}  rf={scores.get('rf', 0)}",
@@ -271,43 +246,62 @@ class Logger:
         n_tr: int,
         n_splits: int,
         skipped: list,
+        model: str = "xgb",
     ) -> None:
         if not self._verbose:
             return
 
+        is_rf = model == "rf"
+        title = (
+            "[bold]Portfolio — OOB comparison[/bold]"
+            if is_rf
+            else "[bold]Portfolio — Stage 1 comparison[/bold]"
+        )
         table = Table(
-            title="[bold]Portfolio — Stage 1 comparison[/bold]",
-            box=box.ROUNDED,
+            title=title,
+            box=box.SIMPLE_HEAVY,
             show_header=True,
             header_style="bold magenta",
             title_justify="left",
             padding=(0, 1),
-            title_style="",
         )
-        table.add_column("Preset", style="cyan", no_wrap=True, min_width=10)
-        table.add_column("LR", justify="right", width=9, no_wrap=True)
-        table.add_column("Depth", justify="right", width=8, no_wrap=True)
-        table.add_column(f"Score ({n_splits} split{'s' if n_splits > 1 else ''})", justify="right", width=14)
-        table.add_column("Gain vs default", justify="right", width=16)
-        table.add_column("Decision", no_wrap=True)
+        table.add_column("Preset", style="cyan", no_wrap=True, min_width=9)
+        if is_rf:
+            table.add_column("n_est", justify="right", width=6, no_wrap=True)
+            table.add_column("mln", justify="right", width=6, no_wrap=True)
+            table.add_column("max_f", justify="right", width=7, no_wrap=True)
+        else:
+            table.add_column("LR", justify="right", width=7, no_wrap=True)
+            table.add_column("Depth", justify="right", width=6, no_wrap=True)
+        table.add_column("Score", justify="right", width=8)
+        table.add_column("Gain", justify="right", width=8)
+        table.add_column("Status", no_wrap=True, min_width=14)
 
         preset_order = ["heuristic", "default", "flaml", "autogluon"]
 
         for name in preset_order:
             score = fast_scores.get(name, float("nan"))
             params = params_map.get(name, {})
-            lr = params.get("learning_rate", float("nan"))
-            if params.get("grow_policy") == "lossguide":
-                depth_val = f"{params.get('max_leaves', '?')}L"
-            else:
-                depth_val = str(params.get("max_depth", "?"))
-
             is_nan = score != score
 
-            score_str = f"{score:+.4f}" if not is_nan else "  —"
+            if is_rf:
+                col_a = str(params.get("n_estimators", "?"))
+                col_b = str(params.get("max_leaf_nodes", "—"))
+                col_c = str(params.get("max_features", "?"))
+                param_cols = [col_a, col_b, col_c]
+            else:
+                lr = params.get("learning_rate", float("nan"))
+                col_a = f"{lr:.4f}" if lr == lr else "—"
+                if params.get("grow_policy") == "lossguide":
+                    col_b = f"{params.get('max_leaves', '?')}L"
+                else:
+                    col_b = str(params.get("max_depth", "?"))
+                param_cols = [col_a, col_b]
+
+            score_str = f"{score:.4f}" if not is_nan else "—"
 
             if name == "default" or is_nan:
-                gain_str = "  —"
+                gain_str = "—"
                 gain_style = "dim"
                 gain = 0.0
             else:
@@ -316,65 +310,61 @@ class Logger:
                 gain_style = "green" if gain > 0 else "red"
 
             if is_nan:
-                decision = "[dim]skipped (cost)[/dim]"
+                status = "[dim]skipped[/dim]"
             elif name == winner:
-                if name == "default":
-                    decision = "[bold green]✓ default wins[/]"
-                else:
-                    decision = "[bold green]✓ selected[/]"
+                status = (
+                    "[bold green]✓ selected[/]"
+                    if name != "default"
+                    else "[bold green]✓ default[/]"
+                )
             elif name == "default":
-                decision = "[dim]baseline[/dim]"
+                status = "[dim]baseline[/dim]"
             else:
                 if gain > 0 and gain < threshold:
-                    decision = f"[yellow]↑ gain < thresh[/yellow]"
+                    status = "[yellow]< threshold[/yellow]"
                 elif gain <= 0:
-                    decision = "[dim]worse than default[/dim]"
+                    status = "[dim]worse[/dim]"
                 else:
-                    decision = "[dim]—[/dim]"
+                    status = "[dim]—[/dim]"
 
             row_style = "bold" if name == winner else ""
-
             table.add_row(
                 name,
-                f"{lr:.4f}" if lr == lr else "—",
-                depth_val,
+                *param_cols,
                 score_str,
                 f"[{gain_style}]{gain_str}[/]",
-                decision,
+                status,
                 style=row_style,
             )
 
         self._console.print(table)
-        self._console.print(
-            f"  [dim]threshold = {threshold:.4f}  "
-            f"|  n_train = {n_tr:,}  "
-            f"|  {n_splits} split(s) averaged[/dim]"
-        )
+        footer_parts = [f"threshold = {threshold:.4f}", f"n_train = {n_tr:,}"]
+        if not is_rf:
+            footer_parts.append(f"{n_splits} split(s) averaged")
+        if is_rf:
+            footer_parts.append("mln = max_leaf_nodes")
+        self._console.print("  [dim]" + "  |  ".join(footer_parts) + "[/dim]")
         self._console.line()
-
 
     def inner_pooler_table(
         self,
         portfolio: list,
-        mode: str,
         n_samples: int,
         oof_aucs: list | None = None,
-        meta_coef: list | None = None,
         meta_auc: float | None = None,
         mean_weights: list | None = None,
+        std_weights: list | None = None,
     ) -> None:
         """Display a Rich table summarising the ensemble pooler."""
         if not self._verbose:
             return
 
-        if mode == "gating":
-            title = "[bold]Gating-network pooler[/bold]  [dim](per-sample weights)[/dim]"
-        elif mode == "meta_lr":
-            title = "[bold]Stacking meta-predictor[/bold]"
-        elif mode == "passthrough":
-            title = "[bold]Ensemble heads[/bold]  [dim](pass-through)[/dim]"
-        else:
-            title = "[bold]Ensemble heads[/bold]  [dim](equal weights)[/dim]"
+        gating = mean_weights is not None
+        title = (
+            "[bold]Ensemble heads[/bold] [dim](per-sample gating)[/dim]"
+            if gating
+            else "[bold]Ensemble heads[/bold]"
+        )
 
         table = Table(
             title=title,
@@ -389,8 +379,8 @@ class Logger:
             table.add_column("OOF score", justify="right", min_width=10)
         if mean_weights is not None:
             table.add_column("Mean weight", justify="right", min_width=12)
-        if meta_coef is not None:
-            table.add_column("LR coef", justify="right", min_width=8)
+        if std_weights is not None:
+            table.add_column("Weight std", justify="right", min_width=11)
 
         for i, head in enumerate(portfolio):
             row = [head]
@@ -398,17 +388,131 @@ class Logger:
                 row.append(f"{oof_aucs[i]:.4f}")
             if mean_weights is not None:
                 row.append(f"{mean_weights[i]:.4f}")
-            if meta_coef is not None:
-                row.append(f"{meta_coef[i]:+.4f}")
+            if std_weights is not None:
+                row.append(f"{std_weights[i]:.4f}")
             table.add_row(*row)
 
         self._console.print(table)
 
         footer_parts = [f"n = {n_samples:,}"]
         if meta_auc is not None:
-            score_label = "composite score" if mode == "gating" else "meta AUC"
-            footer_parts.append(f"{score_label} = {meta_auc:.4f}")
+            footer_parts.append(f"meta AUC = {meta_auc:.4f}")
         self._console.print("  [dim]" + "  |  ".join(footer_parts) + "[/dim]")
+        self._console.line()
+
+    def descriptor_table(self, rows: list) -> None:
+        """
+        Compact summary of all descriptors used in a LazyClassifierQSAR fit.
+
+        rows : list of dicts with keys:
+            name, n_features, sparsity, feat_time,
+            ad_n_components, ad_cal_min, ad_cal_max
+        """
+        if not self._verbose:
+            return
+
+        table = Table(
+            title="[bold]Descriptor summary[/bold]",
+            box=box.SIMPLE_HEAVY,
+            show_header=True,
+            header_style="bold magenta",
+            title_justify="left",
+            padding=(0, 1),
+        )
+        has_proxy = any("proxy_auc" in r for r in rows)
+        has_train = any("train_auc" in r for r in rows)
+        has_quality = any("quality_auc" in r for r in rows)
+        has_active = any("active" in r for r in rows)
+
+        table.add_column("Descriptor", style="cyan", no_wrap=True, min_width=12)
+        table.add_column("p", justify="right", min_width=6)
+        table.add_column("sparsity", justify="right", min_width=8)
+        table.add_column("feat time", justify="right", min_width=9)
+        table.add_column("AD comps", justify="right", min_width=9)
+        table.add_column("AD cal max", justify="right", min_width=10)
+        if has_proxy:
+            table.add_column("Proxy AUC", justify="right", min_width=10)
+        if has_train:
+            table.add_column("Train AUC", justify="right", min_width=10)
+        if has_quality:
+            table.add_column("Quality AUC", justify="right", min_width=12)
+        if has_active:
+            table.add_column("Active", justify="center", min_width=7)
+
+        for r in rows:
+            row = [
+                r["name"],
+                f"{r['n_features']:,}",
+                f"{r['sparsity']:.3f}",
+                f"{r['feat_time']:.1f}s",
+                str(r["ad_n_components"]),
+                f"{r['ad_cal_max']:.3f}",
+            ]
+            if has_proxy:
+                v = r.get("proxy_auc")
+                row.append(f"{v:.4f}" if v is not None else "—")
+            if has_train:
+                row.append(f"{r['train_auc']:.4f}")
+            if has_quality:
+                row.append(f"{r['quality_auc']:.4f}")
+            if has_active:
+                row.append("[bold green]✓[/]" if r["active"] else "[dim]✗[/]")
+            table.add_row(*row)
+
+        self._console.print(table)
+        self._console.line()
+
+    def ad_weights_table(self, rows: list, n_samples: int) -> None:
+        """
+        rows : list of dicts with keys:
+            name, proxy_auc (optional), oof_auc (optional),
+            ad_mean, ad_std, ad_min, ad_max,
+            weight_mean, weight_std, vetoed, pred_mean
+        """
+        if not self._verbose:
+            return
+
+        table = Table(
+            title="[bold]Ensemble predictions[/bold]",
+            box=box.SIMPLE_HEAVY,
+            show_header=True,
+            header_style="bold magenta",
+            title_justify="left",
+            padding=(0, 1),
+        )
+        has_oof = any("oof_auc" in r for r in rows)
+        has_proxy = any(r.get("proxy_auc") is not None for r in rows)
+
+        table.add_column("Descriptor", style="cyan", no_wrap=True, min_width=12)
+        if has_proxy:
+            table.add_column("Proxy AUC", justify="right", min_width=10)
+        if has_oof:
+            table.add_column("OOF AUC", justify="right", min_width=9)
+        table.add_column("AD mean±std", justify="right", min_width=13)
+        table.add_column("AD [min, max]", justify="right", min_width=14)
+        table.add_column("Final W mean±std", justify="right", min_width=16)
+        table.add_column("Vetoed", justify="right", min_width=10)
+        table.add_column("P(y=1) mean", justify="right", min_width=12)
+
+        for r in rows:
+            vetoed_pct = 100.0 * r["vetoed"] / n_samples if n_samples > 0 else 0.0
+            row = [r["name"]]
+            if has_proxy:
+                v = r.get("proxy_auc")
+                row.append(f"{v:.4f}" if v is not None else "—")
+            if has_oof:
+                row.append(f"{r['oof_auc']:.4f}")
+            row += [
+                f"{r['ad_mean']:.3f}±{r['ad_std']:.3f}",
+                f"[{r['ad_min']:.3f}, {r['ad_max']:.3f}]",
+                f"{r['weight_mean']:.3f}±{r['weight_std']:.3f}",
+                f"{r['vetoed']} ({vetoed_pct:.0f}%)",
+                f"{r['pred_mean']:.3f}",
+            ]
+            table.add_row(*row)
+
+        self._console.print(table)
+        self._console.print(f"  [dim]n={n_samples:,}[/dim]")
         self._console.line()
 
     def timing_table(self, steps: list) -> None:
@@ -437,7 +541,9 @@ class Logger:
         for name, t, is_subtask in steps:
             label = f"  {name}" if is_subtask else name
             t_str = f"{t:.2f}"
-            pct_str = "" if is_subtask else (f"{100*t/total:.0f}%" if total > 0 else "—")
+            pct_str = (
+                "" if is_subtask else (f"{100 * t / total:.0f}%" if total > 0 else "—")
+            )
             style = "dim" if is_subtask else ""
             table.add_row(label, t_str, pct_str, style=style)
         table.add_row(
@@ -466,7 +572,7 @@ class Logger:
         def _add(node, path):
             entries = sorted(os.listdir(path))
             subdirs = [e for e in entries if os.path.isdir(os.path.join(path, e))]
-            files   = [e for e in entries if os.path.isfile(os.path.join(path, e))]
+            files = [e for e in entries if os.path.isfile(os.path.join(path, e))]
             for d in subdirs:
                 child = node.add(f"[bold cyan]{d}/[/bold cyan]")
                 _add(child, os.path.join(path, d))
@@ -476,6 +582,49 @@ class Logger:
 
         _add(tree, directory)
         self._console.print(tree)
+
+    def proxy_screen_table(self, rows: list) -> None:
+        """
+        Summary table for descriptor proxy-CV screening.
+
+        rows : list of dicts with keys:
+            name        – descriptor name
+            n_features  – number of raw features (int or None if not computed)
+            proxy_auc   – float or None (when screening was skipped)
+            status      – "pass" | "drop" | "fallback" | "skipped"
+        """
+        if not self._verbose:
+            return
+
+        table = Table(
+            title="[bold]Descriptor screening summary[/bold]",
+            box=box.SIMPLE_HEAVY,
+            show_header=True,
+            header_style="bold magenta",
+            title_justify="left",
+            padding=(0, 1),
+        )
+        table.add_column("Descriptor", style="cyan", no_wrap=True, min_width=12)
+        table.add_column("Features", justify="right", min_width=9)
+        table.add_column("Proxy AUC", justify="right", min_width=10)
+        table.add_column("Status", justify="center", min_width=10)
+
+        status_fmt = {
+            "reference": "[bold blue]★ ref[/]",
+            "pass": "[bold green]✓ pass[/]",
+            "drop": "[bold red]✗ drop[/]",
+            "fallback": "[bold yellow]~ fallback[/]",
+            "skipped": "[dim]— skipped[/]",
+        }
+
+        for r in rows:
+            n_feat = f"{r['n_features']:,}" if r.get("n_features") is not None else "—"
+            auc = f"{r['proxy_auc']:.4f}" if r.get("proxy_auc") is not None else "—"
+            status = status_fmt.get(r.get("status", "skipped"), r.get("status", ""))
+            table.add_row(r["name"], n_feat, auc, status)
+
+        self._console.print(table)
+        self._console.line()
 
 
 logger = Logger()

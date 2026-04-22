@@ -29,6 +29,7 @@ RNG = np.random.RandomState(0)
 # Data helpers
 # ---------------------------------------------------------------------------
 
+
 def make_clf_data(n=500, p=20, imbalance=1.0, seed=0):
     rng = np.random.RandomState(seed)
     X = rng.randn(n, p)
@@ -60,8 +61,8 @@ def make_fingerprint_data(n=1000, p=1024, density=0.05, seed=0):
 # Inspector: DatasetProfile
 # ---------------------------------------------------------------------------
 
-class TestInspector:
 
+class TestInspector:
     def test_profile_fields_clf(self):
         X, y = make_clf_data(n=300, p=10)
         prof = inspect(X, y)
@@ -166,8 +167,8 @@ class TestInspector:
 # Parameter selection rules
 # ---------------------------------------------------------------------------
 
-class TestParams:
 
+class TestParams:
     def _prof(self, n, p, **kwargs):
         X = RNG.randn(n, p)
         y = (X[:, 0] > 0).astype(int)
@@ -233,8 +234,12 @@ class TestParams:
     # --- regularization ---
 
     def test_reg_lambda_higher_for_low_n_p_ratio(self):
-        p_low = get_params(inspect(RNG.randn(100, 200), (RNG.randn(100) > 0).astype(int)))
-        p_high = get_params(inspect(RNG.randn(5000, 20), (RNG.randn(5000) > 0).astype(int)))
+        p_low = get_params(
+            inspect(RNG.randn(100, 200), (RNG.randn(100) > 0).astype(int))
+        )
+        p_high = get_params(
+            inspect(RNG.randn(5000, 20), (RNG.randn(5000) > 0).astype(int))
+        )
         assert p_low["reg_lambda"] > p_high["reg_lambda"]
 
     def test_reg_alpha_nonzero_for_underdetermined(self):
@@ -395,8 +400,8 @@ class TestParams:
 # End-to-end: fit / predict
 # ---------------------------------------------------------------------------
 
-class TestFitPredict:
 
+class TestFitPredict:
     def test_classifier_fit_predict(self):
         X, y = make_clf_data(n=600, p=20)
         clf = BaseXGBClassifier()
@@ -521,8 +526,8 @@ class TestFitPredict:
 # BaseXGBArtifact: save / load / run
 # ---------------------------------------------------------------------------
 
-class TestBaseXGBArtifact:
 
+class TestBaseXGBArtifact:
     # --- classifier ONNX ---
 
     def test_classifier_run_shape(self):

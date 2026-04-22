@@ -3,7 +3,6 @@ from lazyqsar.utils.logging import logger
 
 
 class Head(object):
-
     def __init__(self, calibrated=True, max_rounds=None):
         self.model = XGBClassifier(calibrated=calibrated, max_rounds=max_rounds)
 

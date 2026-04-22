@@ -62,3 +62,8 @@ exclude = ["utilities"]
 
 [project.scripts]
 lazyqsar = "lazyqsar.cli.main:main"
+
+[tool.ruff.lint.per-file-ignores]
+"smoke/*.py" = ["E402"]
+"benchmarks/*.py" = ["E402", "F841"]
+"tests/notebooks/*.ipynb" = ["E402", "E701", "E722"]

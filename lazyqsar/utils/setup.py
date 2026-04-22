@@ -37,24 +37,60 @@ def download_cddd():
 
 def install_torch():
     logger.info("Installing PyTorch (CPU)...")
-    subprocess.check_call([
-        sys.executable, "-m", "pip", "install", "--quiet",
-        "torch", "--index-url", "https://download.pytorch.org/whl/cpu",
-    ])
+    subprocess.check_call(
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--quiet",
+            "torch",
+            "--index-url",
+            "https://download.pytorch.org/whl/cpu",
+        ]
+    )
 
 
 def install_chemprop():
     logger.info("Installing chemprop...")
-    subprocess.check_call([
-        sys.executable, "-m", "pip", "install", "--quiet", "chemprop",
-    ])
+    subprocess.check_call(
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--quiet",
+            "chemprop",
+        ]
+    )
 
 
 def install_rdkit():
     logger.info("Installing RDKit...")
-    subprocess.check_call([
-        sys.executable, "-m", "pip", "install", "--quiet", "rdkit",
-    ])
+    subprocess.check_call(
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--quiet",
+            "rdkit==2025.9.1",
+        ]
+    )
+
+
+def install_fpsim2():
+    logger.info("Installing FPSim2...")
+    subprocess.check_call(
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--quiet",
+            "FPSim2==0.7.3",
+        ]
+    )
 
 
 def main():

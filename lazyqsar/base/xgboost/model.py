@@ -8,7 +8,7 @@ the validation split via the ref= parameter.
 On .fit(), both estimators run a two-phase portfolio process:
 
   Phase 2 – Portfolio selection (when a genuine validation split exists):
-    Five preset configurations are trained in parallel on the 90% training
+    Four preset configurations are trained in parallel on the 90% training
     split with early stopping against the 10% validation split:
       1. heuristic  – rule-based params from params.py (dataset-profiling based)
       2. default    – XGBoost out-of-the-box defaults (lr=0.3, max_depth=6)
@@ -33,7 +33,6 @@ The best boosting round is in .best_iteration_.
 import dataclasses
 import json
 import os
-import tempfile
 import time as _time
 
 import numpy as np
@@ -47,22 +46,29 @@ import xgboost as xgb
 from .inspector import inspect as _inspect, DatasetProfile
 from .params import get_params as _get_params
 from .presets import (
-    xgb_default_params, flaml_params, autogluon_params,
+    xgb_default_params,
+    flaml_params,
+    autogluon_params,
     MAXIMIZE_METRICS,
 )
 from lazyqsar.utils.logging import logger
-from lazyqsar.utils.splits import auto_stratified_oof_n_splits, make_stratified_oof_splits
+from lazyqsar.utils.splits import (
+    auto_stratified_oof_n_splits,
+    make_stratified_oof_splits,
+)
 
 
-_VAL_FRACTION    = 0.1
-_VAL_MIN_ROWS    = 200
+_VAL_FRACTION = 0.1
+_VAL_MIN_ROWS = 200
 
 
 def _auto_n_splits(y: np.ndarray) -> int:
     """Backward-compatible wrapper around the shared stratified OOF helper."""
     return auto_stratified_oof_n_splits(y)
-_VAL_MIN_MINORITY = 15   # minimum minority-class samples in the validation split
-_RANDOM_STATE    = 42
+
+
+_VAL_MIN_MINORITY = 15  # minimum minority-class samples in the validation split
+_RANDOM_STATE = 42
 
 # Keys that guide training but are not native XGBoost parameters
 _META_KEYS = frozenset({"n_estimators", "early_stopping_rounds"})
@@ -115,7 +121,7 @@ _STAGE2_SKIP_COST_RATIO = 15
 # slower presets don't dominate the comparison time. The winner is then
 # re-evaluated with its full original params to get an accurate best_iteration
 # for phase 2.
-_PORTFOLIO_FAST_ROUNDS   = 300
+_PORTFOLIO_FAST_ROUNDS = 300
 _PORTFOLIO_FAST_PATIENCE = 30
 
 # For small training sets the single 90/10 validation split has very few val
@@ -124,13 +130,15 @@ _PORTFOLIO_FAST_PATIENCE = 30
 # Stage 1 over multiple random splits and average the scores, reducing ranking
 # noise at negligible extra wall-clock cost (small n means each split is fast).
 _STAGE1_MULTI_SPLIT_THRESHOLD = 2_000
-_STAGE1_MULTI_SPLITS          = 3
+_STAGE1_MULTI_SPLITS = 3
 
 # Cached GPU availability check (None = not yet tested)
 _GPU_AVAILABLE: bool | None = None
 
 
-def _learn_balanced_accuracy_cutoff(y_true: np.ndarray, p1: np.ndarray) -> tuple[float, str]:
+def _learn_balanced_accuracy_cutoff(
+    y_true: np.ndarray, p1: np.ndarray
+) -> tuple[float, str]:
     """Learn a deterministic balanced-accuracy cutoff from OOF class-1 probabilities."""
     y_arr = np.asarray(y_true, dtype=int)
     p_arr = np.asarray(p1, dtype=float)
@@ -144,14 +152,21 @@ def _learn_balanced_accuracy_cutoff(y_true: np.ndarray, p1: np.ndarray) -> tuple
     if unique.size == 0:
         return _DEFAULT_DECISION_CUTOFF, "default_0.5"
 
-    candidates = np.unique(np.concatenate([
-        unique,
-        np.array([
-            np.nextafter(unique[0], -np.inf),
-            _DEFAULT_DECISION_CUTOFF,
-            np.nextafter(unique[-1], np.inf),
-        ], dtype=float),
-    ]))
+    candidates = np.unique(
+        np.concatenate(
+            [
+                unique,
+                np.array(
+                    [
+                        np.nextafter(unique[0], -np.inf),
+                        _DEFAULT_DECISION_CUTOFF,
+                        np.nextafter(unique[-1], np.inf),
+                    ],
+                    dtype=float,
+                ),
+            ]
+        )
+    )
 
     best_threshold = _DEFAULT_DECISION_CUTOFF
     best_key = None
@@ -181,7 +196,8 @@ def _resolve_device(device: str) -> str:
             dm = xgb.DMatrix([[1.0]], label=[0])
             xgb.train(
                 {"tree_method": "hist", "device": "cuda", "verbosity": 0},
-                dm, num_boost_round=1,
+                dm,
+                num_boost_round=1,
             )
             _GPU_AVAILABLE = True
             logger.debug("device=auto: CUDA detected, using GPU")
@@ -223,8 +239,14 @@ class BaseXGBClassifier(BaseEstimator, ClassifierMixin):
     classes_ : ndarray
     """
 
-    def __init__(self, device: str = "cpu", portfolio: bool = True, nthread: int = -1,
-                 calibrated: bool = True, max_rounds: int | None = None):
+    def __init__(
+        self,
+        device: str = "cpu",
+        portfolio: bool = True,
+        nthread: int = -1,
+        calibrated: bool = True,
+        max_rounds: int | None = None,
+    ):
         self.device = device
         self.portfolio = portfolio
         self.nthread = nthread
@@ -262,9 +284,7 @@ class BaseXGBClassifier(BaseEstimator, ClassifierMixin):
 
         logger.rule("BaseXGBClassifier")
         logger.profile_summary(profile)
-        logger.info(
-            f"device={device} | portfolio={self.portfolio}"
-        )
+        logger.info(f"device={device} | portfolio={self.portfolio}")
 
         self.timing_ = {}
 
@@ -285,7 +305,9 @@ class BaseXGBClassifier(BaseEstimator, ClassifierMixin):
                 logger.debug(
                     f"Train split: {len(y_train)} rows | Val split: {len(y_val)} rows"
                 )
-                best_params = xgb_default_params(profile, device=device, nthread=self.nthread)
+                best_params = xgb_default_params(
+                    profile, device=device, nthread=self.nthread
+                )
                 _, best_iter, _ = _train_phase1(
                     X_train, y_train, X_val, y_val, best_params, verbose=False
                 )
@@ -299,8 +321,9 @@ class BaseXGBClassifier(BaseEstimator, ClassifierMixin):
                 f"colsample_bytree={best_params['colsample_bytree']}"
             )
             _t_p2 = _time.perf_counter()
-            final_booster, best_iter = _train_phase2(X, y, best_params, best_iter,
-                                                     max_rounds=self.max_rounds)
+            final_booster, best_iter = _train_phase2(
+                X, y, best_params, best_iter, max_rounds=self.max_rounds
+            )
             self.timing_["phase2_refit"] = _time.perf_counter() - _t_p2
         else:
             # Dataset too small to split: use heuristic preset directly.
@@ -373,7 +396,9 @@ class BaseXGBClassifier(BaseEstimator, ClassifierMixin):
         rank_1 = np.interp(scores, self._ranker_knots, np.linspace(0.0, 1.0, n_k))
         return np.column_stack([1 - rank_1, rank_1])
 
-    def calibrate(self, X, y, n_splits=None, random_state: int = 42) -> "BaseXGBClassifier":
+    def calibrate(
+        self, X, y, n_splits=None, random_state: int = 42
+    ) -> "BaseXGBClassifier":
         """
         Collect out-of-fold predicted probabilities via stratified k-fold CV,
         then fit an isotonic calibrator on them.
@@ -405,11 +430,17 @@ class BaseXGBClassifier(BaseEstimator, ClassifierMixin):
         X = np.asarray(X, dtype=np.float32)
         y = np.asarray(y, dtype=int)
         n = len(y)
-        k, fold_splits = make_stratified_oof_splits(y, n_splits=n_splits, random_state=random_state)
+        k, fold_splits = make_stratified_oof_splits(
+            y, n_splits=n_splits, random_state=random_state
+        )
 
         # Step 1: full fit — portfolio selection runs ONCE here
-        logger.info(f"BaseXGBClassifier.calibrate: full fit on n={n} (portfolio runs once)")
-        self._fit_raw(X, y)  # sets self.params_, self.best_iteration_, self.preset_name_
+        logger.info(
+            f"BaseXGBClassifier.calibrate: full fit on n={n} (portfolio runs once)"
+        )
+        self._fit_raw(
+            X, y
+        )  # sets self.params_, self.best_iteration_, self.preset_name_
 
         # Step 2: k-fold OOF with pre-selected params + fixed rounds (no search per fold)
         oof_raw = np.full(n, np.nan, dtype=float)
@@ -419,13 +450,17 @@ class BaseXGBClassifier(BaseEstimator, ClassifierMixin):
         )
         fold_times = []
         for fold_idx, (train_idx, val_idx) in enumerate(fold_splits):
-            logger.debug(f"  Fold {fold_idx + 1}/{k}: train={len(train_idx)}  val={len(val_idx)}")
+            logger.debug(
+                f"  Fold {fold_idx + 1}/{k}: train={len(train_idx)}  val={len(val_idx)}"
+            )
             _t_fold = _time.perf_counter()
             fold_booster, fold_best_iter = _train_phase2(
-                X[train_idx], y[train_idx].astype(float),
-                self.params_, self.best_iteration_,
+                X[train_idx],
+                y[train_idx].astype(float),
+                self.params_,
+                self.best_iteration_,
                 max_rounds=self.max_rounds,
-                label=None,   # suppress banner; fold context logged by calibrate()
+                label=None,  # suppress banner; fold context logged by calibrate()
             )
             dval = xgb.DMatrix(X[val_idx])
             oof_raw[val_idx] = fold_booster.predict(
@@ -444,6 +479,7 @@ class BaseXGBClassifier(BaseEstimator, ClassifierMixin):
             self.calibrator_method_ = "isotonic"
         else:
             from sklearn.linear_model import LogisticRegression
+
             cal = LogisticRegression(C=1.0, solver="lbfgs")
             cal.fit(oof_raw.reshape(-1, 1), y)
             self.oof_probas_ = cal.predict_proba(oof_raw.reshape(-1, 1))[:, 1]
@@ -457,8 +493,8 @@ class BaseXGBClassifier(BaseEstimator, ClassifierMixin):
             self._ranker_knots = sorted_scores[idx]
         else:
             self._ranker_knots = sorted_scores
-        self.decision_cutoff_, self.decision_cutoff_source_ = _learn_balanced_accuracy_cutoff(
-            y, oof_raw
+        self.decision_cutoff_, self.decision_cutoff_source_ = (
+            _learn_balanced_accuracy_cutoff(y, oof_raw)
         )
         logger.success(
             f"Calibrator fitted ({self.calibrator_method_}, minority={minority_count}) "
@@ -485,9 +521,7 @@ class BaseXGBClassifier(BaseEstimator, ClassifierMixin):
             Destination file path, e.g. ``"model.onnx"``.
         """
         check_is_fitted(self, "booster_")
-        wrapper = _booster_to_sklearn_wrapper(
-            self.booster_, task="classification"
-        )
+        wrapper = _booster_to_sklearn_wrapper(self.booster_, task="classification")
         _export_onnx(wrapper, path, self.profile_.n_features)
 
     def save(self, directory: str, onnx: bool = True) -> None:
@@ -513,6 +547,7 @@ class BaseXGBClassifier(BaseEstimator, ClassifierMixin):
             self.to_onnx(os.path.join(directory, "xgboost.onnx"))
         else:
             import joblib
+
             joblib.dump(self.booster_, os.path.join(directory, "xgboost.joblib"))
         metadata = {
             "task": "classification",
@@ -522,8 +557,12 @@ class BaseXGBClassifier(BaseEstimator, ClassifierMixin):
             "params": self.params_,
             "profile": dataclasses.asdict(self.profile_),
             "portfolio_scores": self.portfolio_scores_,
-            "decision_cutoff": float(getattr(self, "decision_cutoff_", _DEFAULT_DECISION_CUTOFF)),
-            "decision_cutoff_source": getattr(self, "decision_cutoff_source_", "default_0.5"),
+            "decision_cutoff": float(
+                getattr(self, "decision_cutoff_", _DEFAULT_DECISION_CUTOFF)
+            ),
+            "decision_cutoff_source": getattr(
+                self, "decision_cutoff_source_", "default_0.5"
+            ),
         }
         if hasattr(self, "calibrator_"):
             if self.calibrator_method_ == "isotonic":
@@ -590,9 +629,7 @@ class BaseXGBRegressor(BaseEstimator, RegressorMixin):
 
         logger.rule("BaseXGBRegressor")
         logger.profile_summary(profile)
-        logger.info(
-            f"device={device} | portfolio={self.portfolio}"
-        )
+        logger.info(f"device={device} | portfolio={self.portfolio}")
 
         if profile.n_samples >= _VAL_MIN_ROWS:
             if self.portfolio:
@@ -609,7 +646,9 @@ class BaseXGBRegressor(BaseEstimator, RegressorMixin):
                 logger.debug(
                     f"Train split: {len(y_train)} rows | Val split: {len(y_val)} rows"
                 )
-                best_params = xgb_default_params(profile, device=device, nthread=self.nthread)
+                best_params = xgb_default_params(
+                    profile, device=device, nthread=self.nthread
+                )
                 _, best_iter, _ = _train_phase1(
                     X_train, y_train, X_val, y_val, best_params, verbose=False
                 )
@@ -689,6 +728,7 @@ class BaseXGBRegressor(BaseEstimator, RegressorMixin):
             self.to_onnx(os.path.join(directory, "xgboost.onnx"))
         else:
             import joblib
+
             joblib.dump(self.booster_, os.path.join(directory, "xgboost.joblib"))
         metadata = {
             "task": "regression",
@@ -706,6 +746,7 @@ class BaseXGBRegressor(BaseEstimator, RegressorMixin):
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
 
 class _NumpyEncoder(json.JSONEncoder):
     """JSON encoder that converts numpy scalars to native Python types."""
@@ -731,13 +772,13 @@ def _train_phase1(X_train, y_train, X_val, y_val, params: dict, verbose: bool):
     as-is; RMSE and other minimisation metrics are negated).
     """
     max_bin = params.get("max_bin", 256)
-    num_boost_round      = params["n_estimators"]
+    num_boost_round = params["n_estimators"]
     early_stopping_rounds = params["early_stopping_rounds"]
 
     xgb_params = {k: v for k, v in params.items() if k not in _META_KEYS}
 
     dtrain = xgb.QuantileDMatrix(X_train, label=y_train, max_bin=max_bin)
-    dval   = xgb.QuantileDMatrix(X_val,   label=y_val,   ref=dtrain, max_bin=max_bin)
+    dval = xgb.QuantileDMatrix(X_val, label=y_val, ref=dtrain, max_bin=max_bin)
 
     booster = xgb.train(
         xgb_params,
@@ -748,17 +789,22 @@ def _train_phase1(X_train, y_train, X_val, y_val, params: dict, verbose: bool):
         verbose_eval=verbose,
     )
     best_iter = booster.best_iteration
-    metric    = xgb_params.get("eval_metric", "rmse")
-    score     = booster.best_score
+    metric = xgb_params.get("eval_metric", "rmse")
+    score = booster.best_score
     if metric not in MAXIMIZE_METRICS:
         score = -score  # normalise: higher is always better for comparison
 
     return booster, best_iter, score
 
 
-def _train_phase2(X_full, y_full, params: dict, best_iter: int,
-                  max_rounds: int | None = None,
-                  label: str | None = "Phase 2 — full retraining"):
+def _train_phase2(
+    X_full,
+    y_full,
+    params: dict,
+    best_iter: int,
+    max_rounds: int | None = None,
+    label: str | None = "Phase 2 — full retraining",
+):
     """
     Phase 2: retrain on the full dataset for at least _PHASE2_MIN_ROUNDS rounds.
 
@@ -773,8 +819,9 @@ def _train_phase2(X_full, y_full, params: dict, best_iter: int,
     The final model therefore sees 100% of the data.
     """
     import time as _time
-    max_bin    = params.get("max_bin", 256)
-    min_iter   = params.get("early_stopping_rounds", 0)
+
+    max_bin = params.get("max_bin", 256)
+    min_iter = params.get("early_stopping_rounds", 0)
     xgb_params = {k: v for k, v in params.items() if k not in _META_KEYS}
 
     num_rounds = max(best_iter, min_iter, _PHASE2_MIN_ROUNDS)
@@ -795,7 +842,7 @@ def _train_phase2(X_full, y_full, params: dict, best_iter: int,
         num_boost_round=num_rounds,
         verbose_eval=False,
     )
-    logger.debug(f"Phase 2: done in {_time.perf_counter()-_t0:.1f}s")
+    logger.debug(f"Phase 2: done in {_time.perf_counter() - _t0:.1f}s")
     # Return the last round index (0-based) so predict uses the full booster.
     return booster, num_rounds - 1
 
@@ -852,10 +899,10 @@ def _training_cost(params: dict, n_train: int) -> float:
       - lossguide (FLAML): uses the explicit max_leaves parameter
       - depthwise (all others): 2 ** max_depth
     """
-    lr       = float(params.get("learning_rate", 0.3))
+    lr = float(params.get("learning_rate", 0.3))
     patience = int(params.get("early_stopping_rounds", 50))
-    n_est    = int(params.get("n_estimators", 2000))
-    n_par    = int(params.get("num_parallel_tree", 1))
+    n_est = int(params.get("n_estimators", 2000))
+    n_par = int(params.get("num_parallel_tree", 1))
 
     expected_rounds = min(n_est, int(patience * (1 + 0.1 / max(lr, 1e-9))))
 
@@ -867,8 +914,7 @@ def _training_cost(params: dict, n_train: int) -> float:
     return float(n_train * expected_rounds * max_leaves * n_par)
 
 
-def _eval_preset_rep(X_tr, y_tr, X_val, y_val,
-                     params: dict, nthread: int) -> int:
+def _eval_preset_rep(X_tr, y_tr, X_val, y_val, params: dict, nthread: int) -> int:
     """
     Evaluate one Stage-2 calibration rep with a reduced thread count.
 
@@ -878,10 +924,10 @@ def _eval_preset_rep(X_tr, y_tr, X_val, y_val,
     """
     p = dict(params)
     p["nthread"] = nthread
-    max_bin    = p.get("max_bin", 256)
+    max_bin = p.get("max_bin", 256)
     xgb_params = {k: v for k, v in p.items() if k not in _META_KEYS}
-    dtrain = xgb.QuantileDMatrix(X_tr,  label=y_tr,  max_bin=max_bin)
-    dval   = xgb.QuantileDMatrix(X_val, label=y_val, ref=dtrain, max_bin=max_bin)
+    dtrain = xgb.QuantileDMatrix(X_tr, label=y_tr, max_bin=max_bin)
+    dval = xgb.QuantileDMatrix(X_val, label=y_val, ref=dtrain, max_bin=max_bin)
     booster = xgb.train(
         xgb_params,
         dtrain,
@@ -893,8 +939,7 @@ def _eval_preset_rep(X_tr, y_tr, X_val, y_val,
     return booster.best_iteration
 
 
-def _eval_preset_fast(X_tr, y_tr, X_val, y_val,
-                      params: dict, nthread: int) -> tuple:
+def _eval_preset_fast(X_tr, y_tr, X_val, y_val, params: dict, nthread: int) -> tuple:
     """
     Evaluate one preset with a reduced thread count for parallel Stage 1.
 
@@ -908,11 +953,11 @@ def _eval_preset_fast(X_tr, y_tr, X_val, y_val,
     that higher is always better (minimisation metrics are negated).
     """
     p = dict(params)
-    p["nthread"] = nthread   # reduce threads so N parallel jobs ≈ 1 full core set
-    max_bin    = p.get("max_bin", 256)
+    p["nthread"] = nthread  # reduce threads so N parallel jobs ≈ 1 full core set
+    max_bin = p.get("max_bin", 256)
     xgb_params = {k: v for k, v in p.items() if k not in _META_KEYS}
-    dtrain = xgb.QuantileDMatrix(X_tr,  label=y_tr,  max_bin=max_bin)
-    dval   = xgb.QuantileDMatrix(X_val, label=y_val, ref=dtrain, max_bin=max_bin)
+    dtrain = xgb.QuantileDMatrix(X_tr, label=y_tr, max_bin=max_bin)
+    dval = xgb.QuantileDMatrix(X_val, label=y_val, ref=dtrain, max_bin=max_bin)
     booster = xgb.train(
         xgb_params,
         dtrain,
@@ -922,14 +967,15 @@ def _eval_preset_fast(X_tr, y_tr, X_val, y_val,
         verbose_eval=False,
     )
     metric = xgb_params.get("eval_metric", "rmse")
-    score  = booster.best_score
+    score = booster.best_score
     if metric not in MAXIMIZE_METRICS:
         score = -score
     return booster.best_iteration, score
 
 
-def _portfolio_select(X, y: np.ndarray,
-                      profile: DatasetProfile, device: str, nthread: int = -1):
+def _portfolio_select(
+    X, y: np.ndarray, profile: DatasetProfile, device: str, nthread: int = -1
+):
     """
     Two-stage portfolio selection returning the best preset for this dataset.
 
@@ -958,14 +1004,19 @@ def _portfolio_select(X, y: np.ndarray,
 
     Returns (best_preset_name, best_params, mean_best_iteration, scores_dict).
     """
+    # FLAML and AutoGluon were calibrated on datasets with p ≤ ~158 (FLAML center=28,
+    # scale=130) and p ≤ ~150 (AutoGluon OpenML benchmark).  Both are out-of-distribution
+    # for p > 200; skip them to avoid poorly-matched presets and excess compute.
+    _calibration_skip = {"flaml", "autogluon"} if profile.n_features > 200 else set()
+
     candidates = [
         ("heuristic", _get_params(profile, device, nthread=nthread)),
-        ("default",   xgb_default_params(profile, device, nthread=nthread)),
-        ("flaml",     flaml_params(profile, device, nthread=nthread)),
+        ("default", xgb_default_params(profile, device, nthread=nthread)),
+        ("flaml", flaml_params(profile, device, nthread=nthread)),
         ("autogluon", autogluon_params(profile, device, nthread=nthread)),
     ]
     params_map = {name: p for name, p in candidates}
-    stratify   = (profile.task == "classification")
+    stratify = profile.task == "classification"
 
     # ------------------------------------------------------------------
     # Stage 1: fast parallel ranking
@@ -982,7 +1033,11 @@ def _portfolio_select(X, y: np.ndarray,
     # ------------------------------------------------------------------
     # Use the first split to determine n_tr and cost budget.
     X_tr, X_val, y_tr, y_val, did_split = _validation_split(
-        X, y, profile, stratify=stratify, random_state=_RANDOM_STATE,
+        X,
+        y,
+        profile,
+        stratify=stratify,
+        random_state=_RANDOM_STATE,
     )
 
     fast_scores: dict = {}
@@ -1008,10 +1063,12 @@ def _portfolio_select(X, y: np.ndarray,
     #   n=100k → 0.22 → rounds= 67, patience=10 (floor)
     _n_ref = 5_000
     _scale = min(1.0, (_n_ref / max(n_tr, 1)) ** 0.5)
-    fast_rounds   = max(_PORTFOLIO_FAST_ROUNDS // 6,
-                        int(round(_PORTFOLIO_FAST_ROUNDS * _scale)))
-    fast_patience = max(_PORTFOLIO_FAST_PATIENCE // 3,
-                        int(round(_PORTFOLIO_FAST_PATIENCE * _scale)))
+    fast_rounds = max(
+        _PORTFOLIO_FAST_ROUNDS // 6, int(round(_PORTFOLIO_FAST_ROUNDS * _scale))
+    )
+    fast_patience = max(
+        _PORTFOLIO_FAST_PATIENCE // 3, int(round(_PORTFOLIO_FAST_PATIENCE * _scale))
+    )
     logger.debug(
         f"[portfolio] Stage 1 budget: rounds={fast_rounds}, patience={fast_patience} "
         f"(n_tr={n_tr}, scale={_scale:.2f})"
@@ -1021,12 +1078,19 @@ def _portfolio_select(X, y: np.ndarray,
     # fast_p caps max_depth at _STAGE1_MAX_DEPTH so the Stage-1 comparison
     # stays within budget. Stage 2 and Phase 2 always use the original
     # uncapped params from params_map[best_name].
-    to_run: list = []         # (name, fast_p)
+    to_run: list = []  # (name, fast_p)
     fast_params_map: dict = {}  # name → fast_p (for logging depth info)
     skipped_names: list = []
     for name, params in candidates:
+        if name in _calibration_skip:
+            logger.debug(
+                f"[portfolio] {name:10s}: skipped (p={profile.n_features} > 200, outside calibration regime)"
+            )
+            fast_scores[name] = float("nan")
+            skipped_names.append(name)
+            continue
         fast_p = dict(params)
-        fast_p["n_estimators"]          = fast_rounds
+        fast_p["n_estimators"] = fast_rounds
         fast_p["early_stopping_rounds"] = fast_patience
         if fast_p.get("max_depth", 0) > _STAGE1_MAX_DEPTH:
             fast_p["max_depth"] = _STAGE1_MAX_DEPTH
@@ -1060,8 +1124,8 @@ def _portfolio_select(X, y: np.ndarray,
     import time as _time
 
     # Divide CPU cores across parallel jobs so total threads ≈ all cores.
-    n_jobs       = len(to_run)
-    n_cores      = os.cpu_count() or 1
+    n_jobs = len(to_run)
+    n_cores = os.cpu_count() or 1
     nthread_each = max(1, n_cores // n_jobs) if n_jobs > 1 else n_cores
 
     # Number of Stage-1 splits: more splits on small datasets to average out
@@ -1084,12 +1148,16 @@ def _portfolio_select(X, y: np.ndarray,
     accum: dict = {name: [] for name, _ in to_run}
     splits_used = 0
     for split_idx in range(n_stage1_splits):
-        rs = _RANDOM_STATE + split_idx * 97   # prime stride → well-separated seeds
+        rs = _RANDOM_STATE + split_idx * 97  # prime stride → well-separated seeds
         if split_idx == 0:
             Xs_tr, Xs_val, ys_tr, ys_val = X_tr, X_val, y_tr, y_val
         else:
             Xs_tr, Xs_val, ys_tr, ys_val, ok = _validation_split(
-                X, y, profile, stratify=stratify, random_state=rs,
+                X,
+                y,
+                profile,
+                stratify=stratify,
+                random_state=rs,
             )
             if not ok:
                 break
@@ -1098,15 +1166,16 @@ def _portfolio_select(X, y: np.ndarray,
         # Run all presets in parallel threads.  Each thread builds its own
         # QuantileDMatrix from the (read-only) numpy arrays.
         raw = Parallel(n_jobs=n_jobs, prefer="threads")(
-            delayed(_eval_preset_fast)(Xs_tr, ys_tr, Xs_val, ys_val,
-                                       fast_p, nthread_each)
+            delayed(_eval_preset_fast)(
+                Xs_tr, ys_tr, Xs_val, ys_val, fast_p, nthread_each
+            )
             for _, fast_p in to_run
         )
         for (name, _), (_, score) in zip(to_run, raw):
             accum[name].append(score)
 
     logger.info(
-        f"Stage 1: done in {_time.perf_counter()-_t1:.1f}s "
+        f"Stage 1: done in {_time.perf_counter() - _t1:.1f}s "
         f"({splits_used} split(s) averaged)"
     )
 
@@ -1115,27 +1184,27 @@ def _portfolio_select(X, y: np.ndarray,
         fast_scores[name] = s
 
     # Pick winner from fast scores
-    default_score  = fast_scores.get("default", float("-inf"))
+    default_score = fast_scores.get("default", float("-inf"))
 
-    best_name  = None
+    best_name = None
     best_score = float("-inf")
     for name, _ in candidates:
         s = fast_scores.get(name, float("nan"))
-        if s != s:   # nan
+        if s != s:  # nan
             continue
         if s > best_score:
             best_score = s
-            best_name  = name
+            best_name = name
 
     if best_name is None:
-        best_name  = "default"
+        best_name = "default"
         best_score = float("nan")
-        threshold  = _min_gain_threshold(profile, y)
+        threshold = _min_gain_threshold(profile, y)
     elif best_name != "default":
         threshold = _min_gain_threshold(profile, y)
         gain = best_score - default_score
         if gain < threshold:
-            best_name  = "default"
+            best_name = "default"
             best_score = default_score
     else:
         threshold = _min_gain_threshold(profile, y)
@@ -1180,15 +1249,15 @@ def _portfolio_select(X, y: np.ndarray,
     # the full _CV_REPEATS; multiple reps run in parallel threads.
     # ------------------------------------------------------------------
     winner_params = params_map[best_name]
-    winner_cost   = _training_cost(winner_params, n_tr)
-    default_cost  = _training_cost(params_map["default"], n_tr)
-    cost_ratio    = winner_cost / max(default_cost, 1.0)
+    winner_cost = _training_cost(winner_params, n_tr)
+    default_cost = _training_cost(params_map["default"], n_tr)
+    cost_ratio = winner_cost / max(default_cost, 1.0)
     _t2 = _time.perf_counter()
 
     logger.rule("Portfolio — Stage 2")
     if cost_ratio > _STAGE2_SKIP_COST_RATIO:
         # Heuristic path: skip Stage 2 training entirely.
-        lr      = float(winner_params.get("learning_rate", 0.1))
+        lr = float(winner_params.get("learning_rate", 0.1))
         patience = int(winner_params.get("early_stopping_rounds", 50))
         heuristic_iter = int(round(patience * 0.1 / max(lr, 1e-9)))
         best_iter = max(heuristic_iter, _PHASE2_MIN_ROUNDS - 1)
@@ -1210,7 +1279,10 @@ def _portfolio_select(X, y: np.ndarray,
         splits2: list = []
         for rep in range(stage2_repeats):
             X_tr2, X_val2, y_tr2, y_val2, ok = _validation_split(
-                X, y, profile, stratify=stratify,
+                X,
+                y,
+                profile,
+                stratify=stratify,
                 random_state=_RANDOM_STATE + rep,
             )
             if not ok:
@@ -1222,8 +1294,9 @@ def _portfolio_select(X, y: np.ndarray,
             # Parallel calibration: divide cores across reps so total threads ≈ all cores.
             nthread_s2 = max(1, (os.cpu_count() or 1) // len(splits2))
             par_results = Parallel(n_jobs=len(splits2), prefer="threads")(
-                delayed(_eval_preset_rep)(X_tr2, y_tr2, X_val2, y_val2,
-                                          winner_params, nthread_s2)
+                delayed(_eval_preset_rep)(
+                    X_tr2, y_tr2, X_val2, y_val2, winner_params, nthread_s2
+                )
                 for X_tr2, X_val2, y_tr2, y_val2 in splits2
             )
             for rep, b_iter in enumerate(par_results):
@@ -1242,7 +1315,7 @@ def _portfolio_select(X, y: np.ndarray,
 
         best_iter = int(round(np.mean(rep_iters))) if rep_iters else 0
         logger.info(
-            f"Stage 2: done in {_time.perf_counter()-_t2:.1f}s  "
+            f"Stage 2: done in {_time.perf_counter() - _t2:.1f}s  "
             f"best_iter={best_iter} (reps={rep_iters})"
         )
 
@@ -1271,6 +1344,7 @@ def _export_onnx(model, path: str, n_features: int) -> None:
     """Convert an XGBoost sklearn estimator to ONNX and write to path."""
     from onnxmltools.convert import convert_xgboost
     from onnxmltools.convert.common.data_types import FloatTensorType
+
     onnx_model = convert_xgboost(
         model,
         initial_types=[("float_input", FloatTensorType([None, n_features]))],
@@ -1279,8 +1353,9 @@ def _export_onnx(model, path: str, n_features: int) -> None:
         f.write(onnx_model.SerializeToString())
 
 
-def _validation_split(X, y, profile: DatasetProfile, stratify: bool,
-                      random_state: int = _RANDOM_STATE):
+def _validation_split(
+    X, y, profile: DatasetProfile, stratify: bool, random_state: int = _RANDOM_STATE
+):
     """
     Split off a small validation set for early stopping.
     Falls back to reusing the full set when n_samples is very small.
@@ -1308,7 +1383,8 @@ def _validation_split(X, y, profile: DatasetProfile, stratify: bool,
 
     strat = y if stratify else None
     X_train, X_val, y_train, y_val = train_test_split(
-        X, y,
+        X,
+        y,
         test_size=val_fraction,
         random_state=random_state,
         stratify=strat,
@@ -1319,6 +1395,7 @@ def _validation_split(X, y, profile: DatasetProfile, stratify: bool,
 # ---------------------------------------------------------------------------
 # Calibration helper (shared by artifact classes)
 # ---------------------------------------------------------------------------
+
 
 def _apply_calibrator_artifact(proba: np.ndarray, cal: dict) -> np.ndarray:
     """Apply a saved calibrator dict to a (n, 2) probability array."""
@@ -1334,6 +1411,7 @@ def _apply_calibrator_artifact(proba: np.ndarray, cal: dict) -> np.ndarray:
 # ---------------------------------------------------------------------------
 # Artifact: load a saved model for inference
 # ---------------------------------------------------------------------------
+
 
 class BaseXGBArtifact:
     """
@@ -1358,8 +1436,8 @@ class BaseXGBArtifact:
     """
 
     def __init__(self):
-        self._session = None   # onnxruntime.InferenceSession (onnx path)
-        self._booster = None   # xgb.Booster (joblib path)
+        self._session = None  # onnxruntime.InferenceSession (onnx path)
+        self._booster = None  # xgb.Booster (joblib path)
         self._format: str = ""
         self.metadata: dict = {}
         self.task: str = ""
@@ -1413,11 +1491,16 @@ class BaseXGBArtifact:
         artifact._format = fmt
 
         artifact._cal = artifact.metadata.get("calibrator", None)
-        artifact.decision_cutoff = float(artifact.metadata.get("decision_cutoff", _DEFAULT_DECISION_CUTOFF))
-        artifact.decision_cutoff_source = artifact.metadata.get("decision_cutoff_source", "default_0.5")
+        artifact.decision_cutoff = float(
+            artifact.metadata.get("decision_cutoff", _DEFAULT_DECISION_CUTOFF)
+        )
+        artifact.decision_cutoff_source = artifact.metadata.get(
+            "decision_cutoff_source", "default_0.5"
+        )
 
         if fmt == "onnx":
             import onnxruntime as rt
+
             onnx_path = os.path.join(directory, "xgboost.onnx")
             if not os.path.isfile(onnx_path):
                 raise FileNotFoundError(f"No ONNX model found at {onnx_path!r}")
@@ -1426,6 +1509,7 @@ class BaseXGBArtifact:
             )
         else:
             import joblib
+
             joblib_path = os.path.join(directory, "xgboost.joblib")
             if not os.path.isfile(joblib_path):
                 raise FileNotFoundError(f"No joblib model found at {joblib_path!r}")
@@ -1457,7 +1541,8 @@ class BaseXGBArtifact:
             outputs = self._session.run(None, {input_name: X_f32})
             if self.task == "classification":
                 prob_output = next(
-                    o for o, meta in zip(outputs, self._session.get_outputs())
+                    o
+                    for o, meta in zip(outputs, self._session.get_outputs())
                     if meta.name == "probabilities"
                 )
                 proba = np.asarray(prob_output, dtype=np.float64)
@@ -1469,9 +1554,7 @@ class BaseXGBArtifact:
         else:
             best_iter = self.metadata["best_iteration"]
             dmat = xgb.DMatrix(X)
-            raw = self._booster.predict(
-                dmat, iteration_range=(0, best_iter + 1)
-            )
+            raw = self._booster.predict(dmat, iteration_range=(0, best_iter + 1))
             if self.task == "classification":
                 proba = np.column_stack([1 - raw, raw]).astype(np.float64)
                 if self._cal is not None:
@@ -1483,6 +1566,8 @@ class BaseXGBArtifact:
     def predict(self, X, cutoff: float | None = None) -> np.ndarray:
         """Return binary predictions using the stored decision cutoff by default."""
         if self.task != "classification":
-            raise RuntimeError("predict() is only available for classification artifacts.")
+            raise RuntimeError(
+                "predict() is only available for classification artifacts."
+            )
         threshold = self.decision_cutoff if cutoff is None else float(cutoff)
         return (self.run(X)[:, 1] >= threshold).astype(int)

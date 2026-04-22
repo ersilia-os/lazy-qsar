@@ -11,7 +11,6 @@ _SELECTOR_VERSION = "rule_v1"
 
 
 class Portfolio(object):
-
     def __init__(self):
         self.portfolio = ["xgb", "rf"]
         self.selector_version_ = _SELECTOR_VERSION
@@ -91,7 +90,9 @@ class Portfolio(object):
             reasons.append("xgb +3: enough samples for trees")
         if profile.feature_signal_p90 >= 0.15:
             scores["xgb"] += 2
-            reasons.append(f"xgb +2: strong feature signal p90={profile.feature_signal_p90:.2f}")
+            reasons.append(
+                f"xgb +2: strong feature signal p90={profile.feature_signal_p90:.2f}"
+            )
         if 0.1 <= profile.binary_feature_fraction < 0.8 and profile.sparsity < 0.95:
             scores["xgb"] += 2
             reasons.append("xgb +2: mixed feature types without extreme sparsity")
@@ -163,12 +164,18 @@ class Portfolio(object):
         if scores["lr"] >= scores["xgb"] or gap < 2:
             include_lr = True
             if gap < 2:
-                reasons = reasons + [f"decision: score gap {gap} < 2 -> keep lr, while xgb and rf stay mandatory"]
+                reasons = reasons + [
+                    f"decision: score gap {gap} < 2 -> keep lr, while xgb and rf stay mandatory"
+                ]
             else:
-                reasons = reasons + ["decision: lr signal strong, while xgb and rf stay mandatory"]
+                reasons = reasons + [
+                    "decision: lr signal strong, while xgb and rf stay mandatory"
+                ]
         else:
             include_lr = False
-            reasons = reasons + [f"decision: xgb leads by {gap} -> keep xgb and mandatory rf"]
+            reasons = reasons + [
+                f"decision: xgb leads by {gap} -> keep xgb and mandatory rf"
+            ]
 
         # SVC decision: include when score >= 2 (at least one bonus firing)
         include_svc = scores["svc"] >= 2
@@ -228,7 +235,9 @@ class Portfolio(object):
             instance.profile_ = None
         else:
             instance.portfolio = payload.get("portfolio", ["xgb", "rf"])
-            instance.selector_version_ = payload.get("selector_version", _SELECTOR_VERSION)
+            instance.selector_version_ = payload.get(
+                "selector_version", _SELECTOR_VERSION
+            )
             # Backward-compatible: older saves may lack "svc" key
             scores = payload.get("scores", {"lr": 0, "xgb": 0, "rf": 0, "svc": 0})
             if "svc" not in scores:
@@ -241,7 +250,6 @@ class Portfolio(object):
 
 
 class PortfolioArtifact(object):
-
     def __init__(self, portfolio):
         self.portfolio = portfolio
 

@@ -39,7 +39,6 @@ import argparse
 import json
 import os
 
-import numpy as np
 import pandas as pd
 from sklearn.metrics import average_precision_score, roc_auc_score
 
@@ -47,6 +46,7 @@ import lazyqsar
 from lazyqsar.qsar import LazyClassifierQSAR
 
 lazyqsar.set_verbosity(True)
+
 
 def load_dataset(dataset_dir, source=None, dataset=None):
     data = pd.read_csv(os.path.join(dataset_dir, "data.csv"))
@@ -80,29 +80,55 @@ def load_dataset(dataset_dir, source=None, dataset=None):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--datasets_dir", required=True, help=(
-        "Root directory of eosbench datasets. "
-        "Expected layout: <datasets_dir>/<source>/<task_type>/<dataset>/ "
-        "where each leaf contains data.csv (columns: smiles, activity|value), "
-        "folds.csv (column: fold), and optionally metadata.json."
-    ))
-    parser.add_argument("--output_dir", required=True, help="Directory where output CSVs are written.")
-    parser.add_argument("--source", required=True, help="Dataset source (e.g. tdc, chembl).")
-    parser.add_argument("--dataset", required=True, help="Dataset name (e.g. ames, herg).")
-    parser.add_argument("--fold", required=True, type=int, help="Fold index to evaluate.")
-    parser.add_argument("--task_type", default="classification", help="Task type (default: classification).")
-    parser.add_argument("--force", action="store_true", help="Overwrite output file if it already exists.")
+    parser.add_argument(
+        "--datasets_dir",
+        required=True,
+        help=(
+            "Root directory of eosbench datasets. "
+            "Expected layout: <datasets_dir>/<source>/<task_type>/<dataset>/ "
+            "where each leaf contains data.csv (columns: smiles, activity|value), "
+            "folds.csv (column: fold), and optionally metadata.json."
+        ),
+    )
+    parser.add_argument(
+        "--output_dir", required=True, help="Directory where output CSVs are written."
+    )
+    parser.add_argument(
+        "--source", required=True, help="Dataset source (e.g. tdc, chembl)."
+    )
+    parser.add_argument(
+        "--dataset", required=True, help="Dataset name (e.g. ames, herg)."
+    )
+    parser.add_argument(
+        "--fold", required=True, type=int, help="Fold index to evaluate."
+    )
+    parser.add_argument(
+        "--task_type",
+        default="classification",
+        help="Task type (default: classification).",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite output file if it already exists.",
+    )
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
 
-    out_path = os.path.join(args.output_dir, f"{args.source}_{args.dataset}_fold{args.fold}.csv")
+    out_path = os.path.join(
+        args.output_dir, f"{args.source}_{args.dataset}_fold{args.fold}.csv"
+    )
     if os.path.exists(out_path) and not args.force:
         print(f"Output already exists, skipping: {out_path}")
         exit(0)
 
-    dataset_dir = os.path.join(args.datasets_dir, args.source, args.task_type, args.dataset)
-    smiles, y, folds, metadata = load_dataset(dataset_dir, source=args.source, dataset=args.dataset)
+    dataset_dir = os.path.join(
+        args.datasets_dir, args.source, args.task_type, args.dataset
+    )
+    smiles, y, folds, metadata = load_dataset(
+        dataset_dir, source=args.source, dataset=args.dataset
+    )
     n_folds = folds.max() + 1
 
     print(f"{args.source}/{args.dataset}  fold={args.fold}/{n_folds}  n={len(smiles)}")
@@ -117,8 +143,10 @@ if __name__ == "__main__":
 
     pos_rate_test = float(y_test.mean())
 
-    print(f"  train={len(smiles_train)} ({int(y_train.sum())} pos)"
-          f"  test={len(smiles_test)} ({int(y_test.sum())} pos)")
+    print(
+        f"  train={len(smiles_train)} ({int(y_train.sum())} pos)"
+        f"  test={len(smiles_test)} ({int(y_test.sum())} pos)"
+    )
 
     model = LazyClassifierQSAR(mode="slow")
     model.fit(smiles_train, y_train)
@@ -129,7 +157,9 @@ if __name__ == "__main__":
     aupr_baseline = pos_rate_test
     aupr_ratio = aupr / aupr_baseline if aupr_baseline > 0 else float("nan")
 
-    print(f"  AUROC={auroc:.4f}  AUPR={aupr:.4f}  (baseline={aupr_baseline:.4f}  ratio={aupr_ratio:.2f}x)")
+    print(
+        f"  AUROC={auroc:.4f}  AUPR={aupr:.4f}  (baseline={aupr_baseline:.4f}  ratio={aupr_ratio:.2f}x)"
+    )
 
     row = {
         "source": args.source,

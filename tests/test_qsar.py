@@ -7,9 +7,9 @@ Covers:
   - LazyClassifierQSAR instantiation and basic attribute checks
   - LazyQSAR with unknown task raises ValueError
 
-Note: LazyClassifierQSAR.__init__ immediately imports descriptor modules.
-      Tests that instantiate with mode="default" or mode="slow" require
-      chemeleon/cddd; use mode="fast" (rdkit + morgan only) to stay lightweight.
+Note: descriptor instances are populated during fit(), not __init__(), so
+      model.descriptors is empty until fit() is called. Use mode="fast"
+      (rdkit + morgan only) to stay lightweight in unit tests.
 """
 
 import pytest
@@ -21,8 +21,8 @@ from lazyqsar.qsar import LazyClassifierQSAR, LazyRegressorQSAR, LazyQSAR
 # LazyQSAR dispatcher
 # ---------------------------------------------------------------------------
 
-class TestLazyQSARDispatcher:
 
+class TestLazyQSARDispatcher:
     def test_classification_type(self):
         obj = LazyQSAR(task="classification", mode="fast")
         assert isinstance(obj, LazyClassifierQSAR)
@@ -45,23 +45,23 @@ class TestLazyQSARDispatcher:
 # LazyRegressorQSAR stub
 # ---------------------------------------------------------------------------
 
-class TestLazyRegressorQSAR:
 
+class TestLazyRegressorQSAR:
     def test_raises_on_instantiation(self):
         with pytest.raises(NotImplementedError):
             LazyRegressorQSAR()
 
     def test_raises_with_mode_arg(self):
         with pytest.raises(NotImplementedError):
-            LazyRegressorQSAR(mode="default")
+            LazyRegressorQSAR(mode="slow")
 
 
 # ---------------------------------------------------------------------------
 # LazyClassifierQSAR instantiation
 # ---------------------------------------------------------------------------
 
-class TestLazyClassifierQSAR:
 
+class TestLazyClassifierQSAR:
     def test_instantiate_fast_mode(self):
         model = LazyClassifierQSAR(mode="fast")
         assert model.mode == "fast"
@@ -75,11 +75,16 @@ class TestLazyClassifierQSAR:
         assert len(model.descriptor_types) > 0
         assert all(isinstance(d, str) for d in model.descriptor_types)
 
-    def test_fast_mode_uses_rdkit_and_morgan(self):
+    def test_fast_mode_uses_morgan_only(self):
         model = LazyClassifierQSAR(mode="fast")
-        assert "rdkit" in model.descriptor_types
         assert "morgan" in model.descriptor_types
+        assert "rdkit" not in model.descriptor_types
 
-    def test_descriptors_list_length_matches_types(self):
+    def test_descriptors_empty_before_fit(self):
+        # Descriptor instances are populated during fit(), not __init__().
         model = LazyClassifierQSAR(mode="fast")
-        assert len(model.descriptors) == len(model.descriptor_types)
+        assert model.descriptors == []
+
+    def test_descriptor_types_set_before_fit(self):
+        model = LazyClassifierQSAR(mode="fast")
+        assert len(model.descriptor_types) == len(["morgan"])

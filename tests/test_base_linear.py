@@ -19,7 +19,11 @@ import tempfile
 import numpy as np
 import pytest
 
-from lazyqsar.base.linear import BaseLinearClassifier, BaseLinearRegressor, BaseLinearArtifact
+from lazyqsar.base.linear import (
+    BaseLinearClassifier,
+    BaseLinearRegressor,
+    BaseLinearArtifact,
+)
 from lazyqsar.base.linear.model import _detect_classifier_regime
 from lazyqsar.utils.splits import make_stratified_oof_splits
 
@@ -30,6 +34,7 @@ RNG = np.random.RandomState(42)
 # ---------------------------------------------------------------------------
 # Data helpers
 # ---------------------------------------------------------------------------
+
 
 def make_clf_data(n=400, p=20, seed=42):
     rng = np.random.RandomState(seed)
@@ -49,8 +54,8 @@ def make_reg_data(n=400, p=20, seed=42):
 # Regime detection
 # ---------------------------------------------------------------------------
 
-class TestRegimeDetection:
 
+class TestRegimeDetection:
     def test_classifier_regime_uses_cost_aware_large_cutoff_for_dense_medium_data(self):
         assert _detect_classifier_regime(5_000, 2_000) == "large"
 
@@ -104,8 +109,8 @@ class TestRegimeDetection:
 # BaseLinearClassifier: fit / predict
 # ---------------------------------------------------------------------------
 
-class TestBaseLinearClassifier:
 
+class TestBaseLinearClassifier:
     def test_predict_proba_shape(self):
         X, y = make_clf_data(n=400, p=20)
         clf = BaseLinearClassifier()
@@ -206,8 +211,8 @@ class TestBaseLinearClassifier:
 # BaseLinearRegressor: fit / predict
 # ---------------------------------------------------------------------------
 
-class TestBaseLinearRegressor:
 
+class TestBaseLinearRegressor:
     def test_predict_shape(self):
         X, y = make_reg_data(n=400, p=20)
         reg = BaseLinearRegressor()
@@ -247,8 +252,8 @@ class TestBaseLinearRegressor:
 # ONNX save / load roundtrip
 # ---------------------------------------------------------------------------
 
-class TestBaseLinearArtifactONNX:
 
+class TestBaseLinearArtifactONNX:
     def test_classifier_onnx_run_shape(self):
         X, y = make_clf_data(n=400, p=20)
         clf = BaseLinearClassifier()
@@ -348,8 +353,8 @@ class TestBaseLinearArtifactONNX:
 # joblib save / load roundtrip
 # ---------------------------------------------------------------------------
 
-class TestBaseLinearArtifactJoblib:
 
+class TestBaseLinearArtifactJoblib:
     def test_classifier_joblib_run_shape(self):
         X, y = make_clf_data(n=400, p=20)
         clf = BaseLinearClassifier()
@@ -396,8 +401,8 @@ class TestBaseLinearArtifactJoblib:
 # Error handling
 # ---------------------------------------------------------------------------
 
-class TestBaseLinearArtifactErrors:
 
+class TestBaseLinearArtifactErrors:
     def test_load_missing_json_raises(self):
         with tempfile.TemporaryDirectory() as d:
             with open(os.path.join(d, "linear.onnx"), "wb") as f:

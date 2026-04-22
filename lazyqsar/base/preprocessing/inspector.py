@@ -15,33 +15,33 @@ class PreprocessingProfile:
     # Shape
     n_samples: int
     n_features: int
-    n_p_ratio: float            # n_samples / n_features
+    n_p_ratio: float  # n_samples / n_features
 
     # Feature type composition
-    sparsity: float                    # fraction of zeros in X (0.0–1.0)
-    is_sparse_counts: bool             # fingerprint-like data (integer, sparse, small values)
-    binary_feature_fraction: float     # fraction of features that only take {0, 1} values
+    sparsity: float  # fraction of zeros in X (0.0–1.0)
+    is_sparse_counts: bool  # fingerprint-like data (integer, sparse, small values)
+    binary_feature_fraction: float  # fraction of features that only take {0, 1} values
 
     # Distribution characteristics (estimated from a subsample of features)
-    median_feature_skewness: float     # median |skewness| across features
-    outlier_fraction: float            # fraction of features with >5% IQR outliers
-    near_zero_variance_fraction: float # fraction of features with variance < 1e-6
+    median_feature_skewness: float  # median |skewness| across features
+    outlier_fraction: float  # fraction of features with >5% IQR outliers
+    near_zero_variance_fraction: float  # fraction of features with variance < 1e-6
 
     # Redundancy
-    median_abs_correlation: float      # median |Pearson r| across sampled feature pairs
+    median_abs_correlation: float  # median |Pearson r| across sampled feature pairs
 
     # Signal
-    feature_signal_p90: float          # 90th-percentile |Pearson r| with target
+    feature_signal_p90: float  # 90th-percentile |Pearson r| with target
 
     # Task
-    task: str                          # "classification" or "regression"
+    task: str  # "classification" or "regression"
 
     # Target characteristics (regression)
     y_skewness: float = 0.0
     y_all_positive: bool = False
 
     # Target characteristics (classification)
-    n_minority_class: int = 0   # min(n_positives, n_negatives); 0 for regression
+    n_minority_class: int = 0  # min(n_positives, n_negatives); 0 for regression
 
     def __repr__(self):
         lines = [
@@ -57,7 +57,9 @@ class PreprocessingProfile:
             f"  task={self.task!r}",
         ]
         if self.task == "regression":
-            lines.append(f"  y_skewness={self.y_skewness:.3f}, y_all_positive={self.y_all_positive}")
+            lines.append(
+                f"  y_skewness={self.y_skewness:.3f}, y_all_positive={self.y_all_positive}"
+            )
         if self.task == "classification":
             lines.append(f"  n_minority_class={self.n_minority_class}")
         lines.append(")")
@@ -86,8 +88,8 @@ def _detect_sparse_counts(X, sparsity: float) -> bool:
     is_integer_like = float((nonzero_vals == np.floor(nonzero_vals)).mean()) > 0.95
     if not is_integer_like:
         return False
-    max_val = float(nonzero_vals.max())
-    return sparsity >= 0.85 or max_val <= 10
+    median_val = float(np.median(nonzero_vals))
+    return sparsity >= 0.85 or median_val <= 5
 
 
 def _compute_binary_feature_fraction(X, n_sample: int = 5000) -> float:
@@ -100,8 +102,9 @@ def _compute_binary_feature_fraction(X, n_sample: int = 5000) -> float:
     return float(is_binary.mean())
 
 
-def _estimate_feature_signal(X, y: np.ndarray, n_sample: int = 5000,
-                              p_sample: int = 500):
+def _estimate_feature_signal(
+    X, y: np.ndarray, n_sample: int = 5000, p_sample: int = 500
+):
     n, p = X.shape
     n_s = min(n_sample, n)
     rng = np.random.RandomState(42)
@@ -130,13 +133,22 @@ def _estimate_feature_signal(X, y: np.ndarray, n_sample: int = 5000,
     return float(corrs.mean()), float(np.percentile(corrs, 90))
 
 
-def _compute_median_feature_skewness(X, n_sample: int = 5000,
-                                     p_sample: int = 200) -> float:
+def _compute_median_feature_skewness(
+    X, n_sample: int = 5000, p_sample: int = 200
+) -> float:
     rng = np.random.RandomState(42)
     n_s = min(n_sample, X.shape[0])
     p_s = min(p_sample, X.shape[1])
-    row_idx = rng.choice(X.shape[0], n_s, replace=False) if X.shape[0] > n_s else np.arange(n_s)
-    col_idx = rng.choice(X.shape[1], p_s, replace=False) if X.shape[1] > p_s else np.arange(p_s)
+    row_idx = (
+        rng.choice(X.shape[0], n_s, replace=False)
+        if X.shape[0] > n_s
+        else np.arange(n_s)
+    )
+    col_idx = (
+        rng.choice(X.shape[1], p_s, replace=False)
+        if X.shape[1] > p_s
+        else np.arange(p_s)
+    )
     if hasattr(X, "toarray"):
         Xs = X[row_idx][:, col_idx].toarray().astype(float)
     else:
@@ -153,8 +165,16 @@ def _compute_outlier_fraction(X, n_sample: int = 5000, p_sample: int = 500) -> f
     rng = np.random.RandomState(42)
     n_s = min(n_sample, X.shape[0])
     p_s = min(p_sample, X.shape[1])
-    row_idx = rng.choice(X.shape[0], n_s, replace=False) if X.shape[0] > n_s else np.arange(n_s)
-    col_idx = rng.choice(X.shape[1], p_s, replace=False) if X.shape[1] > p_s else np.arange(p_s)
+    row_idx = (
+        rng.choice(X.shape[0], n_s, replace=False)
+        if X.shape[0] > n_s
+        else np.arange(n_s)
+    )
+    col_idx = (
+        rng.choice(X.shape[1], p_s, replace=False)
+        if X.shape[1] > p_s
+        else np.arange(p_s)
+    )
     if hasattr(X, "toarray"):
         Xs = X[row_idx][:, col_idx].toarray().astype(float)
     else:
@@ -170,8 +190,9 @@ def _compute_outlier_fraction(X, n_sample: int = 5000, p_sample: int = 500) -> f
     return float((frac_per_feature > 0.05).mean())
 
 
-def _compute_near_zero_variance_fraction(X, n_sample: int = 5000,
-                                         threshold: float = 1e-6) -> float:
+def _compute_near_zero_variance_fraction(
+    X, n_sample: int = 5000, threshold: float = 1e-6
+) -> float:
     n_s = min(n_sample, X.shape[0])
     if hasattr(X, "toarray"):
         sample = X[:n_s].toarray().astype(float)
@@ -181,11 +202,16 @@ def _compute_near_zero_variance_fraction(X, n_sample: int = 5000,
     return float((var < threshold).mean())
 
 
-def _compute_median_abs_correlation(X, n_sample: int = 5000,
-                                    n_pairs: int = 50) -> float:
+def _compute_median_abs_correlation(
+    X, n_sample: int = 5000, n_pairs: int = 50
+) -> float:
     rng = np.random.RandomState(42)
     n_s = min(n_sample, X.shape[0])
-    row_idx = rng.choice(X.shape[0], n_s, replace=False) if X.shape[0] > n_s else np.arange(n_s)
+    row_idx = (
+        rng.choice(X.shape[0], n_s, replace=False)
+        if X.shape[0] > n_s
+        else np.arange(n_s)
+    )
     if hasattr(X, "toarray"):
         Xs = X[row_idx].toarray().astype(float)
     else:
@@ -227,9 +253,7 @@ def inspect(X, y, task: str) -> PreprocessingProfile:
     n_samples, n_features = X.shape
 
     if task not in ("classification", "regression"):
-        raise ValueError(
-            f"task must be 'classification' or 'regression', got {task!r}"
-        )
+        raise ValueError(f"task must be 'classification' or 'regression', got {task!r}")
 
     sparsity = _compute_sparsity(X)
     is_sparse_counts = _detect_sparse_counts(X, sparsity)

@@ -86,8 +86,9 @@ def test_batch_lazy_classifier_weighted_proba_and_predict(monkeypatch):
 
         def predict_proba(self, R, X_prep=None):
             # fixed 25/75 blend for sample 0, 60/40 for sample 1
-            p = np.array([0.25 * R[0, 0] + 0.75 * R[0, 1],
-                          0.60 * R[1, 0] + 0.40 * R[1, 1]])
+            p = np.array(
+                [0.25 * R[0, 0] + 0.75 * R[0, 1], 0.60 * R[1, 0] + 0.40 * R[1, 1]]
+            )
             return np.column_stack([1 - p, p])
 
         def save(self, directory):
@@ -169,9 +170,9 @@ def test_lazy_classifier_batches_and_averages_predictions(monkeypatch):
     # batch 2 has train_prior=1.0 (skipped). Compute expected corrected values explicitly.
     pop, tp = 0.6, 0.5
     ratio = (pop / tp) / ((1 - pop) / (1 - tp))
-    p0_corr = (ratio * 0.25) / (1 + ratio * 0.25)   # raw 0.2 from batch idx=0
-    p1_corr = (ratio * (2/3)) / (1 + ratio * (2/3))  # raw 0.4 from batch idx=1
-    p2_corr = 0.6                                      # batch idx=2 train_prior=1.0, no correction
+    p0_corr = (ratio * 0.25) / (1 + ratio * 0.25)  # raw 0.2 from batch idx=0
+    p1_corr = (ratio * (2 / 3)) / (1 + ratio * (2 / 3))  # raw 0.4 from batch idx=1
+    p2_corr = 0.6  # batch idx=2 train_prior=1.0, no correction
     expected = (p0_corr + p1_corr + p2_corr) / 3
     assert np.allclose(proba[:, 1], expected)
     assert np.allclose(proba[:, 0], 1 - expected)

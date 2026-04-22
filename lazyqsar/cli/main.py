@@ -21,6 +21,7 @@ import sys
 # setup
 # ---------------------------------------------------------------------------
 
+
 def _cmd_setup(args):
     if not args.descriptors and not args.fit:
         print("Nothing to do. Use --descriptors, --fit, or both.", file=sys.stderr)
@@ -35,21 +36,42 @@ def _cmd_setup(args):
 
 def _setup_fit():
     import subprocess
-    print("Installing fit dependencies (sklearn, xgboost, scipy, skl2onnx, onnxmltools, joblib)...")
-    subprocess.check_call([
-        sys.executable, "-m", "pip", "install", "--quiet",
-        "scikit-learn", "xgboost", "scipy",
-        "onnxmltools", "onnxconverter-common", "skl2onnx", "joblib",
-    ])
+
+    print(
+        "Installing fit dependencies (sklearn, xgboost, scipy, skl2onnx, onnxmltools, joblib)..."
+    )
+    subprocess.check_call(
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--quiet",
+            "scikit-learn==1.6.1",
+            "xgboost",
+            "scipy",
+            "onnxmltools",
+            "onnxconverter-common==1.16.0",
+            "skl2onnx==1.19.1",
+            "joblib==1.5.1",
+        ]
+    )
     print("Fit dependencies installed.")
 
 
 def _setup_descriptors():
-    from ..utils.setup import install_torch, install_chemprop, install_rdkit
+    from ..utils.setup import (
+        install_torch,
+        install_chemprop,
+        install_rdkit,
+        install_fpsim2,
+    )
     from ..utils.setup import download_chemeleon, download_cddd
+
     install_torch()
     install_chemprop()
     install_rdkit()
+    install_fpsim2()
     download_chemeleon()
     download_cddd()
 
@@ -58,10 +80,12 @@ def _setup_descriptors():
 # fit
 # ---------------------------------------------------------------------------
 
+
 def _cmd_fit(args):
     task = args.task.lower()
     if task == "classification":
         from ..api.classifier_fit import fit
+
         fit(
             data_dir=args.input,
             model_dir=args.output,
@@ -80,8 +104,10 @@ def _cmd_fit(args):
 # predict
 # ---------------------------------------------------------------------------
 
+
 def _cmd_predict(args):
     from ..api.classifier_predict import predict
+
     predict(
         model_dir=args.model,
         input_csv=args.input,
@@ -93,6 +119,7 @@ def _cmd_predict(args):
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -150,9 +177,9 @@ def main():
     p_fit.add_argument(
         "--mode",
         type=str,
-        default="default",
-        choices=["fast", "default", "slow"],
-        help="Descriptor mode (default: default).",
+        default="slow",
+        choices=["fast", "slow"],
+        help="Descriptor mode: fast (Morgan only) or slow (all descriptors). Default: slow.",
     )
     p_fit.add_argument(
         "--models_txt",

@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 
 from ..agnostic import LazyClassifier
-from ..qsar import DESCRIPTOR_TYPES, get_descriptor_type
+from ..qsar import get_descriptor_type
 from ..utils.logging import logger
 
 
@@ -84,7 +84,9 @@ def predict(model_dir: str, input_csv: str, output_csv: str, models_txt: str = N
     input_csv = os.path.abspath(input_csv)
     output_csv = os.path.abspath(output_csv)
 
-    logger.info(f"Running prediction | model: {model_dir} | input: {input_csv} | output: {output_csv}")
+    logger.info(
+        f"Running prediction | model: {model_dir} | input: {input_csv} | output: {output_csv}"
+    )
 
     smiles_list = read_smiles(input_csv)
     logger.info(f"Loaded {len(smiles_list)} SMILES from {input_csv}")
@@ -109,7 +111,9 @@ def predict(model_dir: str, input_csv: str, output_csv: str, models_txt: str = N
         for task_name in tasks:
             model_subdir = os.path.join(model_dir, task_name, featurizer_name)
             if os.path.isdir(model_subdir):
-                logger.debug(f"Predicting task '{task_name}' with descriptor '{featurizer_name}'")
+                logger.debug(
+                    f"Predicting task '{task_name}' with descriptor '{featurizer_name}'"
+                )
                 model = LazyClassifier.load(model_subdir)
                 y_pred = model.predict_proba(X)[:, 1]
                 results[(task_name, featurizer_name)] = y_pred
@@ -130,4 +134,3 @@ def predict(model_dir: str, input_csv: str, output_csv: str, models_txt: str = N
     df = pd.DataFrame(R, columns=tasks)
     df.to_csv(output_csv, index=False)
     logger.success(f"Predictions saved to {output_csv}")
-

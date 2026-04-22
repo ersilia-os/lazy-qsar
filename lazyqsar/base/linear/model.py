@@ -25,27 +25,37 @@ import time as _time
 
 import joblib
 import numpy as np
-import scipy.sparse as sp
-from sklearn.exceptions import NotFittedError
 from sklearn.base import BaseEstimator
-from sklearn.feature_selection import SelectFromModel, SelectKBest, VarianceThreshold, f_classif
+from sklearn.feature_selection import (
+    SelectFromModel,
+    SelectKBest,
+    VarianceThreshold,
+    f_classif,
+)
 from sklearn.linear_model import (
     ElasticNetCV,
     Lasso,
     LogisticRegression,
     LogisticRegressionCV,
-    Ridge,
     RidgeCV,
     SGDClassifier,
     SGDRegressor,
 )
 from sklearn.metrics import balanced_accuracy_score, r2_score, roc_auc_score
-from sklearn.model_selection import GridSearchCV, KFold, StratifiedKFold, StratifiedShuffleSplit
+from sklearn.model_selection import (
+    GridSearchCV,
+    KFold,
+    StratifiedKFold,
+    StratifiedShuffleSplit,
+)
 from sklearn.preprocessing import LabelEncoder
 from sklearn.utils.validation import check_array, check_is_fitted
 
 from lazyqsar.utils.logging import logger
-from lazyqsar.utils.splits import auto_stratified_oof_n_splits, make_stratified_oof_splits
+from lazyqsar.utils.splits import (
+    auto_stratified_oof_n_splits,
+    make_stratified_oof_splits,
+)
 
 
 def _sklearn_kwargs(estimator, **kwargs):
@@ -57,6 +67,7 @@ def _sklearn_kwargs(estimator, **kwargs):
 # ---------------------------------------------------------------------------
 # Regime detection
 # ---------------------------------------------------------------------------
+
 
 def _auto_n_splits(y: np.ndarray) -> int:
     """Backward-compatible wrapper around the shared stratified OOF helper."""
@@ -107,7 +118,9 @@ def _classifier_solver_label(regime: str, calibrated: bool = False) -> str:
     return "unknown"
 
 
-def _learn_balanced_accuracy_cutoff(y_true: np.ndarray, p1: np.ndarray) -> tuple[float, str]:
+def _learn_balanced_accuracy_cutoff(
+    y_true: np.ndarray, p1: np.ndarray
+) -> tuple[float, str]:
     """Learn a deterministic balanced-accuracy cutoff from OOF class-1 probabilities."""
     y_arr = np.asarray(y_true, dtype=int)
     p_arr = np.asarray(p1, dtype=float)
@@ -121,14 +134,21 @@ def _learn_balanced_accuracy_cutoff(y_true: np.ndarray, p1: np.ndarray) -> tuple
     if unique.size == 0:
         return _DEFAULT_DECISION_CUTOFF, "default_0.5"
 
-    candidates = np.unique(np.concatenate([
-        unique,
-        np.array([
-            np.nextafter(unique[0], -np.inf),
-            _DEFAULT_DECISION_CUTOFF,
-            np.nextafter(unique[-1], np.inf),
-        ], dtype=float),
-    ]))
+    candidates = np.unique(
+        np.concatenate(
+            [
+                unique,
+                np.array(
+                    [
+                        np.nextafter(unique[0], -np.inf),
+                        _DEFAULT_DECISION_CUTOFF,
+                        np.nextafter(unique[-1], np.inf),
+                    ],
+                    dtype=float,
+                ),
+            ]
+        )
+    )
 
     best_threshold = _DEFAULT_DECISION_CUTOFF
     best_key = None
@@ -154,6 +174,7 @@ def _detect_regime(n: int, p: int) -> str:
 # Hyperparameter heuristics
 # ---------------------------------------------------------------------------
 
+
 def _default_grid_size(n: int, p: int) -> int:
     """Adaptive grid size: keep small problems thorough, trim expensive searches."""
     work = n * p
@@ -168,7 +189,7 @@ def _default_C_grid(n: int, p: int, n_grid: int | None = None) -> np.ndarray:
     """Adaptive C grid centered on lasso-theory optimal C* ~ sqrt(n)/p."""
     if n_grid is None:
         n_grid = _default_grid_size(n, p)
-    C_center = max(1e-4, (n ** 0.5) / p)
+    C_center = max(1e-4, (n**0.5) / p)
     return np.logspace(np.log10(C_center) - 2, np.log10(C_center) + 2, n_grid)
 
 
@@ -208,6 +229,7 @@ def _sfm_max_features(n: int, p: int) -> int:
 # ---------------------------------------------------------------------------
 # Main classifier
 # ---------------------------------------------------------------------------
+
 
 class BaseLinearClassifier(BaseEstimator):
     """
@@ -312,10 +334,14 @@ class BaseLinearClassifier(BaseEstimator):
         self.n_features_in_ = p
 
         # --- Regime ---
-        self.regime_ = self.regime if self.regime is not None else _detect_classifier_regime(n, p)
+        self.regime_ = (
+            self.regime if self.regime is not None else _detect_classifier_regime(n, p)
+        )
 
         # --- Heuristics ---
-        effective_l1_ratio = self.l1_ratio if self.l1_ratio is not None else _default_l1_ratio(n, p)
+        effective_l1_ratio = (
+            self.l1_ratio if self.l1_ratio is not None else _default_l1_ratio(n, p)
+        )
         effective_cv = self.cv if self.cv is not None else _default_cv(n, y_enc)
         scoring = "roc_auc"
 
@@ -325,7 +351,9 @@ class BaseLinearClassifier(BaseEstimator):
             f"| n={n:,} | p={p:,} | cv={effective_cv} | scoring={scoring}"
         )
 
-        skf = StratifiedKFold(n_splits=effective_cv, shuffle=True, random_state=self.random_state)
+        skf = StratifiedKFold(
+            n_splits=effective_cv, shuffle=True, random_state=self.random_state
+        )
 
         # --- Preprocessing: VarianceThreshold only (scaling is caller's responsibility) ---
         self._vt = VarianceThreshold(threshold=self.variance_threshold)
@@ -352,7 +380,9 @@ class BaseLinearClassifier(BaseEstimator):
         elif self.regime_ == "large":
             self._fit_large(X_vt, y_enc, n, p, skf, scoring, effective_l1_ratio)
         else:
-            raise ValueError(f"Unknown regime: {self.regime_!r}. Expected 'standard', 'high_dim', or 'large'.")
+            raise ValueError(
+                f"Unknown regime: {self.regime_!r}. Expected 'standard', 'high_dim', or 'large'."
+            )
         self.timing_ = {"hparam_search": _time.perf_counter() - _t_hp}
 
         # --- Consolidated feature mask ---
@@ -424,7 +454,9 @@ class BaseLinearClassifier(BaseEstimator):
             proba = np.column_stack([1 - p1, p1])
         return proba
 
-    def calibrate(self, X, y, n_splits: int | None = None, random_state: int = 42) -> "BaseLinearClassifier":
+    def calibrate(
+        self, X, y, n_splits: int | None = None, random_state: int = 42
+    ) -> "BaseLinearClassifier":
         """
         Collect out-of-fold predicted probabilities via stratified k-fold CV,
         then fit an isotonic calibrator on them.
@@ -445,14 +477,19 @@ class BaseLinearClassifier(BaseEstimator):
             layer to new-data predictions.
         """
         from sklearn.isotonic import IsotonicRegression
+
         X = check_array(X, dtype="numeric", accept_sparse="csr")
         y = np.asarray(y, dtype=int)
         n = len(y)
 
-        k, fold_splits = make_stratified_oof_splits(y, n_splits=n_splits, random_state=random_state)
+        k, fold_splits = make_stratified_oof_splits(
+            y, n_splits=n_splits, random_state=random_state
+        )
 
         # Step 1: full fit — hyperparameter search runs ONCE here
-        logger.info(f"BaseLinearClassifier.calibrate: full fit on n={n} (C/alpha search runs once)")
+        logger.info(
+            f"BaseLinearClassifier.calibrate: full fit on n={n} (C/alpha search runs once)"
+        )
         self._fit_raw(X, y)  # sets self.regime_, self._vt, self._sfm, self._estimator
 
         # Extract best hyperparameter from the full-data fit
@@ -474,7 +511,9 @@ class BaseLinearClassifier(BaseEstimator):
 
         fold_times = []
         for fold_idx, (train_idx, val_idx) in enumerate(fold_splits):
-            logger.debug(f"  Fold {fold_idx + 1}/{k}: train={len(train_idx)}  val={len(val_idx)}")
+            logger.debug(
+                f"  Fold {fold_idx + 1}/{k}: train={len(train_idx)}  val={len(val_idx)}"
+            )
             _t_fold = _time.perf_counter()
             X_tr, y_tr = X[train_idx], y[train_idx]
             X_val = X[val_idx]
@@ -485,12 +524,17 @@ class BaseLinearClassifier(BaseEstimator):
             X_val_vt = vt.transform(X_val)
 
             if regime == "standard":
-                fold_est = LogisticRegression(**_sklearn_kwargs(
-                    LogisticRegression,
-                    C=best_C, solver="saga", penalty="l1",
-                    class_weight=self.class_weight,
-                    max_iter=self.max_iter, random_state=self.random_state,
-                ))
+                fold_est = LogisticRegression(
+                    **_sklearn_kwargs(
+                        LogisticRegression,
+                        C=best_C,
+                        solver="saga",
+                        penalty="l1",
+                        class_weight=self.class_weight,
+                        max_iter=self.max_iter,
+                        random_state=self.random_state,
+                    )
+                )
                 fold_est.fit(X_tr_vt, y_tr)
                 oof_raw[val_idx] = fold_est.predict_proba(X_val_vt)[:, 1]
 
@@ -500,20 +544,27 @@ class BaseLinearClassifier(BaseEstimator):
                 fold_sfm.fit(X_tr_vt, y_tr)
                 X_tr_sfm = fold_sfm.transform(X_tr_vt)
                 X_val_sfm = fold_sfm.transform(X_val_vt)
-                fold_est = LogisticRegression(**_sklearn_kwargs(
-                    LogisticRegression,
-                    C=best_C, solver="saga", penalty="elasticnet",
-                    l1_ratio=self._estimator.l1_ratios[0],
-                    class_weight=self.class_weight,
-                    max_iter=self.max_iter, random_state=self.random_state,
-                ))
+                fold_est = LogisticRegression(
+                    **_sklearn_kwargs(
+                        LogisticRegression,
+                        C=best_C,
+                        solver="saga",
+                        penalty="elasticnet",
+                        l1_ratio=self._estimator.l1_ratios[0],
+                        class_weight=self.class_weight,
+                        max_iter=self.max_iter,
+                        random_state=self.random_state,
+                    )
+                )
                 fold_est.fit(X_tr_sfm, y_tr)
                 oof_raw[val_idx] = fold_est.predict_proba(X_val_sfm)[:, 1]
 
             else:  # large
                 fold_est = SGDClassifier(
-                    loss="log_loss", penalty="elasticnet",
-                    l1_ratio=best_l1_ratio, alpha=best_alpha,
+                    loss="log_loss",
+                    penalty="elasticnet",
+                    l1_ratio=best_l1_ratio,
+                    alpha=best_alpha,
                     class_weight=self.class_weight,
                     max_iter=self.max_iter,
                     early_stopping=True,
@@ -550,8 +601,8 @@ class BaseLinearClassifier(BaseEstimator):
             self._ranker_knots = sorted_scores[idx]
         else:
             self._ranker_knots = sorted_scores
-        self.decision_cutoff_, self.decision_cutoff_source_ = _learn_balanced_accuracy_cutoff(
-            y, oof_raw
+        self.decision_cutoff_, self.decision_cutoff_source_ = (
+            _learn_balanced_accuracy_cutoff(y, oof_raw)
         )
         logger.success(
             f"Calibrator fitted ({self.calibrator_method_}, minority={minority_count}) "
@@ -634,8 +685,12 @@ class BaseLinearClassifier(BaseEstimator):
             "n_features_in": self.n_features_in_,
             "classes": self._label_encoder.classes_.tolist(),
             "feature_mask": self.feature_mask_.tolist(),
-            "decision_cutoff": float(getattr(self, "decision_cutoff_", _DEFAULT_DECISION_CUTOFF)),
-            "decision_cutoff_source": getattr(self, "decision_cutoff_source_", "default_0.5"),
+            "decision_cutoff": float(
+                getattr(self, "decision_cutoff_", _DEFAULT_DECISION_CUTOFF)
+            ),
+            "decision_cutoff_source": getattr(
+                self, "decision_cutoff_source_", "default_0.5"
+            ),
         }
         if hasattr(self, "calibrator_"):
             if self.calibrator_method_ == "isotonic":
@@ -671,21 +726,27 @@ class BaseLinearClassifier(BaseEstimator):
 
     def _fit_standard(self, X, y, n, p, skf, scoring):
         self._sfm = None
-        C_grid = np.asarray(self.C_values) if self.C_values is not None else _default_C_grid(n, p)
+        C_grid = (
+            np.asarray(self.C_values)
+            if self.C_values is not None
+            else _default_C_grid(n, p)
+        )
 
-        self._estimator = LogisticRegressionCV(**_sklearn_kwargs(
-            LogisticRegressionCV,
-            Cs=C_grid,
-            cv=skf,
-            solver="saga",
-            penalty="l1",
-            class_weight=self.class_weight,
-            max_iter=self.max_iter,
-            scoring=scoring,
-            n_jobs=self.n_jobs,
-            refit=True,
-            random_state=self.random_state,
-        ))
+        self._estimator = LogisticRegressionCV(
+            **_sklearn_kwargs(
+                LogisticRegressionCV,
+                Cs=C_grid,
+                cv=skf,
+                solver="saga",
+                penalty="l1",
+                class_weight=self.class_weight,
+                max_iter=self.max_iter,
+                scoring=scoring,
+                n_jobs=self.n_jobs,
+                refit=True,
+                random_state=self.random_state,
+            )
+        )
         self._estimator.fit(X, y)
 
     def _fit_high_dim(self, X, y, n, p, skf, scoring, l1_ratio):
@@ -701,32 +762,47 @@ class BaseLinearClassifier(BaseEstimator):
             self._sfm.fit(X, y)
             X_sfm = self._sfm.transform(X)
 
-        C_grid = np.asarray(self.C_values) if self.C_values is not None else _default_C_grid(n, X_sfm.shape[1])
+        C_grid = (
+            np.asarray(self.C_values)
+            if self.C_values is not None
+            else _default_C_grid(n, X_sfm.shape[1])
+        )
 
-        self._estimator = LogisticRegressionCV(**_sklearn_kwargs(
-            LogisticRegressionCV,
-            Cs=C_grid,
-            cv=skf,
-            solver="saga",
-            penalty="elasticnet",
-            l1_ratios=[l1_ratio],
-            class_weight=self.class_weight,
-            max_iter=self.max_iter,
-            scoring=scoring,
-            n_jobs=self.n_jobs,
-            refit=True,
-            random_state=self.random_state,
-        ))
+        self._estimator = LogisticRegressionCV(
+            **_sklearn_kwargs(
+                LogisticRegressionCV,
+                Cs=C_grid,
+                cv=skf,
+                solver="saga",
+                penalty="elasticnet",
+                l1_ratios=[l1_ratio],
+                class_weight=self.class_weight,
+                max_iter=self.max_iter,
+                scoring=scoring,
+                n_jobs=self.n_jobs,
+                refit=True,
+                random_state=self.random_state,
+            )
+        )
         self._estimator.fit(X_sfm, y)
 
     def _fit_large(self, X, y, n, p, skf, scoring, l1_ratio):
         self._sfm = None
-        alpha_grid = np.asarray(self.alpha_values) if self.alpha_values is not None else _default_alpha_grid(n, p)
+        alpha_grid = (
+            np.asarray(self.alpha_values)
+            if self.alpha_values is not None
+            else _default_alpha_grid(n, p)
+        )
 
         # Tune alpha on a stratified subsample
         sub_size = min(self.tuning_subsample, n)
         if sub_size < n:
-            sss = StratifiedShuffleSplit(n_splits=1, test_size=None, train_size=sub_size, random_state=self.random_state)
+            sss = StratifiedShuffleSplit(
+                n_splits=1,
+                test_size=None,
+                train_size=sub_size,
+                random_state=self.random_state,
+            )
             sub_idx, _ = next(sss.split(X, y))
             X_sub, y_sub = X[sub_idx], y[sub_idx]
         else:
@@ -749,7 +825,9 @@ class BaseLinearClassifier(BaseEstimator):
         sub_cv = min(skf.n_splits, sub_min_class)
         if sub_cv < 2:
             sub_cv = 2
-        sub_skf = StratifiedKFold(n_splits=sub_cv, shuffle=True, random_state=self.random_state)
+        sub_skf = StratifiedKFold(
+            n_splits=sub_cv, shuffle=True, random_state=self.random_state
+        )
 
         gs = GridSearchCV(
             estimator=base_sgd,
@@ -782,6 +860,7 @@ class BaseLinearClassifier(BaseEstimator):
 # Regression helper
 # ---------------------------------------------------------------------------
 
+
 def _cv_from_n(n: int) -> int:
     """Adaptive CV folds for regression (no class constraint)."""
     if n < 200:
@@ -798,6 +877,7 @@ def _regression_scoring(y: np.ndarray) -> str:
     more robust to outliers than R². Otherwise R².
     """
     from scipy.stats import skew as scipy_skew
+
     sk = abs(float(scipy_skew(y)))
     return "neg_mean_absolute_error" if sk > 1.0 else "r2"
 
@@ -814,7 +894,7 @@ def _regression_sample_weight(y: np.ndarray, n_bins: int = 10) -> np.ndarray:
     # Quantile binning handles skewed distributions better than equal-width.
     quantiles = np.linspace(0, 100, n_bins + 1)
     bin_edges = np.percentile(y, quantiles)
-    bin_edges = np.unique(bin_edges)          # collapse duplicates (discrete-ish targets)
+    bin_edges = np.unique(bin_edges)  # collapse duplicates (discrete-ish targets)
     n_unique_bins = len(bin_edges) - 1
     if n_unique_bins < 2:
         # Target has essentially one value; all weights equal.
@@ -826,6 +906,7 @@ def _regression_sample_weight(y: np.ndarray, n_bins: int = 10) -> np.ndarray:
 # ---------------------------------------------------------------------------
 # Linear regressor
 # ---------------------------------------------------------------------------
+
 
 class BaseLinearRegressor(BaseEstimator):
     """
@@ -908,11 +989,15 @@ class BaseLinearRegressor(BaseEstimator):
         self.regime_ = self.regime if self.regime is not None else _detect_regime(n, p)
 
         # --- Heuristics ---
-        effective_l1_ratio = self.l1_ratio if self.l1_ratio is not None else _default_l1_ratio(n, p)
+        effective_l1_ratio = (
+            self.l1_ratio if self.l1_ratio is not None else _default_l1_ratio(n, p)
+        )
         effective_cv = self.cv if self.cv is not None else _cv_from_n(n)
         scoring = _regression_scoring(y)
 
-        kf = KFold(n_splits=max(2, effective_cv), shuffle=True, random_state=self.random_state)
+        kf = KFold(
+            n_splits=max(2, effective_cv), shuffle=True, random_state=self.random_state
+        )
 
         # --- Imbalance weights: inverse-frequency over quantile bins ---
         sample_weight = _regression_sample_weight(y)
@@ -937,9 +1022,13 @@ class BaseLinearRegressor(BaseEstimator):
         if self.regime_ == "standard":
             self._fit_standard(X_vt, y, n, p, kf, scoring, sample_weight)
         elif self.regime_ == "high_dim":
-            self._fit_high_dim(X_vt, y, n, p, kf, scoring, effective_l1_ratio, sample_weight)
+            self._fit_high_dim(
+                X_vt, y, n, p, kf, scoring, effective_l1_ratio, sample_weight
+            )
         elif self.regime_ == "large":
-            self._fit_large(X_vt, y, n, p, kf, scoring, effective_l1_ratio, sample_weight)
+            self._fit_large(
+                X_vt, y, n, p, kf, scoring, effective_l1_ratio, sample_weight
+            )
         else:
             raise ValueError(f"Unknown regime: {self.regime_!r}.")
 
@@ -1051,7 +1140,11 @@ class BaseLinearRegressor(BaseEstimator):
 
     def _fit_standard(self, X, y, n, p, kf, scoring, sample_weight):
         self._sfm = None
-        alpha_grid = np.asarray(self.alpha_values) if self.alpha_values is not None else _default_alpha_grid(n, p)
+        alpha_grid = (
+            np.asarray(self.alpha_values)
+            if self.alpha_values is not None
+            else _default_alpha_grid(n, p)
+        )
 
         self._estimator = RidgeCV(
             alphas=alpha_grid,
@@ -1064,16 +1157,24 @@ class BaseLinearRegressor(BaseEstimator):
         # Pre-filter with Lasso to reduce dimensionality
         max_feat = _sfm_max_features(n, p)
         pre_lasso = Lasso(alpha=1.0, max_iter=self.max_iter)
-        self._sfm = SelectFromModel(estimator=pre_lasso, max_features=max_feat, threshold=-np.inf)
+        self._sfm = SelectFromModel(
+            estimator=pre_lasso, max_features=max_feat, threshold=-np.inf
+        )
         self._sfm.fit(X, y, sample_weight=sample_weight)
         X_sfm = self._sfm.transform(X)
 
         if X_sfm.shape[1] == 0:
-            self._sfm = SelectFromModel(estimator=pre_lasso, max_features=1, threshold=-np.inf)
+            self._sfm = SelectFromModel(
+                estimator=pre_lasso, max_features=1, threshold=-np.inf
+            )
             self._sfm.fit(X, y, sample_weight=sample_weight)
             X_sfm = self._sfm.transform(X)
 
-        alpha_grid = np.asarray(self.alpha_values) if self.alpha_values is not None else _default_alpha_grid(n, X_sfm.shape[1])
+        alpha_grid = (
+            np.asarray(self.alpha_values)
+            if self.alpha_values is not None
+            else _default_alpha_grid(n, X_sfm.shape[1])
+        )
 
         self._estimator = ElasticNetCV(
             alphas=alpha_grid,
@@ -1086,7 +1187,11 @@ class BaseLinearRegressor(BaseEstimator):
 
     def _fit_large(self, X, y, n, p, kf, scoring, l1_ratio, sample_weight):
         self._sfm = None
-        alpha_grid = np.asarray(self.alpha_values) if self.alpha_values is not None else _default_alpha_grid(n, p)
+        alpha_grid = (
+            np.asarray(self.alpha_values)
+            if self.alpha_values is not None
+            else _default_alpha_grid(n, p)
+        )
 
         # Tune alpha on a random subsample
         sub_size = min(self.tuning_subsample, n)
@@ -1142,6 +1247,7 @@ class BaseLinearRegressor(BaseEstimator):
 # Artifact: load a saved model for inference
 # ---------------------------------------------------------------------------
 
+
 def _apply_calibrator_artifact(proba: np.ndarray, cal: dict) -> np.ndarray:
     """Apply a saved calibrator dict to a (n, 2) probability array."""
     raw_p1 = proba[:, 1]
@@ -1168,8 +1274,8 @@ class BaseLinearArtifact:
     """
 
     def __init__(self):
-        self._session = None   # onnxruntime.InferenceSession (onnx path)
-        self._bundle = None    # dict with vt / sfm / estimator (joblib path)
+        self._session = None  # onnxruntime.InferenceSession (onnx path)
+        self._bundle = None  # dict with vt / sfm / estimator (joblib path)
         self._format: str = ""
         self.metadata: dict = {}
         self.task: str = ""
@@ -1206,11 +1312,16 @@ class BaseLinearArtifact:
         artifact._format = fmt
 
         artifact._cal = artifact.metadata.get("calibrator", None)
-        artifact.decision_cutoff = float(artifact.metadata.get("decision_cutoff", _DEFAULT_DECISION_CUTOFF))
-        artifact.decision_cutoff_source = artifact.metadata.get("decision_cutoff_source", "default_0.5")
+        artifact.decision_cutoff = float(
+            artifact.metadata.get("decision_cutoff", _DEFAULT_DECISION_CUTOFF)
+        )
+        artifact.decision_cutoff_source = artifact.metadata.get(
+            "decision_cutoff_source", "default_0.5"
+        )
 
         if fmt == "onnx":
             import onnxruntime as rt
+
             onnx_path = os.path.join(directory, "linear.onnx")
             if not os.path.isfile(onnx_path):
                 raise FileNotFoundError(f"No ONNX model found at {onnx_path!r}")
@@ -1249,7 +1360,9 @@ class BaseLinearArtifact:
                 prob_raw = outputs[1]
                 if isinstance(prob_raw, list):
                     # list of dicts [{0: p0, 1: p1}, …]
-                    proba = np.array([[d[k] for k in sorted(d)] for d in prob_raw], dtype=np.float64)
+                    proba = np.array(
+                        [[d[k] for k in sorted(d)] for d in prob_raw], dtype=np.float64
+                    )
                 else:
                     proba = np.asarray(prob_raw, dtype=np.float64)
                     if proba.ndim == 1:
@@ -1277,7 +1390,9 @@ class BaseLinearArtifact:
     def predict(self, X, cutoff: float | None = None) -> np.ndarray:
         """Return class predictions using the stored decision cutoff by default."""
         if self.task != "classification":
-            raise RuntimeError("predict() is only available for classification artifacts.")
+            raise RuntimeError(
+                "predict() is only available for classification artifacts."
+            )
         threshold = self.decision_cutoff if cutoff is None else float(cutoff)
         classes = np.asarray(self.metadata.get("classes", [0, 1]))
         return classes[(self.run(X)[:, 1] >= threshold).astype(int)]

@@ -33,6 +33,7 @@ RNG = np.random.RandomState(7)
 # Data helpers
 # ---------------------------------------------------------------------------
 
+
 def make_clf_data(n=300, p=40, seed=7):
     rng = np.random.RandomState(seed)
     X = rng.randn(n, p).astype(np.float32)
@@ -58,8 +59,8 @@ def make_fingerprint_data(n=500, p=512, density=0.05, seed=7):
 # PreprocessingProfile via inspect()
 # ---------------------------------------------------------------------------
 
-class TestPreprocessingProfile:
 
+class TestPreprocessingProfile:
     def test_profile_fields_clf(self):
         X, y = make_clf_data(n=300, p=40)
         prof = inspect(X, y, task="classification")
@@ -97,8 +98,8 @@ class TestPreprocessingProfile:
 # BaseClassifierPreprocessor: fit + transform
 # ---------------------------------------------------------------------------
 
-class TestBaseClassifierPreprocessor:
 
+class TestBaseClassifierPreprocessor:
     def test_fit_transform_shape(self):
         X, y = make_clf_data(n=300, p=40)
         prep = BaseClassifierPreprocessor()
@@ -184,8 +185,8 @@ class TestBaseClassifierPreprocessor:
 # BaseRegressorPreprocessor: fit + transform
 # ---------------------------------------------------------------------------
 
-class TestBaseRegressorPreprocessor:
 
+class TestBaseRegressorPreprocessor:
     def test_fit_transform_shape(self):
         X, y = make_reg_data(n=300, p=40)
         prep = BaseRegressorPreprocessor()
@@ -205,8 +206,8 @@ class TestBaseRegressorPreprocessor:
 # ONNX save / load via BasePreprocessorArtifact
 # ---------------------------------------------------------------------------
 
-class TestBasePreprocessorArtifact:
 
+class TestBasePreprocessorArtifact:
     def test_onnx_run_shape_matches_transform(self):
         X, y = make_clf_data(n=300, p=40)
         prep = BaseClassifierPreprocessor()
@@ -248,6 +249,7 @@ class TestBasePreprocessorArtifact:
 
     def test_load_missing_model_file_raises(self):
         import json
+
         with tempfile.TemporaryDirectory() as d:
             meta = {
                 "task": "classification",

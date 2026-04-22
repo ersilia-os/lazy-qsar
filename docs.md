@@ -20,21 +20,22 @@ The user provides a list of SMILES strings and binary labels. The library comput
 
 | Mode | Descriptors computed |
 |---|---|
-| `"fast"` | RDKit physicochemical (200 features) + Morgan fingerprints (2048 bits) |
-| `"default"` | Chemeleon (DL embedding) + RDKit physicochemical + CDDD (DL embedding) |
-| `"slow"` | Chemeleon + Morgan + RDKit + CDDD |
+| `"fast"` | Morgan fingerprints (2048 bits) |
+| `"slow"` | CDDD + Chemeleon + CLAMP + Morgan + RDKit physicochemical |
 
-**Critically: the descriptors are never concatenated.** Each descriptor type produces its own independent `LazyClassifier` trained on its own feature matrix. At prediction time, each model produces its own `P(y=1)` estimate and the final output is their **uniform average**. The ensemble operates at the prediction level, not the feature level.
+**Critically: the descriptors are never concatenated.** Each descriptor type produces its own independent `LazyClassifier` trained on its own feature matrix. At prediction time, each model produces its own `P(y=1)` estimate and the final output is their **AUC-weighted average**. Weights combine a global skill score (from OOF and proxy AUCs) with a per-sample reliability score derived from rank-based prediction confidence. The ensemble operates at the prediction level, not the feature level.
 
 ```
 SMILES
-  ├── RDKit features  →  [full LazyClassifier]  →  P(y=1)_rdkit
-  ├── Morgan features →  [full LazyClassifier]  →  P(y=1)_morgan
-  └── Chemeleon       →  [full LazyClassifier]  →  P(y=1)_chemeleon
-                                                         ↓
-                                               uniform average
-                                                         ↓
-                                                  final P(y=1)
+  ├── Morgan features →  [full LazyClassifier]  →  P(y=1)_morgan   ─┐
+  ├── RDKit features  →  [full LazyClassifier]  →  P(y=1)_rdkit    ─┤
+  ├── Chemeleon       →  [full LazyClassifier]  →  P(y=1)_chemeleon─┤
+  ├── CLAMP           →  [full LazyClassifier]  →  P(y=1)_clamp    ─┤  W(i,j) weights
+  └── CDDD            →  [full LazyClassifier]  →  P(y=1)_cddd     ─┘
+                                                          ↓
+                                              AUC+reliability-weighted average
+                                                          ↓
+                                                   final P(y=1)
 ```
 
 Descriptor computation results are cached by MD5 hash of the SMILES list, so repeated calls with the same molecules skip recomputation.
@@ -403,7 +404,7 @@ All models default to **ONNX format** (opset 16, IR version 10). ONNX artifacts 
 
 **The decision threshold in `predict()` is not 0.5.** It is the value that maximises balanced accuracy on OOF predictions from the training set. On imbalanced datasets this threshold can be substantially below 0.5. For any ranking task or threshold sweep, use `predict_proba()[:,1]` directly and define your own cutoff externally.
 
-**In SMILES mode, each descriptor type is a completely separate model.** The final prediction is the uniform average of all descriptor-type predictions. Using `mode="default"` (3 descriptors) means 3 full training runs, 3 full ensembles, and 3 separate prediction outputs averaged together. It does not mean a 3× larger feature matrix.
+**In SMILES mode, each descriptor type is a completely separate model.** The final prediction is an AUC-weighted average of all descriptor-type predictions. Using `mode="slow"` (5 descriptors) means 5 full training runs, 5 full ensembles, and 5 separate prediction outputs combined via weighted averaging. It does not mean a 5× larger feature matrix.
 
 **`predict_rank()` is relative to the training set, not absolute.** A rank of 0.9 means the compound scored higher than 90% of the training OOF samples. It is not a probability and is not comparable across models trained on different datasets.
 

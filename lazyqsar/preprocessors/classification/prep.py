@@ -1,12 +1,10 @@
 from lazyqsar.base.preprocessing import (
     BaseClassifierPreprocessor as ClassifierPreprocessor,
-    BasePreprocessorArtifact as _PreprocessorArtifactBase,
 )
 from lazyqsar.utils.logging import logger
 
 
 class Preprocessor(object):
-
     def __init__(self):
         self.preprocessor = ClassifierPreprocessor()
 
@@ -26,4 +24,3 @@ class Preprocessor(object):
     def save(self, directory):
         self.preprocessor.save(directory, onnx=True)
         logger.debug(f"Preprocessor saved to {directory}")
-
