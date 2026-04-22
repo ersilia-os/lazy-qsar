@@ -26,10 +26,14 @@ ONNX export notes
   LinearSVC → always compact: ONNX stores only weights + bias (O(n_features)).
   Kernel SVC → ONNX stores all support vectors (O(n_sv * n_features)).
 
+  ONNX size pre-flight: kernel presets are skipped during portfolio evaluation
+    when n_samples × n_features × 4 bytes already exceeds _ONNX_MAX_BYTES.
+    This avoids fitting models that cannot be exported within budget.
+
   After phase 2, the ONNX size guard checks kernel SVC models:
-    if n_sv * n_features * 4 > _ONNX_MAX_BYTES (15 MB):
+    if n_sv * n_features * 4 > _ONNX_MAX_BYTES (5 MB):
       Halve C and refit, up to _ONNX_MAX_RETRIES (3) times.
-      If still too large: fall back to joblib (sets _onnx_fallback_=True).
+      If still too large: retrain with LinearSVC (always fits in budget).
 
   The ONNX model outputs decision function scores (NOT calibrated probabilities).
   At inference, sigmoid is applied to map scores to [0, 1], then the OOF-fitted
@@ -79,9 +83,9 @@ _PORTFOLIO_MIN_GAIN = 0.005
 # Skip preset if cost > this multiple of the default preset cost
 _MAX_COST_MULTIPLIER = 20
 
-# ONNX size budget in bytes (15 MB).  Only applies to kernel SVC; LinearSVC
-# is always negligibly small.
-_ONNX_MAX_BYTES = 15_000_000
+# ONNX size budget in bytes (5 MB).  Only applies to kernel SVC; LinearSVC
+# is always negligibly small (O(n_features) weights only).
+_ONNX_MAX_BYTES = 5_000_000
 _ONNX_MAX_RETRIES = 3
 
 _CALIBRATION_ISOTONIC_MIN_MINORITY = 500
@@ -282,6 +286,22 @@ def _portfolio_select_svc(X, y: np.ndarray, profile: DatasetProfile,
     skipped: list = []
 
     for name, params in candidates:
+        # Pre-flight ONNX size check: skip kernel presets whose worst-case ONNX
+        # (all n_samples as support vectors) already exceeds the budget.
+        # Uses profile.n_samples (full dataset) because the guard targets the
+        # final model, not just the 90% validation split.
+        if not params.get("use_linear", False):
+            worst_case = profile.n_samples * n_features * 4
+            if worst_case > _ONNX_MAX_BYTES:
+                logger.debug(
+                    f"[portfolio] {name:12s}: skipped "
+                    f"(worst-case ONNX {worst_case / 1e6:.1f} MB "
+                    f"> budget {_ONNX_MAX_BYTES / 1e6:.0f} MB)"
+                )
+                scores[name] = float("nan")
+                skipped.append(name)
+                continue
+
         # Cost filter: skip non-mandatory presets that exceed the budget
         cost = _svc_cost(params, n_tr, n_features)
         if name not in ("default", "heuristic") and cost > budget:
@@ -354,19 +374,27 @@ def _to_onnx(svc, path: str, n_features: int) -> None:
     """
     Export SVC or LinearSVC to ONNX via skl2onnx.
 
-    The exported model outputs decision function scores (NOT probabilities).
+    The exported model outputs raw decision function scores (NOT probabilities).
     At inference, sigmoid is applied in the artifact to obtain [0,1] scores,
     then the stored calibrator converts these to calibrated probabilities.
 
-    Output layout (opset 15, zipmap=False):
+    Output layout (opset 15):
       output[0]: int64 labels, shape (n,)
-      output[1]: float32 scores, shape (n, 2) — column 1 = class-1 decision score
+      output[1]: float32 scores — column 1 (or the only column) = class-1 score
+
+    Options differ by estimator type:
+      SVC (kernel)  — zipmap=False: suppresses dict output, returns float array
+      LinearSVC     — raw_scores=True: returns decision function scores (not labels)
     """
     from skl2onnx import convert_sklearn
     from skl2onnx.common.data_types import FloatTensorType
+    from sklearn.svm import LinearSVC as _LinearSVC
 
     initial_types = [("float_input", FloatTensorType([None, n_features]))]
-    options = {id(svc): {"zipmap": False}}
+    if isinstance(svc, _LinearSVC):
+        options = {id(svc): {"raw_scores": True}}
+    else:
+        options = {id(svc): {"zipmap": False}}
     onnx_model = convert_sklearn(
         svc,
         initial_types=initial_types,
@@ -406,7 +434,6 @@ class BaseSVCClassifier(BaseEstimator, ClassifierMixin):
     svc_ : SVC or LinearSVC    — fitted sklearn estimator
     classes_ : ndarray
     _use_linear_ : bool        — True when LinearSVC was used
-    _onnx_fallback_ : bool     — True when joblib fallback triggered by size guard
     calibrator_ : fitted calibrator (if calibrated=True)
     calibrator_method_ : str   — "isotonic" or "platt"
     oof_probas_ : ndarray      — calibrated OOF class-1 probabilities
@@ -484,8 +511,9 @@ class BaseSVCClassifier(BaseEstimator, ClassifierMixin):
         self.svc_ = svc
         self.timing_["phase2_refit"] = _time.perf_counter() - _t_p2
 
-        # ONNX size guard (kernel SVC only)
-        self._onnx_fallback_ = False
+        # ONNX size guard (kernel SVC only).
+        # Halve C up to _ONNX_MAX_RETRIES times; if still over budget, switch to
+        # LinearSVC which is O(n_features) and always fits within any budget.
         if not self._use_linear_:
             for _retry in range(_ONNX_MAX_RETRIES):
                 size = _onnx_size_bytes(self.svc_, n_features)
@@ -506,9 +534,23 @@ class BaseSVCClassifier(BaseEstimator, ClassifierMixin):
                 if size > _ONNX_MAX_BYTES:
                     logger.warning(
                         f"ONNX size guard exhausted after {_ONNX_MAX_RETRIES} retries "
-                        f"({size / 1e6:.1f} MB). Falling back to joblib."
+                        f"({size / 1e6:.1f} MB > {_ONNX_MAX_BYTES / 1e6:.0f} MB). "
+                        f"Switching to LinearSVC."
                     )
-                    self._onnx_fallback_ = True
+                    linear_params = {
+                        "use_linear": True,
+                        "C": min(self.params_["C"], 10.0),
+                        "class_weight": self.params_.get("class_weight", "balanced"),
+                        "max_iter": self.params_.get("max_iter", 5_000),
+                        "tol": self.params_.get("tol", 1e-3),
+                        "random_state": self.random_state,
+                    }
+                    linear_svc = _make_svc(linear_params)
+                    linear_svc.fit(X, y)
+                    self.svc_ = linear_svc
+                    self.params_ = linear_params
+                    self._use_linear_ = True
+                    self.preset_name_ = self.preset_name_ + "+linear_guard"
 
         self.decision_cutoff_ = _DEFAULT_DECISION_CUTOFF
         self.decision_cutoff_source_ = "default_0.5"
@@ -675,32 +717,20 @@ class BaseSVCClassifier(BaseEstimator, ClassifierMixin):
         check_is_fitted(self, "svc_")
         _to_onnx(self.svc_, path, self.profile_.n_features)
 
-    def save(self, directory: str, onnx: bool = True) -> None:
+    def save(self, directory: str) -> None:
         """
         Save the trained model to a directory.
 
-        Writes svc.json (fit metadata) plus either svc.onnx or svc.joblib.
-        When the ONNX size guard was triggered (_onnx_fallback_=True), joblib
-        is used regardless of the onnx argument.
+        Always writes svc.onnx + svc.json.  The ONNX size guard in _fit_raw()
+        guarantees the model fits within _ONNX_MAX_BYTES — either by reducing C
+        or by switching to LinearSVC — so joblib is never needed.
         """
         import dataclasses
-        import joblib
 
         check_is_fitted(self, "svc_")
         os.makedirs(directory, exist_ok=True)
-
-        use_onnx = onnx and not getattr(self, "_onnx_fallback_", False)
-        if use_onnx:
-            try:
-                self.to_onnx(os.path.join(directory, "svc.onnx"))
-                fmt = "onnx"
-            except Exception as exc:
-                logger.warning(f"ONNX export failed ({exc}); falling back to joblib.")
-                joblib.dump(self.svc_, os.path.join(directory, "svc.joblib"))
-                fmt = "joblib"
-        else:
-            joblib.dump(self.svc_, os.path.join(directory, "svc.joblib"))
-            fmt = "joblib"
+        self.to_onnx(os.path.join(directory, "svc.onnx"))
+        fmt = "onnx"
 
         profile_dict = (
             dataclasses.asdict(self.profile_)
@@ -752,7 +782,7 @@ class BaseSVCArtifact:
     """
     Inference-only loader for a model saved by BaseSVCClassifier.save().
 
-    Only requires numpy and onnxruntime — no sklearn or SVC at inference time.
+    Only requires numpy and onnxruntime — no sklearn at inference time.
 
     The ONNX model outputs raw decision function scores.  This artifact applies:
       1. sigmoid(score)          → pre-calibration [0,1] probability (predict_score)
@@ -761,8 +791,6 @@ class BaseSVCArtifact:
 
     def __init__(self):
         self._session = None
-        self._estimator = None  # fallback: joblib-loaded sklearn estimator
-        self._format = "onnx"
         self._input_name = ""
         self.metadata: dict = {}
         self._cal = None
@@ -777,55 +805,39 @@ class BaseSVCArtifact:
         self = cls.__new__(cls)
         with open(json_path) as f:
             self.metadata = json.load(f)
-        self._format = self.metadata.get("format", "onnx")
+        fmt = self.metadata.get("format", "onnx")
+        if fmt != "onnx":
+            raise ValueError(
+                f"Unsupported SVC artifact format {fmt!r} in {directory!r}. "
+                "Only 'onnx' is supported."
+            )
         self._cal = self.metadata.get("calibrator", None)
         self._ranker = self.metadata.get("ranker", None)
         self.decision_cutoff = float(
             self.metadata.get("decision_cutoff", _DEFAULT_DECISION_CUTOFF)
         )
-
-        if self._format == "onnx":
-            import onnxruntime as rt
-            onnx_path = os.path.join(directory, "svc.onnx")
-            if not os.path.isfile(onnx_path):
-                raise FileNotFoundError(f"svc.onnx not found in {directory!r}")
-            self._session = rt.InferenceSession(
-                onnx_path, providers=["CPUExecutionProvider"]
-            )
-            self._input_name = self._session.get_inputs()[0].name
-            self._estimator = None
-        else:
-            import joblib
-            joblib_path = os.path.join(directory, "svc.joblib")
-            if not os.path.isfile(joblib_path):
-                raise FileNotFoundError(f"svc.joblib not found in {directory!r}")
-            self._session = None
-            self._estimator = joblib.load(joblib_path)
-
+        import onnxruntime as rt
+        onnx_path = os.path.join(directory, "svc.onnx")
+        if not os.path.isfile(onnx_path):
+            raise FileNotFoundError(f"svc.onnx not found in {directory!r}")
+        self._session = rt.InferenceSession(
+            onnx_path, providers=["CPUExecutionProvider"]
+        )
+        self._input_name = self._session.get_inputs()[0].name
         return self
 
     def _raw_scores(self, X: np.ndarray) -> np.ndarray:
-        """
-        Return shape-(n,) raw decision function scores from ONNX or joblib.
-
-        For ONNX: normalize the score output (handles (n,), (n,1), or (n,2) shapes).
-        """
+        """Return shape-(n,) raw decision function scores from ONNX."""
         X_f32 = np.asarray(X, dtype=np.float32)
-        if self._format == "onnx":
-            outputs = self._session.run(None, {self._input_name: X_f32})
-            raw = np.asarray(outputs[1], dtype=np.float64)
-            if raw.ndim == 1:
-                return raw
-            if raw.ndim == 2 and raw.shape[1] == 1:
-                return raw.ravel()
-            if raw.ndim == 2:
-                # Shape (n, 2): column 1 = class-1 decision score
-                return raw[:, 1]
+        outputs = self._session.run(None, {self._input_name: X_f32})
+        raw = np.asarray(outputs[1], dtype=np.float64)
+        if raw.ndim == 1:
+            return raw
+        if raw.ndim == 2 and raw.shape[1] == 1:
             return raw.ravel()
-        else:
-            return np.asarray(
-                self._estimator.decision_function(X_f32), dtype=np.float64
-            ).ravel()
+        if raw.ndim == 2:
+            return raw[:, 1]
+        return raw.ravel()
 
     def run(self, X) -> np.ndarray:
         """

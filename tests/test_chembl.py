@@ -31,6 +31,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import average_precision_score, brier_score_loss, roc_auc_score
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import MaxAbsScaler
+from sklearn.svm import LinearSVC
 from xgboost import XGBClassifier
 
 import lazyqsar
@@ -76,11 +77,13 @@ def load_dataset(row: pd.Series, raw_dir: str) -> pd.DataFrame:
                 ]
 
 
-DESCRIPTORS_ALL = ["cddd", "chemeleon", "morgan", "rdkit"]
+DESCRIPTORS_ALL = ["cddd", "chemeleon", "clamp", "morgan", "rdkit"]
+HEADS_ALL = ["lr", "xgb", "rf", "svc"]
 ONNX_STEM_MAP = {
     "randomforest": "rf",
     "linear": "lr",
     "xgboost": "xgb",
+    "svc": "svc",
     "preprocessor": "preprocessor",
 }
 
@@ -108,7 +111,7 @@ def _onnx_sizes_kb(model_dir: str) -> dict[tuple[str, str], float]:
     for descriptor in DESCRIPTORS_ALL:
         parts = [
             sizes[(descriptor, m)]
-            for m in ("rf", "lr", "xgb", "preprocessor")
+            for m in ("rf", "lr", "xgb", "svc", "preprocessor")
             if (descriptor, m) in sizes
         ]
         if parts:
@@ -143,7 +146,7 @@ def _extract_lq_diagnostics(model: LazyClassifierQSAR) -> dict:
                     except Exception:
                         pass
                 t = getattr(hm, "timing_", {})
-                if head_name == "xgb":
+                if head_name in ("xgb", "svc"):
                     fit_times[head_name] = (
                         fit_times.get(head_name, 0.0)
                         + t.get("portfolio_select", 0.0)
@@ -210,15 +213,6 @@ def _calibration_y(y_true: np.ndarray, proba: np.ndarray) -> str:
         parts.append(f"{float(y_true[mask].mean()):.4f}" if mask.sum() > 0 else "nan")
     return ";".join(parts)
 
-
-def _aggregate_predict(model, smiles_list: list, method: str) -> np.ndarray:
-    """Aggregate a LazyClassifier predict method across descriptor heads (mirrors predict_proba)."""
-    vals = []
-    for i in range(len(model.descriptors)):
-        X = model._transform_cached(i, smiles_list)
-        vals.append(getattr(model.models[i], method)(X=X)[:, 1])
-    v1 = np.average(np.array(vals), axis=0, weights=model.weights)
-    return np.vstack((1 - v1, v1)).T
 
 
 def _class_dist_stats(y_true: np.ndarray, scores1: np.ndarray, prefix: str) -> dict:
@@ -305,7 +299,7 @@ def _print_summary(
     # ONNX sizes
     active = sorted({d for d, _ in onnx_sizes})
     if active:
-        onnx_cols = ["rf", "lr", "xgb", "pre", "total"]
+        onnx_cols = ["rf", "lr", "xgb", "svc", "pre", "total"]
         print(
             f"\n  {'ONNX size (KB)':<16}" + "".join(f"  {m:>{CW}}" for m in onnx_cols)
         )
@@ -313,20 +307,21 @@ def _print_summary(
         for desc in active:
             line = f"  {desc:<16}"
             for m in onnx_cols:
-                line += f"  {onnx_sizes.get((desc, m), 0.0):>{CW}.1f}"
+                key = (desc, "preprocessor") if m == "pre" else (desc, m)
+                line += f"  {onnx_sizes.get(key, 0.0):>{CW}.1f}"
             print(line)
 
     # Head composite scores + pooler
     if diagnostics:
         print(
             f"\n  {'Head composite':<16}"
-            + "".join(f"  {m:>{CW}}" for m in ["rf", "lr", "xgb"])
+            + "".join(f"  {m:>{CW}}" for m in HEADS_ALL)
             + f"  {'pooler':>{CW}}  {'score':>8}"
         )
-        print(f"  {'─' * 16}" + ("  " + "─" * CW) * 3 + f"  {'─' * CW}  {'─' * 8}")
+        print(f"  {'─' * 16}" + ("  " + "─" * CW) * len(HEADS_ALL) + f"  {'─' * CW}  {'─' * 8}")
         for desc in active:
             line = f"  {desc:<16}"
-            for m in ["rf", "lr", "xgb"]:
+            for m in HEADS_ALL:
                 v = diagnostics.get(f"head_score_{desc}_{m}")
                 line += f"  {v:>{CW}.4f}" if v is not None else f"  {'—':>{CW}}"
             line += f"  {diagnostics.get(f'pooler_{desc}_mode', '—'):>{CW}}"
@@ -338,7 +333,7 @@ def _print_summary(
     timing_rows = [
         (desc, h)
         for desc in active
-        for h in ["rf", "lr", "xgb"]
+        for h in HEADS_ALL
         if diagnostics.get(f"time_{desc}_{h}_fit_s") is not None
     ]
     if timing_rows:
@@ -580,13 +575,13 @@ def _save_run_csv(
         if (desc, m) in onnx_sizes
         else np.nan
         for desc in DESCRIPTORS_ALL
-        for m in ["rf", "lr", "xgb", "preprocessor", "total"]
+        for m in ["rf", "lr", "xgb", "svc", "preprocessor", "total"]
     }
 
-    # Fixed head_score + pooler + timing columns for all 4 descriptors × 3 heads (NaN if absent)
+    # Fixed head_score + pooler + timing columns for all descriptors × all heads (NaN if absent)
     diag_cols = {}
     for desc in DESCRIPTORS_ALL:
-        for h in ["rf", "lr", "xgb"]:
+        for h in HEADS_ALL:
             diag_cols[f"head_score_{desc}_{h}"] = diagnostics.get(
                 f"head_score_{desc}_{h}", np.nan
             )
@@ -629,6 +624,9 @@ def _save_run_csv(
         "auroc_xgb": round(baseline_map["XGB (n=100)"], 4)
         if "XGB (n=100)" in baseline_map
         else None,
+        "auroc_svc": round(baseline_map["SVC (linear)"], 4)
+        if "SVC (linear)" in baseline_map
+        else np.nan,
         **size_cols,
         **diag_cols,
         "time_lazyqsar_fit_s": round(lq_fit_s, 2),
@@ -740,6 +738,15 @@ def train_dataset(
         ("XGB (n=100)", roc_auc_score(y_test, xgb.predict_proba(X_test)[:, 1]))
     )
 
+    # --- SVC baseline (LinearSVC on Morgan; decision_function used for AUROC) ---
+    if len(smiles_train) <= 5_000:
+        scaler_svc = MaxAbsScaler()
+        svc = LinearSVC(C=1.0, class_weight="balanced", max_iter=2_000, random_state=42)
+        svc.fit(scaler_svc.fit_transform(X_train), y_train)
+        baselines.append(
+            ("SVC (linear)", roc_auc_score(y_test, svc.decision_function(scaler_svc.transform(X_test))))
+        )
+
     # --- LazyClassifierQSAR ---
     t0 = time.perf_counter()
     model = LazyClassifierQSAR(mode=mode)
@@ -825,8 +832,9 @@ def train_dataset(
         ("predict_score", "score"),
         ("predict_rank", "rank"),
         ("predict_lift", "lift"),
+        ("predict_logit", "logit"),
     ]:
-        out = _aggregate_predict(model, smiles_test, method)
+        out = getattr(model, method)(smiles_test)
         extra_stats.update(_class_dist_stats(y_test, out[:, 1], prefix))
 
     # Enrichment factors
@@ -944,7 +952,7 @@ def _run_batch(
 
         print(f"\n  RUN   {tag} " + "─" * max(1, 76 - len(tag) - 8))
         try:
-            train_dataset(pathogen, dataset, mode, repo_dir, output_dir)
+            train_dataset(pathogen, dataset, mode, repo_dir, output_dir, models_output_dir)
             done += 1
         except Exception as exc:
             print(f"  FAIL  {tag} — {exc}")
@@ -982,9 +990,14 @@ if __name__ == "__main__":
         required=True,
         metavar="PATH",
         help=(
-            "Root output directory. Models are written to <output_dir>/models/<pathogen>/ "
-            "and results CSVs to <output_dir>/<pathogen>_<dataset>_<mode>.csv."
+            "Root output directory. Results CSVs are written to <output_dir>/<pathogen>_<dataset>_<mode>.csv."
         ),
+    )
+    parser.add_argument(
+        "--models_output_dir",
+        required=True,
+        metavar="PATH",
+        help="Directory where trained models are saved (<models_output_dir>/<pathogen>/<dataset>/<mode>/).",
     )
 
     # --- single-run args ---
@@ -1003,9 +1016,9 @@ if __name__ == "__main__":
     single.add_argument(
         "--mode",
         type=str,
-        default="default",
-        choices=["fast", "default", "slow"],
-        help="LazyQSAR descriptor mode (default: default).",
+        default="fast",
+        choices=["fast", "slow"],
+        help="LazyQSAR descriptor mode (default: fast).",
     )
 
     # --- batch-run args ---
@@ -1022,10 +1035,10 @@ if __name__ == "__main__":
     batch.add_argument(
         "--modes",
         nargs="+",
-        choices=["fast", "default", "slow"],
-        default=["fast", "default", "slow"],
+        choices=["fast", "slow"],
+        default=["fast", "slow"],
         metavar="MODE",
-        help="Modes to run in batch (default: fast default slow).",
+        help="Modes to run in batch (default: fast slow).",
     )
     batch.add_argument(
         "--skip-existing",

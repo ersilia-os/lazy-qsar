@@ -59,13 +59,13 @@ A single `LazyClassifier.fit(X, y)` runs four sequential stages:
 
 ## Part 3: Stage 1 — Portfolio Selection
 
-Before any model is trained, the library decides **which of three base model types** to include in the ensemble: logistic regression (`lr`), XGBoost (`xgb`), and random forest (`rf`). This is handled by the `Portfolio` class.
+Before any model is trained, the library decides **which of four base model types** to include in the ensemble: logistic regression (`lr`), XGBoost (`xgb`), random forest (`rf`), and support vector classifier (`svc`). This is handled by the `Portfolio` class.
 
-### 3.1 The Two Profilers
+### 3.1 The Three Profilers
 
-Two independent data profilers exist in the codebase. They are used at different stages:
+Three independent data profilers exist in the codebase. They are used at different stages:
 
-**`DatasetProfile`** (XGBoost inspector) — used by the Portfolio and XGBoost head:
+**`DatasetProfile`** (XGBoost inspector) — used by the Portfolio, XGBoost head, and SVC head:
 - Sample size (n), feature count (p), n/p ratio
 - Sparsity fraction (fraction of zeros in the matrix)
 - `is_sparse_counts`: True when data looks like integer fingerprints (sparse, integer-valued, e.g. Morgan counts)
@@ -73,6 +73,10 @@ Two independent data profilers exist in the codebase. They are used at different
 - Mean feature–target signal strength (`feature_signal_strength`): mean absolute Pearson correlation between features and labels, estimated on a random subsample of up to 5000 rows and 500 features
 - 90th-percentile signal (`feature_signal_p90`): the same, but at the 90th percentile
 - Class imbalance ratio (n_majority / n_minority)
+
+**`RFProfile`** (Random Forest inspector) — used only by the RF head. A lighter profile specific to RF parameter selection:
+- n, p, n/p ratio, sparsity, `is_sparse_counts`, `imbalance_ratio`
+- `pct_numeric`: fraction of columns that are NOT purely binary (complementary to `binary_feature_fraction` in `DatasetProfile`)
 
 **`PreprocessingProfile`** (preprocessing inspector) — used only to select the scaler and reducer:
 - Same n, p, n/p, sparsity, `is_sparse_counts`, binary fraction, `feature_signal_p90`
@@ -82,24 +86,26 @@ All statistics are estimated stochastically (sampling rows and columns) to keep 
 
 ### 3.2 Portfolio Decision Rules
 
-RF is always included. LR and XGB are subject to the following logic.
+RF is always included. LR, XGB, and SVC are subject to the following logic.
 
 **Hard guards** — evaluated first, override all scoring:
 
 | Condition | Portfolio |
 |---|---|
-| n > 5,000 | `[xgb, rf]` — LR excluded (CV too expensive at this scale) |
-| n < 300 **or** minority class < 25 samples | `[lr, xgb, rf]` — everything included (small data benefits from diversity) |
-| n/p < 1.0 (more features than samples) | `[lr, xgb, rf]` — underdetermined regime favors regularized linear models |
-| p ≥ 2,000 **and** n/p < 5.0 | `[lr, xgb, rf]` — wide feature space with limited data |
+| n > 5,000 | `[xgb, rf]` — LR and SVC excluded (kernel SVC cost is O(n²); LinearSVC duplicates LR) |
+| n < 300 **or** minority class < 25 samples | `[lr, xgb, rf, svc]` — everything included (small data benefits from diversity) |
+| n/p < 1.0 (more features than samples) | `[lr, xgb, rf, svc]` — underdetermined regime favors regularized models |
+| p ≥ 2,000 **and** n/p < 5.0 | `[lr, xgb, rf, svc]` — wide feature space with limited data |
 
-**Scoring** — applied when no hard guard fires:
+**Scoring** — applied when no hard guard fires (300 ≤ n ≤ 5,000):
 
 LR gains points for: n/p < 1.5 (+3), p ≥ 2,000 (+2), binary or sparse-count features (+2), n < 1,000 (+1), imbalance ≥ 20:1 (+1). LR loses points for large dense well-determined data (n ≥ 20,000, n/p ≥ 10, non-sparse, non-binary: −2).
 
 XGB gains points for: n ≥ 5,000 (+3), signal_p90 ≥ 0.15 (+2), mixed feature types (+2), n/p ≥ 5 (+1), mean signal ≥ 0.05 (+1). XGB loses points for very sparse data (sparsity ≥ 0.85 and is_sparse_counts: −2).
 
-**Final decision**: if XGB leads LR by ≥ 2 points → `[xgb, rf]`. Otherwise → `[lr, xgb, rf]`.
+SVC gains points for: n < 500 (+3), 500 ≤ n < 2,000 (+2), 2,000 ≤ n ≤ 5,000 (+1), dense continuous features (+2), signal_p90 ≥ 0.1 (+1), n/p < 3 (+1). SVC loses points for sparse fingerprints (−2) or extreme imbalance > 50:1 (−1).
+
+**Final decision**: LR included when XGB does not lead by ≥ 2 points. SVC included when its score ≥ 2. The resulting portfolio is any subset of `[lr, xgb, rf, svc]` with RF always mandatory.
 
 ---
 
@@ -249,17 +255,74 @@ The `heuristic` preset is the most complex part of the library. Parameters are d
 
 ### 5.4 Head 3 — Random Forest
 
-The RF head is the simplest and always included. Its role is to serve as a stable, low-variance baseline in the ensemble.
+The RF head runs a portfolio comparison across four preset configurations using out-of-bag (OOB) scores. **Fallback**: if n < 200, portfolio comparison is skipped and the `default` preset is used directly (OOB estimates are unreliable on tiny datasets).
 
-- `n_estimators = 100` (fixed)
-- `class_weight = "balanced"` by default; automatically switches to `"balanced_subsample"` when the imbalance ratio ≥ 3.0
-- No hyperparameter tuning at all
+#### Presets
 
-**Calibration workflow**: the full RF is first fitted once on all data. Then k-fold OOF is collected by training separate fold-level estimators (not the full-data model). The OOF scores are used to calibrate probabilities and learn the decision cutoff, exactly as in the linear and XGBoost heads.
+1. **`heuristic`**: rule-based parameters derived from an `RFProfile` (see literature: Breiman 2001, Probst et al. 2019, Sheridan 2016)
+2. **`default`**: sklearn `RandomForestClassifier` out-of-the-box (100 trees, `max_features="sqrt"`, no depth limit)
+3. **`flaml`**: 1-nearest-neighbour meta-feature matching against FLAML's RF portfolio (Wang et al. 2021). Skipped when p > 200 (FLAML was calibrated on low-dimensional datasets)
+4. **`autogluon`**: AutoGluon zeroshot 2023 config, selected from a 3×2 grid of (size × sparsity/binary). Skipped when p > 200 for the same reason
+
+All four presets are trained simultaneously on the full dataset with `oob_score=True`. The winner is chosen by OOB AUC with the same noise-aware margin formula as XGBoost: `max(0.005, coef / √n_minority)` where `coef = 0.3` for n < 2,000 else `0.1`. The default preset's model is always kept in memory so the winner can be switched without refitting.
+
+#### Heuristic Parameter Rules
+
+Key decisions from `heuristic_rf_params(profile)`:
+
+| Parameter | Rule |
+|---|---|
+| `n_estimators` | 100 (n < 500), 200 (n < 5,000), 300 (n ≥ 5,000) |
+| `max_features` | `"log2"` for sparse-count data with p > 500 (forces stronger tree diversity on fingerprints); `"sqrt"` otherwise |
+| `max_depth` | `None` for dense well-determined data; 12–20 for sparse or underdetermined (n/p < 3) to control ONNX size |
+| `min_samples_leaf` | `max(3, n//500)` for sparse-count, `max(1, n//1000)` for dense; halved when imbalance > 10:1 |
+
+#### ONNX size control
+
+The `rf_leaf_cap` function targets < 4 MB per model: `floor(100,000 / n_estimators / 2)` total leaf nodes per tree, clipped to `[32, n//3]`. Applied only to `flaml` and `autogluon` presets (which use `max_leaf_nodes`); the `heuristic` and `default` presets use `max_depth` for size control instead.
+
+#### Calibration workflow
+
+Identical to the linear and XGBoost heads: full fit (winner preset on all data) → k-fold OOF with separate fold-level forest instances → isotonic/Platt calibration → decision cutoff → ECDF ranker. `class_weight` automatically switches from `"balanced"` to `"balanced_subsample"` when imbalance ratio ≥ 3.0.
 
 ---
 
-### 5.5 Pooling (Combining the Heads)
+### 5.5 Head 4 — Support Vector Classifier
+
+The SVC head runs a portfolio comparison across four preset configurations on a 90/10 validation split. **Fallback**: if n < 200, the `heuristic` preset is used directly.
+
+#### Presets
+
+1. **`heuristic`**: rule-based parameters from `get_params(profile)` (see literature: Burbidge et al. 2001, Heikamp & Bajorath 2014, Sheridan 2016)
+2. **`default`**: sklearn SVC out-of-the-box (C=1.0, RBF, `gamma='scale'`)
+3. **`linear`**: `LinearSVC` always (compact ONNX, state-of-the-art for bit fingerprints)
+4. **`balanced_rbf`**: RBF + `class_weight='balanced'` + C scaled by √n_minority — suited to imbalanced data
+
+Presets are evaluated by AUC on the 90/10 split using `decision_function()` scores (not probabilities). A preset is skipped if its estimated training cost exceeds 20× the default's cost (kernel SVC cost ∝ n²×p; LinearSVC cost ∝ n×p). The winner must beat default by at least `max(0.005, 0.3/√n_minority)`.
+
+#### Heuristic Parameter Rules
+
+**Kernel selection**:
+- `is_sparse_counts` or n > 5,000 → `LinearSVC` (linear kernel; Tanimoto dot product is linear in binary fingerprint space)
+- Dense data with n ≤ 5,000 → `SVC(kernel='rbf')` (captures non-linear structure in continuous descriptor spaces)
+
+**C for linear kernel**: 0.1 (n < 500), 1.0 (500 ≤ n < 2,000), 10.0 (n ≥ 2,000)
+
+**C for RBF kernel**: base from n/p ratio (1.0 / 10.0 / 100.0), scaled by `min(1.0, √(n/1000))`, cap 100.0
+
+All presets use `class_weight='balanced'` and `gamma='scale'`.
+
+#### ONNX size guard
+
+After phase-2 (full-data) refit, kernel SVC models are checked: if `n_sv × n_features × 4 > 15 MB`, C is halved and the model is refit, up to 3 retries. If still over budget, the model falls back to joblib. `LinearSVC` is always compact (weights + bias only; O(n_features)).
+
+#### ONNX inference
+
+The ONNX model outputs raw decision function scores (not probabilities). `BaseSVCArtifact.run()` applies `sigmoid(score)` → calibrator → final calibrated probabilities. Calibration workflow is identical to other heads: OOF decision scores → isotonic (minority ≥ 500) or Platt → decision cutoff → ECDF ranker.
+
+---
+
+### 5.6 Pooling (Combining the Heads)
 
 After all heads are fitted, the `InnerClassifierPooler` learns how to combine their predictions. It operates on the OOF predicted probabilities collected during each head's calibration step.
 
@@ -313,6 +376,8 @@ model_dir/
     linear.json           <- only if lr in portfolio
     randomforest.onnx     <- always present (rf always in portfolio)
     randomforest.json     <- always present
+    svc.onnx              <- only if svc in portfolio
+    svc.json              <- only if svc in portfolio
     pooler.json
   batch_1/
     ...
@@ -332,7 +397,7 @@ model_dir/
 - `n_features_in`, `n_features_out`
 - `kept_feature_indices`: column indices surviving the preprocessing pipeline
 
-**`xgboost.json` / `linear.json` / `randomforest.json`** — written by each head's `save()`:
+**`xgboost.json` / `linear.json` / `randomforest.json` / `svc.json`** — written by each head's `save()`:
 - `task`, `n_features_in`, `decision_cutoff`, `decision_cutoff_source`
 - `calibrator`: isotonic or Platt calibrator parameters (if calibration was run)
 - `ranker`: sorted OOF score knots for `predict_rank()` (if calibration was run)
@@ -398,7 +463,46 @@ All models default to **ONNX format** (opset 16, IR version 10). ONNX artifacts 
 
 ---
 
-## Part 9: Key Points for Interpreting Results
+## Part 9: Applicability Domain
+
+The `ApplicabilityDomain` class estimates whether a query compound falls within the distribution of the training set. It is designed to work on any feature matrix without requiring re-training alongside the classifier.
+
+### How it works
+
+1. **StandardScaler** normalises the input (applied independently of the classifier's preprocessor)
+2. **PCA** projects to at most `min(50, p, n-1)` components, removing redundant and zero-variance directions. This is essential for fingerprints (p=2048) where the raw covariance matrix is huge and singular
+3. **Tikhonov-regularised Mahalanobis distance** is computed in the PCA subspace for each training sample and each query
+4. **Empirical survival function**: the score is `P(d_train > d(query))` — the fraction of training samples further from the centroid than the query
+
+**Score interpretation**:
+- `1.0` = query is closer to the training centroid than every training sample (fully in-domain)
+- `0.0` = query is further than every training sample (completely out-of-distribution)
+
+The survival function is stored as 200 quantile knots and evaluated at inference via a vectorised ONNX graph built from primitive ops (`Sub`, `MatMul`, `Mul`, `Relu`, `Sqrt`, `Reshape`, `Less`, `Cast`, `Div`) — no custom extensions, no sklearn dependency at inference time.
+
+---
+
+## Part 10: Descriptor Portfolio Selection
+
+When using SMILES mode (`LazyClassifierQSAR`), the `DescriptorPortfolio` class gates which descriptor types enter the ensemble before any `LazyClassifier` is trained. At most `_MAX_DESCRIPTORS = 3` descriptors are kept.
+
+### Selection procedure
+
+**Step 1 — Unsupervised applicability gate**: each descriptor's `is_applicable(smiles_list)` method is called. Descriptors that fail (too many out-of-domain SMILES) are dropped immediately without computing features.
+
+**Step 2 — Supervised greedy forward selection** (only when `y` is provided and > 1 descriptor passes Step 1): A lightweight 3-fold Random Forest CV (proxy) is run per descriptor to estimate solo OOF AUC. Descriptors are then selected greedily starting from a reference anchor (`morgan` in fast mode, `chemeleon` in slow mode), adding the descriptor that improves ensemble AUC most at each step, up to `_MAX_DESCRIPTORS`.
+
+### Ensemble weighting
+
+The final prediction in `LazyClassifierQSAR` is not a simple average. Each selected descriptor's `LazyClassifier` contributes a weight combining:
+- **Global skill score**: derived from OOF AUC and proxy AUC
+- **Per-sample reliability score**: derived from rank-based prediction confidence (rank→error curves)
+
+The two scores are multiplied and softmax-normalised across descriptors to produce per-sample, per-descriptor weights.
+
+---
+
+## Part 11: Key Points for Interpreting Results
 
 ### For users
 
@@ -414,11 +518,11 @@ All models default to **ONNX format** (opset 16, IR version 10). ONNX artifacts 
 
 ### For developers
 
-**n/p is the single most decisive quantity in the entire pipeline.** It simultaneously drives: scaler selection (MaxAbs vs Standard vs Power), reducer selection (VarianceThreshold only vs CorrelationFilter), portfolio selection (whether LR is included), linear regime detection (standard vs high_dim vs large), XGBoost regularization strength (lambda/alpha table), and XGBoost tree depth. A dataset with 200 compounds and 2048 Morgan bits (n/p ≈ 0.10) follows an entirely different code path than one with 5,000 compounds and 200 RDKit descriptors (n/p = 25).
+**n/p is the single most decisive quantity in the entire pipeline.** It simultaneously drives: scaler selection (MaxAbs vs Standard vs Power), reducer selection (VarianceThreshold only vs CorrelationFilter), portfolio selection (whether LR and SVC are included), linear regime detection (standard vs high_dim vs large), XGBoost regularization strength (lambda/alpha table), XGBoost tree depth, SVC kernel choice (RBF vs linear), and SVC C value. A dataset with 200 compounds and 2048 Morgan bits (n/p ≈ 0.10) follows an entirely different code path than one with 5,000 compounds and 200 RDKit descriptors (n/p = 25).
 
 **`is_sparse_counts` triggers different logic throughout the pipeline.** It affects scaler choice (MaxAbsScaler), XGBoost grow policy (lossguide vs depthwise), `max_bin` (64 vs 256), `min_child_weight` formula, L1/L2 regularization table, `colsample_bytree` floor, and gamma value. It is detected automatically from the data: requires sparsity ≥ 0.5, values are 95%+ integer-like, and either sparsity ≥ 0.85 or max non-zero value ≤ 10.
 
-**The two profilers are independent and compute overlapping but different statistics.** The `DatasetProfile` (XGBoost inspector) includes mean feature–target signal (`feature_signal_strength`) but lacks skewness, outlier fraction, and correlation statistics. The `PreprocessingProfile` (preprocessing inspector) includes those but lacks `feature_signal_strength`. Both compute `feature_signal_p90`. They are run independently at different stages of the pipeline.
+**The three profilers are independent and compute overlapping but different statistics.** `DatasetProfile` (XGBoost/SVC/Portfolio inspector) includes mean feature–target signal (`feature_signal_strength`) but lacks skewness, outlier fraction, and correlation statistics. `PreprocessingProfile` includes those but lacks `feature_signal_strength`. `RFProfile` is the lightest — only n, p, sparsity, `is_sparse_counts`, imbalance, and `pct_numeric` (no signal statistics). All three are run independently at different stages of the pipeline.
 
 **In linear calibration, the hyperparameter search runs exactly once** on the full data in `_fit_raw`. The subsequent OOF folds each fit a plain `LogisticRegression` (no inner CV) using the best_C found in that full-data search. This is intentional — repeating the C-search on each fold would be correct in theory but prohibitively expensive in practice, and the bias introduced by fixing C from full-data is small.
 
@@ -426,13 +530,13 @@ All models default to **ONNX format** (opset 16, IR version 10). ONNX artifacts 
 
 **Phase 2 of XGBoost uses 100% of the data with a fixed round count.** There is no validation set in Phase 2 and no early stopping. The round count `best_iteration` is fully determined by Phase 1 on the 90/10 split. Overfitting in Phase 2 is controlled by the regularization parameters, not by validation-based stopping.
 
-**The calibration threshold (isotonic vs Platt) is 500 minority samples**, applied uniformly across all three heads (linear, XGB, RF). Below 500, Platt scaling (logistic regression on the scalar OOF scores, 2 free parameters) is used. Above 500, isotonic regression (non-parametric, potentially many parameters) is used. A dataset sitting just at this boundary will behave differently depending on which side it falls on.
+**The calibration threshold (isotonic vs Platt) is 500 minority samples**, applied uniformly across all four heads (linear, XGB, RF, SVC). Below 500, Platt scaling (logistic regression on the scalar OOF scores, 2 free parameters) is used. Above 500, isotonic regression (non-parametric, potentially many parameters) is used. A dataset sitting just at this boundary will behave differently depending on which side it falls on.
 
 **The `lossguide` growth policy** (leaf-wise, LightGBM-style) is activated only for `is_sparse_counts=True` and p > 200. It builds asymmetric trees that descend deeper along high-signal bit paths without wasting node capacity on near-constant zero-valued bits. Datasets with continuous descriptors or embeddings — even if high-dimensional — use standard depthwise growth.
 
 ---
 
-## Part 10: Dependency Structure
+## Part 12: Dependency Structure
 
 The library is split into three installation profiles:
 
