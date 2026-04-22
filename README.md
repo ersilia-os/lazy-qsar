@@ -1,10 +1,10 @@
 # Ersilia's LazyQSAR
 
-A Python library for building supervised QSAR (Quantitative Structure-Activity Relationship) models quickly, with minimal configuration. LazyQSAR automates descriptor computation, feature preprocessing, and model selection to produce robust ensemble models from chemical structures.
+A Python library for building supervised QSAR models quickly, with minimal configuration. LazyQSAR automates chemical descriptor computation, and model selection to produce robust models for property and activity prediction.
 
 **Two entry points:**
-- **`LazyClassifierQSAR`** — pass SMILES strings directly; built-in descriptors are computed automatically
-- **`LazyClassifier`** — bring your own pre-computed descriptor arrays or HDF5 files
+- **`LazyClassifierQSAR`**: pass SMILES strings directly; built-in descriptors are computed automatically
+- **`LazyClassifier`**: bring your own pre-computed descriptor arrays
 
 ## Table of Contents
 
@@ -21,7 +21,7 @@ A Python library for building supervised QSAR (Quantitative Structure-Activity R
 
 ## Installation
 
-Install from source:
+We recommend installation from source:
 
 ```bash
 git clone https://github.com/ersilia-os/lazy-qsar.git
@@ -29,17 +29,17 @@ cd lazy-qsar
 pip install -e .
 ```
 
-The base install includes only lightweight runtime dependencies (`numpy`, `onnxruntime`, etc.) — sufficient for loading and running pre-trained ONNX models without any ML packages.
+The base install includes only lightweight runtime dependencies (`numpy`, `onnxruntime`, etc.), sufficient for loading and running pre-trained ONNX models without any ML and chemistry-related packages (RDKit). Therefore, the base install assumes descriptors are provided by the user.
 
-Install optional extras depending on your use case:
+You can install optional extras depending on your use case:
 
 | Extra | Command | Adds |
 |-------|---------|------|
-| `fit` | `pip install -e .[fit]` | scikit-learn, XGBoost, scipy, skl2onnx — required to train models |
-| `descriptors` | `pip install -e .[descriptors]` | RDKit, FPSim2 — required for built-in molecular descriptors |
+| `fit` | `pip install -e .[fit]` | Required to train models (scikit-learn, XGBoost, scipy, skl2onnx) |
+| `descriptors` | `pip install -e .[descriptors]` | Required for built-in molecular descriptors (e.g. RDKit, FPSim2) |
 | `all` | `pip install -e .[all]` | Everything above |
 
-The first time you use deep-learning descriptors (CDDD, Chemeleon, CLAMP), their checkpoints are downloaded automatically. To do this in advance:
+The first time you use deep-learning descriptors (Chemeleon, CLAMP, CDDD), their checkpoints are downloaded automatically. To do this in advance:
 
 ```bash
 lazyqsar setup --descriptors
@@ -54,12 +54,12 @@ Pass SMILES strings directly. Choose a descriptor mode:
 | Mode | Descriptors | Notes |
 |------|-------------|-------|
 | `fast` | Morgan fingerprints | No deep-learning models, fastest |
-| `slow` | CDDD, Chemeleon, CLAMP, Morgan, RDKit | Most thorough |
+| `slow` | Chemeleon, CLAMP, Morgan, RDKit (physchem), CDDD | Most thorough |
 
 ```python
 from lazyqsar.qsar import LazyClassifierQSAR
 
-model = LazyClassifierQSAR(mode="slow")
+model = LazyClassifierQSAR(mode="slow") # default is "slow"
 model.fit(smiles_list=smiles_train, y=y_train)
 ```
 
@@ -67,8 +67,8 @@ Available prediction methods:
 
 | Method | Returns | Description |
 |--------|---------|-------------|
+| `predict(smiles_list)` | `(N,)` | Binary labels at an optimized threshold |
 | `predict_proba(smiles_list)` | `(N, 2)` | Calibrated class probabilities |
-| `predict(smiles_list)` | `(N,)` | Binary labels at threshold 0.5 |
 | `predict_logit(smiles_list)` | `(N, 2)` | Log-odds scores |
 | `predict_rank(smiles_list)` | `(N, 2)` | Rank quantiles (0–1) |
 | `predict_score(smiles_list)` | `(N, 2)` | Raw model scores |
@@ -95,12 +95,16 @@ The same prediction methods listed above are available, using `X=` instead of `s
 
 ### Saving and loading
 
-Models are saved as ONNX files, so inference only requires `numpy` and `onnxruntime` — no scikit-learn or XGBoost at prediction time.
+Models are saved as ONNX files, so inference only requires `numpy` and `onnxruntime`, i.e. no scikit-learn or XGBoost at prediction time. Metadata is stored in JSON format.
+
+To save models:
 
 ```python
 model.save(model_dir)          # directory
 model.save("my_model.zip")     # or zip archive
 ```
+
+And to load them:
 
 ```python
 model = LazyClassifierQSAR.load(model_dir)
@@ -113,14 +117,6 @@ y_hat = model.predict_proba(X=X_test)[:, 1]
 ## CLI
 
 All commands are available through the `lazyqsar` entry point.
-
-**Setup:**
-
-```bash
-lazyqsar setup --fit          # sklearn, xgboost, scipy, skl2onnx, onnxmltools
-lazyqsar setup --descriptors  # rdkit, FPSim2, Chemeleon / CDDD / CLAMP checkpoints
-lazyqsar setup --fit --descriptors
-```
 
 **Fit:**
 
@@ -138,21 +134,21 @@ Pass `--models_txt` to train a subset of tasks (one CSV stem per line); without 
 lazyqsar predict --input $INPUT_CSV --model $MODEL_DIR --output $OUTPUT_CSV
 ```
 
-The output CSV contains one predicted probability column per task, ordered alphabetically by task name.
+The output CSV contains one predicted probability column per task, ordered alphabetically by task name, or according to the order provided by `--models_txt` at fit time.
 
-## How It Works
+## How it works
 
 LazyQSAR builds an ensemble for each descriptor set through four steps:
 
-1. **Portfolio selection** — the dataset is profiled (sample count, dimensionality, sparsity, class imbalance) and a rule-based selector decides which heads to train. The default portfolio is XGBoost + Random Forest; Logistic Regression is added automatically for small, high-dimensional, or low-prevalence datasets.
+1. **Portfolio selection**: the dataset is profiled (sample count, dimensionality, sparsity, class imbalance) and a rule-based selector decides which heads to train. The default portfolio is XGBoost + Random Forest; Linear Models and Support Vector Machines are added automatically for small, high-dimensional, or low-prevalence datasets.
 
-2. **Preprocessing** — a scaler (`StandardScaler`, `RobustScaler`, `MaxAbsScaler`, or `PowerTransformer`) and an optional correlation-based feature reducer are selected automatically from dataset statistics.
+2. **Preprocessing**: a scaler (`StandardScaler`, `RobustScaler`, `MaxAbsScaler`, or `PowerTransformer`) and an optional correlation-based feature reducer are selected automatically from dataset statistics.
 
-3. **Heads** — each selected head (Logistic Regression, XGBoost, Random Forest) is fitted on preprocessed features. For severely imbalanced datasets, balanced sub-batches are used and the batch predictions are averaged.
+3. **Heads**: each selected head is fitted on preprocessed features. For severely imbalanced datasets, balanced sub-batches are used and the batch predictions are averaged.
 
-4. **Pooling and export** — head predictions are combined via a learned gating network (`InnerClassifierPooler`). The full pipeline is exported to ONNX for dependency-free inference.
+4. **Pooling**: head predictions are combined via a learned gating network (`InnerClassifierPooler` When using `LazyClassifierQSAR`, a separate ensemble is trained per descriptor type and their predictions are combined via an AUC-weighted ensemble that accounts for per-sample prediction confidence.
 
-When using `LazyClassifierQSAR`, a separate ensemble is trained per descriptor type and their predictions are combined via an AUC-weighted ensemble that accounts for per-sample prediction confidence.
+5. **Export**: the full pipeline is exported to ONNX for dependency-free inference.
 
 ## Base Models
 
@@ -169,7 +165,7 @@ The components under `lazyqsar/base/` can be used independently of the full pipe
 
 LazyQSAR models can be used inside an [Ersilia Model Hub template](https://github.com/ersilia-os/eos-template). See [eos1lb5](https://github.com/ersilia-os/eos1lb5) for an example.
 
-`lazyqsar fit` produces a `checkpoints` folder with one sub-directory per task and per descriptor type:
+Basically, `lazyqsar fit` can be used to produce a `checkpoints` folder with one sub-directory per task and per descriptor type:
 
 ```text
 checkpoints/
@@ -187,9 +183,7 @@ checkpoints/
     └── rdkit/       (same structure)
 ```
 
-`fast` mode produces only a `morgan/` subdirectory per task.
-
-The `code/main.py` inference script:
+The, the `code/main.py` inference script:
 
 ```python
 import os, sys
@@ -200,8 +194,29 @@ checkpoints_dir = os.path.abspath(os.path.join(root, "..", "checkpoints"))
 predict(model_dir=checkpoints_dir, input_csv=sys.argv[1], output_csv=sys.argv[2])
 ```
 
+## Roadmap
+
+We are currently working on regression models, mirroring what has been done for classification.
+
 ## Disclaimer
 
-This library is intended for quick QSAR modeling. For a more complete automated QSAR pipeline, refer to [Zaira Chem](https://github.com/ersilia-os/zaira-chem).
+This library is intended for quick QSAR modeling. For a more complete automated QSAR pipeline, refer to [ZairaChem](https://github.com/ersilia-os/zaira-chem).
 
-Learn about the [Ersilia Open Source Initiative](https://ersilia.io).
+ZairaChem's version, with an earlier version of LazyQSAR, was presented in this article:
+
+```
+@article{Turon2023,
+  author = {Turon, G. and Hlozek, J. and Woodland, J.G. and et al.},
+  title = {First fully-automated AI/ML virtual screening cascade implemented at a drug discovery centre in Africa},
+  journal = {Nat Commun},
+  volume = {14},
+  pages = {5736},
+  year = {2023},
+  doi = {10.1038/s41467-023-41512-2},
+  url = {https://doi.org/10.1038/s41467-023-41512-2}
+}
+```
+
+## About the Ersilia Open Source Initiative
+
+The [Ersilia Open Source Initiative](https://ersilia.io) is a tech non-profit organization with the mission to equip laboratories, universities, and clinics in the Global South with AI/ML tools for infectious disease research. We work on the principles of open science, decolonized research, and egalitarian access to knowledge and research outputs. You can support Ersilia by clicking here.

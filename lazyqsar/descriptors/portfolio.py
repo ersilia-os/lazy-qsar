@@ -13,7 +13,7 @@ class DescriptorPortfolio:
     Parameters
     ----------
     mode : str
-        "fast" (rdkit, morgan) or "slow" (chemeleon, morgan, rdkit, cddd).
+        "fast" (morgan) or "slow" (chemeleon, clamp, morgan, rdkit, cddd).
 
     Example
     -------
