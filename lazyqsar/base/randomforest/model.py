@@ -142,6 +142,50 @@ def _apply_calibrator_artifact(proba: np.ndarray, cal: dict) -> np.ndarray:
 
 
 class BaseRFClassifier(BaseEstimator):
+    """
+    Binary classifier with automatically selected Random Forest hyperparameters.
+
+    Parameters set to the sentinel ``_HEURISTIC`` are derived from the dataset
+    profile at fit time; any explicit value overrides the heuristic.
+
+    Parameters
+    ----------
+    n_estimators : int or _HEURISTIC
+        Number of trees. Auto-selected from dataset size when ``_HEURISTIC``.
+    max_depth : int, None, or _HEURISTIC
+        Maximum tree depth. Auto-selected; None means unlimited.
+    min_samples_leaf : int or _HEURISTIC
+        Minimum samples per leaf. Auto-selected from n.
+    max_features : str, int, float, or _HEURISTIC
+        Features to consider at each split. Auto-selected from feature type.
+    class_weight : str or dict
+        ``"balanced"`` automatically switches to ``"balanced_subsample"``
+        when imbalance ratio ≥ 3.0.
+    n_jobs : int
+        Parallelism for tree fitting. -1 uses all available cores.
+    random_state : int or None
+        Reproducibility seed.
+    calibrated : bool
+        If True (default), runs OOF calibration after fitting; if False,
+        fits the raw forest only (no probability calibration).
+
+    Attributes (after fit)
+    ----------------------
+    selected_preset_ : str
+        Winning preset name (``"heuristic"``, ``"default"``, ``"flaml"``,
+        or ``"autogluon"``).
+    params_ : dict
+        Hyperparameters of the winning preset.
+    oof_probas_ : ndarray, shape (n,)
+        Calibrated out-of-fold probabilities for class 1 (after calibrate()).
+    oof_y_ : ndarray, shape (n,)
+        Training labels in the same order as X.
+    decision_cutoff_ : float
+        OOF-learned threshold that maximises balanced accuracy.
+    classes_ : ndarray
+        ``[0, 1]``
+    """
+
     def __init__(
         self,
         *,
@@ -432,6 +476,19 @@ class BaseRFClassifier(BaseEstimator):
         return self
 
     def to_onnx(self, path: str) -> None:
+        """
+        Export the trained forest to an ONNX file.
+
+        Accepts a float32 input named ``"float_input"`` with shape
+        ``(n_samples, n_features_in_)`` and produces:
+          - ``"output_label"``       int64  (n_samples,)   — predicted class
+          - ``"output_probability"`` float32 (n_samples, 2) — [P(0), P(1)]
+
+        Parameters
+        ----------
+        path : str
+            Destination file path, e.g. ``"model.onnx"``.
+        """
         from skl2onnx import convert_sklearn
         from skl2onnx.common.data_types import FloatTensorType
 
@@ -443,6 +500,21 @@ class BaseRFClassifier(BaseEstimator):
             f.write(onnx_model.SerializeToString())
 
     def save(self, directory: str, onnx: bool = True) -> None:
+        """
+        Save the trained model to a directory.
+
+        Always writes ``randomforest.json`` (fit metadata). The model binary is
+        written as either:
+          - ``randomforest.onnx``   when ``onnx=True`` (default)
+          - ``randomforest.joblib`` when ``onnx=False``
+
+        Parameters
+        ----------
+        directory : str
+            Destination directory (created if it does not exist).
+        onnx : bool
+            If True, export to ONNX format; otherwise use joblib.
+        """
         check_is_fitted(self, attributes=["_estimator"])
         os.makedirs(directory, exist_ok=True)
         if onnx:
@@ -483,6 +555,20 @@ class BaseRFClassifier(BaseEstimator):
 
 
 class BaseRFArtifact:
+    """
+    Load a saved Random Forest model for forward inference.
+
+    Reads the files written by ``BaseRFClassifier.save()``:
+      - ``randomforest.onnx``  or ``randomforest.joblib`` — model binary
+      - ``randomforest.json``  — fit metadata (task, calibrator, ranker, …)
+
+    Usage
+    -----
+    artifact = BaseRFArtifact.load("path/to/directory")
+    proba = artifact.run(X)          # calibrated (N, 2)
+    labels = artifact.predict(X)     # binary using learned cutoff
+    """
+
     def __init__(self):
         self._session = None
         self._estimator = None
@@ -495,6 +581,20 @@ class BaseRFArtifact:
 
     @classmethod
     def load(cls, directory: str) -> "BaseRFArtifact":
+        """
+        Load the model from *directory*.
+
+        Detects ONNX or joblib format from ``randomforest.json``.
+
+        Parameters
+        ----------
+        directory : str
+            Directory previously passed to ``BaseRFClassifier.save()``.
+
+        Returns
+        -------
+        BaseRFArtifact
+        """
         json_path = os.path.join(directory, "randomforest.json")
         if not os.path.isfile(json_path):
             raise FileNotFoundError(f"No metadata found at {json_path!r}")
@@ -524,6 +624,14 @@ class BaseRFArtifact:
         return artifact
 
     def run(self, X) -> np.ndarray:
+        """
+        Run calibrated inference on X.
+
+        Returns
+        -------
+        ndarray, shape (n_samples, 2)
+            Calibrated [P(class=0), P(class=1)].
+        """
         X_f32 = np.asarray(X, dtype=np.float32)
         if self._format == "onnx":
             input_name = self._session.get_inputs()[0].name
@@ -544,10 +652,12 @@ class BaseRFArtifact:
         return proba
 
     def predict(self, X, cutoff: float | None = None) -> np.ndarray:
+        """Return binary labels using the stored decision cutoff by default."""
         threshold = self.decision_cutoff if cutoff is None else float(cutoff)
         return (self.run(X)[:, 1] >= threshold).astype(int)
 
     def predict_score(self, X) -> np.ndarray:
+        """Return raw (pre-calibration) probabilities, shape (n_samples, 2)."""
         X_f32 = np.asarray(X, dtype=np.float32)
         if self._format == "onnx":
             input_name = self._session.get_inputs()[0].name
@@ -564,11 +674,13 @@ class BaseRFArtifact:
         return self._estimator.predict_proba(X_f32).astype(np.float64)
 
     def predict_logit(self, X) -> np.ndarray:
+        """Return logit of calibrated probabilities, shape (n_samples, 2)."""
         p = np.clip(self.run(X)[:, 1], 1e-7, 1.0 - 1e-7)
         logit_1 = np.log(p / (1.0 - p))
         return np.column_stack([-logit_1, logit_1])
 
     def predict_rank(self, X) -> np.ndarray:
+        """Map raw scores to [0, 1] ranks via OOF ECDF, shape (n_samples, 2)."""
         if "ranker" not in self.metadata:
             raise RuntimeError("No ranker stored in this artifact.")
         knots = np.asarray(self.metadata["ranker"]["knots"])

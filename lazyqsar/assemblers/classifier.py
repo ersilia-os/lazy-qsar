@@ -69,6 +69,23 @@ def _plan_batches(
 
 
 class _BatchLazyClassifier(object):
+    """
+    Single-batch ensemble: preprocessor + heads + gating pooler.
+
+    Trained on one balanced slice of the full dataset. Multiple instances
+    are created by ``LazyClassifier`` when data is severely imbalanced or
+    too large for a single batch.
+
+    Parameters
+    ----------
+    portfolio : list of str
+        Head names to train, e.g. ``["xgb", "rf"]``.
+    calibrated : bool
+        Whether to run OOF calibration on each head.
+    max_rounds : int or None
+        XGBoost round cap (None = use portfolio-selected value).
+    """
+
     def __init__(
         self, portfolio: list, calibrated: bool = True, max_rounds: int | None = None
     ):
@@ -87,6 +104,7 @@ class _BatchLazyClassifier(object):
         self.pooler = InnerPooler(portfolio=portfolio)
 
     def fit(self, X, y):
+        """Fit preprocessor, all heads, and the gating pooler on (X, y)."""
         self.train_prior_ = float(np.mean(y == 1))
         _t_prep = _time.perf_counter()
         self.prep.fit(X, y)
@@ -169,11 +187,13 @@ class _BatchLazyClassifier(object):
         logger.timing_table(steps)
 
     def predict_proba(self, X):
+        """Return calibrated probabilities, shape (n, 2)."""
         X_prep = self.prep.transform(X)
         R = np.column_stack([head.predict_proba(X_prep)[:, 1] for head in self.heads])
         return self.pooler.predict_proba(R, X_prep)
 
     def predict_score(self, X):
+        """Return raw (pre-calibration) gated scores, shape (n, 2)."""
         X_prep = self.prep.transform(X)
         R = np.column_stack([head.predict_score(X_prep)[:, 1] for head in self.heads])
         W = self.pooler.get_weights(X_prep)
@@ -181,6 +201,7 @@ class _BatchLazyClassifier(object):
         return np.column_stack([1 - score_1, score_1])
 
     def predict_rank(self, X):
+        """Return gated rank quantiles (0–1), shape (n, 2)."""
         X_prep = self.prep.transform(X)
         R = np.column_stack([head.predict_rank(X_prep)[:, 1] for head in self.heads])
         W = self.pooler.get_weights(X_prep)
@@ -188,10 +209,12 @@ class _BatchLazyClassifier(object):
         return np.column_stack([1 - rank_1, rank_1])
 
     def predict(self, X, cutoff=None):
+        """Return binary labels using the OOF-learned decision cutoff."""
         threshold = self.decision_cutoff_ if cutoff is None else cutoff
         return (self.predict_score(X)[:, 1] >= threshold).astype(int)
 
     def save(self, directory, batch_num):
+        """Save this batch to ``{directory}/batch_{batch_num}/``."""
         if batch_num is not None:
             directory = f"{directory}/batch_{batch_num}"
         os.makedirs(directory, exist_ok=True)
@@ -204,6 +227,41 @@ class _BatchLazyClassifier(object):
 
 
 class LazyClassifier(object):
+    """
+    Imbalance-aware ensemble classifier for pre-computed feature arrays.
+
+    Wraps one or more ``_BatchLazyClassifier`` instances. For balanced data,
+    a single batch is used. For severely imbalanced data (ratio > max_imbalance_ratio),
+    multiple batches are created — each containing all positives and a disjoint
+    subset of negatives — and their predictions are prior-corrected and averaged.
+
+    Parameters
+    ----------
+    max_batch_size : int
+        Maximum samples per batch for balanced data.
+    calibrated : bool
+        Whether to run OOF calibration on each head.
+    max_rounds : int or None
+        XGBoost round cap passed to each batch.
+    max_imbalance_ratio : int
+        Negative-to-positive ratio above which imbalanced batching is used.
+
+    Attributes (after fit)
+    ----------------------
+    portfolio : list of str
+        Head names selected by the Portfolio class.
+    models : list of _BatchLazyClassifier
+        One fitted batch per training slice.
+    population_prior_ : float
+        Fraction of positives in the full training set.
+    oof_auc_ : float
+        Out-of-fold AUC averaged across batches.
+    train_auc_ : float
+        AUC on the full training set (optimistic estimate).
+    decision_cutoff_ : float
+        OOF-learned decision threshold, averaged across batches.
+    """
+
     def __init__(
         self,
         max_batch_size=100_000,
@@ -217,6 +275,12 @@ class LazyClassifier(object):
         self.max_rounds = max_rounds
 
     def fit(self, X, y):
+        """
+        Fit the ensemble on (X, y).
+
+        Selects a portfolio, plans batches, and fits one ``_BatchLazyClassifier``
+        per batch in sequence.
+        """
         logger.rule("LazyClassifier — fit")
         self.population_prior_ = float(np.mean(y == 1))
 
@@ -302,6 +366,7 @@ class LazyClassifier(object):
             return 0.5
 
     def predict_proba(self, X):
+        """Return prior-corrected calibrated probabilities, shape (n, 2)."""
         logger.debug(f"predict_proba: X={X.shape}  batches={len(self.models)}")
         R = np.array(
             [
@@ -323,25 +388,30 @@ class LazyClassifier(object):
         )
 
     def predict_logit(self, X):
+        """Return log-odds of calibrated probabilities, shape (n, 2)."""
         p = np.clip(self.predict_proba(X)[:, 1], 1e-7, 1.0 - 1e-7)
         logit_1 = np.log(p / (1.0 - p))
         return np.column_stack([-logit_1, logit_1])
 
     def predict_score(self, X):
+        """Return batch-averaged raw (pre-calibration) scores, shape (n, 2)."""
         R = np.array([model.predict_score(X)[:, 1] for model in self.models])
         proba = R.mean(axis=0)
         return np.array([1 - proba, proba]).T
 
     def predict_rank(self, X):
+        """Return batch-averaged rank quantiles (0–1), shape (n, 2)."""
         R = np.array([model.predict_rank(X)[:, 1] for model in self.models])
         rank_1 = R.mean(axis=0)
         return np.column_stack([1 - rank_1, rank_1])
 
     def predict(self, X, cutoff=None):
+        """Return binary labels using the OOF-learned decision cutoff."""
         threshold = self.decision_cutoff_ if cutoff is None else cutoff
         return (self.predict_score(X)[:, 1] >= threshold).astype(int)
 
     def save(self, directory):
+        """Save all batch models and metadata.json to *directory*."""
         logger.info(f"Saving LazyClassifier to {directory!r}")
         for batch_num, model in enumerate(self.models):
             model.save(directory, batch_num)

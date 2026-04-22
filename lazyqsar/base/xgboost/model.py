@@ -8,7 +8,7 @@ the validation split via the ref= parameter.
 On .fit(), both estimators run a two-phase portfolio process:
 
   Phase 2 – Portfolio selection (when a genuine validation split exists):
-    Five preset configurations are trained in parallel on the 90% training
+    Four preset configurations are trained in parallel on the 90% training
     split with early stopping against the 10% validation split:
       1. heuristic  – rule-based params from params.py (dataset-profiling based)
       2. default    – XGBoost out-of-the-box defaults (lr=0.3, max_depth=6)

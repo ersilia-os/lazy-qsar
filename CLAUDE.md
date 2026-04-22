@@ -33,7 +33,7 @@ The library has two entry points:
 - **`LazyClassifierQSAR`** (`lazyqsar/qsar.py`) — takes raw SMILES strings, computes molecular descriptors internally, trains an ensemble, exports to ONNX.
 - **`LazyClassifier`** (`lazyqsar/agnostic.py`) — takes pre-computed feature arrays or HDF5 files; descriptor-agnostic.
 
-`LazyClassifierQSAR` wraps multiple `LazyClassifier` instances (one per descriptor type) and averages their predictions. Descriptor mode is selected at init: `fast` (Morgan + RDKit), `default` (CDDD + Chemeleon + RDKit), `slow` (all four).
+`LazyClassifierQSAR` wraps multiple `LazyClassifier` instances (one per descriptor type) and combines their predictions via an AUC-weighted ensemble. Descriptor mode is selected at init: `fast` (Morgan fingerprints only), `slow` (CDDD, Chemeleon, CLAMP, Morgan, RDKit).
 
 ### Training pipeline (inside `LazyClassifier`)
 
@@ -60,7 +60,7 @@ All models export to ONNX at save time. At inference, only `numpy` + `onnxruntim
 
 ### Base models
 
-The three base classifiers (`base/linear/`, `base/xgboost/`, `base/randomforest/`) are self-contained and can be used independently. Each:
+The four base classifiers (`base/linear/`, `base/xgboost/`, `base/randomforest/`, `base/preprocessing/`) are self-contained and can be used independently. Each:
 - Auto-selects hyperparameters from dataset statistics (zero-shot, no grid search)
 - Runs an OOB/validation portfolio comparison between a data-driven heuristic preset and sklearn defaults
 - Calibrates probabilities via OOF isotonic regression or Platt scaling

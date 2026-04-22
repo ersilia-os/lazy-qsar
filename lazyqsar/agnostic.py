@@ -79,6 +79,7 @@ class LazyClassifier:
         return self._model.train_auc_
 
     def predict_proba(self, X=None, h5_file=None, h5_idxs=None) -> np.ndarray:
+        """Return calibrated class probabilities, shape (n, 2)."""
         if X is None:
             X = _load_h5(h5_file, h5_idxs)
         logger.debug(f"predict_proba: X={X.shape}")
@@ -87,26 +88,31 @@ class LazyClassifier:
     def predict(
         self, X=None, h5_file=None, h5_idxs=None, cutoff: float = None
     ) -> np.ndarray:
+        """Return binary labels using the OOF-learned decision cutoff, shape (n,)."""
         if X is None:
             X = _load_h5(h5_file, h5_idxs)
         return self._model.predict(X, cutoff=cutoff)
 
     def predict_lift(self, X=None, h5_file=None, h5_idxs=None) -> np.ndarray:
+        """Return lift over population prior, shape (n, 2)."""
         if X is None:
             X = _load_h5(h5_file, h5_idxs)
         return self._model.predict_lift(X)
 
     def predict_logit(self, X=None, h5_file=None, h5_idxs=None) -> np.ndarray:
+        """Return log-odds of calibrated probabilities, shape (n, 2)."""
         if X is None:
             X = _load_h5(h5_file, h5_idxs)
         return self._model.predict_logit(X)
 
     def predict_score(self, X=None, h5_file=None, h5_idxs=None) -> np.ndarray:
+        """Return raw (pre-calibration) scores, shape (n, 2)."""
         if X is None:
             X = _load_h5(h5_file, h5_idxs)
         return self._model.predict_score(X)
 
     def predict_rank(self, X=None, h5_file=None, h5_idxs=None) -> np.ndarray:
+        """Return rank quantiles relative to the training OOF distribution, shape (n, 2)."""
         if X is None:
             X = _load_h5(h5_file, h5_idxs)
         return self._model.predict_rank(X)

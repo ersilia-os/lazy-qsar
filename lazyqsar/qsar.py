@@ -102,6 +102,37 @@ def _smiles_md5(smiles_list):
 
 
 class ArtifactWrapper(object):
+    """
+    ONNX inference wrapper for a multi-descriptor LazyClassifierQSAR model.
+
+    Returned by ``LazyClassifierQSAR.load()`` / ``load_onnx()``. Holds one
+    ONNX artifact per descriptor type and exposes the same predict_* API as
+    the training-time ``LazyClassifierQSAR``.
+
+    Parameters
+    ----------
+    descriptors : list
+        Fitted descriptor objects (one per descriptor type).
+    artifacts : list
+        Loaded ONNX artifact objects (one per descriptor type).
+    ad_artifacts : list or None
+        Applicability domain artifacts (optional).
+    active_descriptors : list[bool] or None
+        Mask of which descriptors passed the applicability check.
+    ad_hard_cutoffs : list[float] or None
+        AD threshold below which a descriptor is vetoed for a sample.
+    oof_aucs : list[float | None]
+        Out-of-fold AUC per descriptor (used for weighting).
+    proxy_aucs : list[float | None]
+        Proxy AUC per descriptor (used for weighting).
+    rank_error_curves : list[tuple | None]
+        (r_knots, e_knots) rank→error curves per descriptor.
+    population_prior : float
+        Fraction of positives in the original training set.
+    descriptor_types : list[str] or None
+        Descriptor names in the same order as artifacts.
+    """
+
     def __init__(
         self,
         descriptors,
@@ -250,6 +281,34 @@ class ArtifactWrapper(object):
 
 
 class LazyClassifierQSAR(object):
+    """
+    SMILES-aware binary classifier with built-in descriptor computation.
+
+    Trains one ``LazyClassifier`` per descriptor type and combines their
+    predictions via an AUC-weighted ensemble that accounts for per-sample
+    prediction confidence (rank-based reliability).
+
+    Parameters
+    ----------
+    mode : str
+        Descriptor set to use:
+          - ``"fast"``  — Morgan fingerprints only (no DL models)
+          - ``"slow"``  — CDDD, Chemeleon, CLAMP, Morgan, RDKit
+
+    Attributes (after fit)
+    ----------------------
+    descriptor_types : list[str]
+        Names of the descriptor types used.
+    classifiers_ : list[LazyClassifier]
+        One fitted ``LazyClassifier`` per descriptor.
+    oof_aucs_ : list[float | None]
+        Per-descriptor OOF AUC.
+    proxy_aucs_ : list[float | None]
+        Per-descriptor proxy AUC (from a held-out split after fit).
+    population_prior_ : float
+        Fraction of positives in the training set.
+    """
+
     def __init__(
         self,
         mode: str = "slow",

@@ -29,6 +29,16 @@ class BasePreprocessor(BaseEstimator, TransformerMixin):
         self.task = task
 
     def fit(self, X, y) -> "BasePreprocessor":
+        """
+        Fit the preprocessing pipeline to (X, y).
+
+        Profiles the dataset, selects scaler and reducer, builds and fits the
+        sklearn Pipeline. If ``PowerTransformer`` fails, falls back to
+        ``RobustScaler`` automatically.
+
+        Sets ``pipeline_``, ``scaler_name_``, ``reducer_name_``,
+        ``n_features_in_``, ``n_features_out_``, and ``kept_feature_indices_``.
+        """
         logger.rule("BasePreprocessor")
 
         y = np.asarray(y).ravel()
@@ -92,10 +102,12 @@ class BasePreprocessor(BaseEstimator, TransformerMixin):
         return self
 
     def transform(self, X) -> np.ndarray:
+        """Apply the fitted pipeline to X, returning the preprocessed array."""
         check_is_fitted(self, "pipeline_")
         return self.pipeline_.transform(X)
 
     def fit_transform(self, X, y=None, **fit_params) -> np.ndarray:
+        """Fit and transform in one step."""
         return self.fit(X, y).transform(X)
 
     def _compute_kept_indices(self) -> list:
@@ -131,6 +143,12 @@ class BasePreprocessor(BaseEstimator, TransformerMixin):
         }
 
     def save(self, directory: str, onnx: bool = True) -> None:
+        """
+        Save the fitted pipeline to *directory*.
+
+        Writes ``preprocessor.json`` (metadata) and either
+        ``preprocessor.onnx`` (default) or ``preprocessor.joblib``.
+        """
         check_is_fitted(self, "pipeline_")
         os.makedirs(directory, exist_ok=True)
         base = os.path.join(directory, "preprocessor")
@@ -144,6 +162,7 @@ class BasePreprocessor(BaseEstimator, TransformerMixin):
             json.dump(self._metadata_dict(), f, indent=2)
 
     def to_onnx(self, path: str) -> None:
+        """Export the pipeline to ONNX (opset 15) at *path*."""
         check_is_fitted(self, "pipeline_")
         from skl2onnx import convert_sklearn
         from skl2onnx.common.data_types import FloatTensorType
@@ -159,10 +178,17 @@ class BasePreprocessor(BaseEstimator, TransformerMixin):
 
 
 class BasePreprocessorArtifact:
-    """A loaded, inference-only preprocessor."""
+    """
+    Inference-only preprocessor loaded from a saved directory.
+
+    Reads ``preprocessor.json`` and either ``preprocessor.onnx`` or
+    ``preprocessor.joblib``. No sklearn fit dependencies are required
+    when using the ONNX backend.
+    """
 
     @classmethod
     def load(cls, directory: str) -> "BasePreprocessorArtifact":
+        """Load the preprocessor from *directory*."""
         self = cls.__new__(cls)
         json_path = os.path.join(directory, "preprocessor.json")
         if not os.path.exists(json_path):
@@ -195,6 +221,7 @@ class BasePreprocessorArtifact:
         return self
 
     def run(self, X) -> np.ndarray:
+        """Apply the preprocessor to X, returning float32 array."""
         if self._backend == "onnx":
             if hasattr(X, "toarray"):
                 X = X.toarray()

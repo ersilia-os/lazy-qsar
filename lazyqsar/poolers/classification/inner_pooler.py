@@ -19,11 +19,46 @@ def _softmax(x: np.ndarray) -> np.ndarray:
 
 
 class InnerClassifierPooler(object):
+    """
+    Gating network that learns per-sample head weights from OOF predictions.
+
+    When multiple heads are present and OOF probabilities are available,
+    fits one Ridge regressor per head on the preprocessed features X_prep.
+    The Ridge target for head j on sample i is the softmax of log-likelihoods
+    across heads — i.e. how well each head explains each training sample.
+    At inference, weights are a linear projection of X through the Ridge
+    coefficients, softmax-normalized across heads.
+
+    Falls back to uniform weights when only one head is present or OOF data
+    is unavailable.
+
+    Parameters
+    ----------
+    portfolio : list of str
+        Head names in the ensemble, e.g. ``["xgb", "rf"]``.
+    """
+
     def __init__(self, portfolio: list):
         self.portfolio = portfolio
         self._n_heads = len(portfolio)
 
     def fit(self, S, y, X_prep=None):
+        """
+        Fit the gating network on OOF scores.
+
+        Parameters
+        ----------
+        S : ndarray, shape (n, n_heads)
+            OOF calibrated probabilities for class 1, one column per head.
+            Pass ``None`` to force equal-weight mode.
+        y : array-like, shape (n,)
+            Training labels (0/1).
+        X_prep : ndarray, shape (n, p) or None
+            Preprocessed feature matrix. If None, uniform weights are used.
+
+        Sets ``_gate_coef`` and ``_gate_intercept`` when gating is possible,
+        otherwise sets them to ``None`` (uniform weights at inference).
+        """
         y = np.asarray(y, dtype=int)
         oof_scores = [composite_score(y, S[:, i]) for i in range(self._n_heads)]
 
@@ -72,6 +107,22 @@ class InnerClassifierPooler(object):
         return _softmax(X_prep @ self._gate_coef.T + self._gate_intercept)
 
     def predict_proba(self, R, X_prep=None):
+        """
+        Return weighted ensemble probabilities.
+
+        Parameters
+        ----------
+        R : ndarray, shape (n, n_heads)
+            Per-head calibrated P(y=1).
+        X_prep : ndarray, shape (n, p) or None
+            Preprocessed features for computing per-sample weights.
+            If None, uniform weights are used.
+
+        Returns
+        -------
+        ndarray, shape (n, 2)
+            [P(y=0), P(y=1)] after gated averaging.
+        """
         if self._n_heads == 1:
             return np.column_stack([1 - R[:, 0], R[:, 0]])
         W = (
@@ -83,6 +134,7 @@ class InnerClassifierPooler(object):
         return np.column_stack([1 - p1, p1])
 
     def save(self, directory):
+        """Write ``pooler.json`` containing gate weights and portfolio list."""
         data = {"portfolio": self.portfolio}
         if self._gate_coef is not None:
             data["gate_coef"] = self._gate_coef.tolist()
@@ -94,6 +146,7 @@ class InnerClassifierPooler(object):
 
     @classmethod
     def load(cls, directory):
+        """Load a saved pooler from *directory* (reads ``pooler.json``)."""
         with open(f"{directory}/pooler.json") as f:
             data = json.load(f)
         inst = cls(portfolio=data["portfolio"])
@@ -109,6 +162,8 @@ class InnerClassifierPooler(object):
 
 
 class InnerPoolerArtifact(object):
+    """Inference-only pooler loaded from ``pooler.json``."""
+
     def __init__(self, data: dict):
         self._n_heads = len(data["portfolio"])
         if "gate_coef" in data:
@@ -118,6 +173,7 @@ class InnerPoolerArtifact(object):
             self._gate_coef = None
 
     def get_weights(self, X_prep: np.ndarray) -> np.ndarray:
+        """Return per-sample weights (n_samples, n_heads)."""
         if self._gate_coef is None:
             return np.full((len(X_prep), self._n_heads), 1.0 / self._n_heads)
         raw = X_prep @ self._gate_coef.T + self._gate_intercept
@@ -125,6 +181,7 @@ class InnerPoolerArtifact(object):
         return e / e.sum(axis=1, keepdims=True)
 
     def predict_proba(self, R, X_prep=None):
+        """Return gated ensemble probabilities, shape (n_samples, 2)."""
         if self._n_heads == 1:
             return np.column_stack([1 - R[:, 0], R[:, 0]])
         W = (
@@ -137,6 +194,7 @@ class InnerPoolerArtifact(object):
 
     @classmethod
     def load(cls, directory):
+        """Load pooler artifact from ``pooler.json`` in *directory*."""
         with open(os.path.join(directory, "pooler.json")) as f:
             data = json.load(f)
         return cls(data)
