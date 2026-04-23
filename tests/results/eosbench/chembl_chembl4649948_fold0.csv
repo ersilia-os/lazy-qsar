@@ -1,2 +1,2 @@
 source,dataset,fold,n_folds,n_train,n_test,n_pos_train,n_neg_train,n_pos_test,n_neg_test,auroc,aupr,aupr_baseline,aupr_ratio,auroc_ref_mean,auroc_ref_std,aupr_ref_mean,aupr_ref_std
-tdc,cyp2d6_veith,2,5,10504,2626,2011,8493,503,2123,0.8943,0.7424,0.1915,3.8757,0.8765,0.0093,0.6928,0.0183
+chembl,chembl4649948,0,5,69271,17318,1015,68256,253,17065,0.8434,0.1283,0.0146,8.7847,0.7782,0.0141,0.1007,0.0095
