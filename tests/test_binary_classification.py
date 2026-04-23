@@ -6,8 +6,8 @@ import time
 import h5py
 import argparse
 
-from lazyqsar.qsar import LazyBinaryQSAR
-from lazyqsar.agnostic import LazyBinaryClassifier
+from lazyqsar.qsar import LazyClassifierQSAR
+from lazyqsar.agnostic import LazyClassifier
 from lazyqsar.descriptors.morgan import MorganFingerprint
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import roc_auc_score
@@ -16,7 +16,9 @@ from lazyqsar.utils.logging import logger
 
 
 def rf_baseline_score(X_train, y_train, X_test, y_test):
-    rf = RandomForestClassifier(n_estimators=100, class_weight="balanced", random_state=42, n_jobs=-1)
+    rf = RandomForestClassifier(
+        n_estimators=100, class_weight="balanced", random_state=42, n_jobs=-1
+    )
     t0 = time.time()
     rf.fit(X_train, y_train)
     elapsed = time.time() - t0
@@ -83,20 +85,25 @@ def fit_and_evaluate(mode="default", clean=False, onnx=True, zip=True):
     X_train_morgan = morgan.transform(smiles_train)
     X_test_morgan = morgan.transform(smiles_test)
     rf_auc, rf_time = rf_baseline_score(X_train_morgan, y_train, X_test_morgan, y_test)
-    logger.info("RF baseline ROC-AUC: {0:.4f} (train time: {1:.1f}s)".format(rf_auc, rf_time))
+    logger.info(
+        "RF baseline ROC-AUC: {0:.4f} (train time: {1:.1f}s)".format(rf_auc, rf_time)
+    )
 
     logger.info("Using featurizer")
-    model = LazyBinaryQSAR(mode=mode)
+    model = LazyClassifierQSAR(mode=mode)
     t0 = time.time()
     model.fit(smiles_list=smiles_train, y=y_train)
     lazy_time = time.time() - t0
     model.save(output_dir_, onnx=onnx)
-    model = LazyBinaryQSAR.load(output_dir_)
+    model = LazyClassifierQSAR.load(output_dir_)
     y_pred = model.predict_proba(smiles_list=smiles_test)[:, 1]
     lazy_auc = roc_auc_score(y_test, y_pred)
 
-    logger.info("ROC-AUC: {0:.4f} (LazyQSAR, {1:.1f}s) vs {2:.4f} (RF, {3:.1f}s)".format(
-        lazy_auc, lazy_time, rf_auc, rf_time))
+    logger.info(
+        "ROC-AUC: {0:.4f} (LazyClassifierQSAR, {1:.1f}s) vs {2:.4f} (RF, {3:.1f}s)".format(
+            lazy_auc, lazy_time, rf_auc, rf_time
+        )
+    )
     logger.info("Y pred samples: {0}".format(random.sample(list(y_pred), 10)))
     if clean:
         logger.info("Removing temporary files from {0}".format(output_dir_))
@@ -113,10 +120,12 @@ def fit_and_evaluate_agnostic(mode="fast", clean=False, onnx=True, zip=True):
 
     logger.info("Computing RF baseline...")
     rf_auc, rf_time = rf_baseline_score(X_train, y_train, X_test, y_test)
-    logger.info("RF baseline ROC-AUC: {0:.4f} (train time: {1:.1f}s)".format(rf_auc, rf_time))
+    logger.info(
+        "RF baseline ROC-AUC: {0:.4f} (train time: {1:.1f}s)".format(rf_auc, rf_time)
+    )
 
     logger.info("Using agnostic model")
-    model = LazyBinaryClassifier()
+    model = LazyClassifier()
     t0 = time.time()
     model.fit(X=X_train, y=y_train)
     lazy_time = time.time() - t0
@@ -128,12 +137,16 @@ def fit_and_evaluate_agnostic(mode="fast", clean=False, onnx=True, zip=True):
     xgb_pred = base.xgb.predict_proba(X_test_prep)[:, 1]
 
     model.save(output_dir_, onnx=onnx)
-    model = LazyBinaryClassifier.load(output_dir_)
+    model = LazyClassifier.load(output_dir_)
     y_pred = model.predict_proba(X=X_test)[:, 1]
     lazy_auc = roc_auc_score(y_test, y_pred)
 
-    print("ROC-AUC: {0:.4f} (LazyQSAR, {1:.1f}s) vs {2:.4f} (RF, {3:.1f}s)".format(
-        lazy_auc, lazy_time, rf_auc, rf_time), flush=True)
+    print(
+        "ROC-AUC: {0:.4f} (LazyClassifierQSAR, {1:.1f}s) vs {2:.4f} (RF, {3:.1f}s)".format(
+            lazy_auc, lazy_time, rf_auc, rf_time
+        ),
+        flush=True,
+    )
     n = len(lr_pred)
     lr_mean = sum(lr_pred) / n
     xgb_mean = sum(xgb_pred) / n
@@ -147,7 +160,6 @@ def fit_and_evaluate_agnostic(mode="fast", clean=False, onnx=True, zip=True):
     print("\nLR vs XGB predicted probabilities (Pearson r={:.3f}):".format(corr))
     print("  {:<5} | {}".format("LR\\XGB", " " * width))
     edges = [i / bins for i in range(bins + 1)]
-    header_labels = "".join("{:<4}".format("{:.1f}".format(edges[i])) for i in range(0, bins + 1, 2))
     print("  {:<5} | 0{}1".format("", " " * (width - 2)))
     grid = [[0] * bins for _ in range(bins)]
     for i in range(len(lr_pred)):
@@ -158,7 +170,10 @@ def fit_and_evaluate_agnostic(mode="fast", clean=False, onnx=True, zip=True):
     chars = " .:-=+*#@"
     for row_i in range(bins - 1, -1, -1):
         label = "{:.1f}".format(edges[row_i])
-        cells = "".join(chars[min(int(c / max_count * (len(chars) - 1)), len(chars) - 1)] for c in grid[row_i])
+        cells = "".join(
+            chars[min(int(c / max_count * (len(chars) - 1)), len(chars) - 1)]
+            for c in grid[row_i]
+        )
         print("  {:<5} |{}|".format(label, cells))
     print("  {:<5} +{}+".format("", "-" * bins))
     print("  {:<5}  {}".format("", "0" + " " * (bins - 2) + "1"))

@@ -1,0 +1,12 @@
+dataset,model,roc_auc,pr_auc,ece,fit_time,infer_time,save_time,load_time,error
+bioavailability_ma,LazyClassifier,0.7359,0.8698,0.0662,35.327,0.0206,,,
+bioavailability_ma,LazyClassifier (no cal),0.7575,0.9024,0.1148,12.451,0.0051,,,
+bioavailability_ma,LazyClassifier (ONNX),0.7406,0.8696,0.0824,,0.0084,0.185,0.003,
+bioavailability_ma,LR (default),0.7184,0.8556,0.0808,0.175,0.0005,,,
+bioavailability_ma,XGB (default),0.7201,0.8777,0.1223,0.492,0.0156,,,
+bioavailability_ma,RF (default),0.7597,0.9,0.0744,0.104,0.0128,,,
+ames,LazyClassifier,,,,,,,,[13:34:53] /Users/runner/work/xgboost/xgboost/src/gbm/gbtree.h:123: Check failed: end <= model.BoostedRounds() (259 vs. 
+ames,LazyClassifier (no cal),0.8724,0.8845,0.0274,380.631,0.0858,,,
+ames,LR (default),0.8512,0.8637,0.0562,0.99,0.0054,,,
+ames,XGB (default),0.8773,0.8842,0.0242,0.651,0.0024,,,
+ames,RF (default),0.8997,0.9025,0.0364,0.476,0.0146,,,

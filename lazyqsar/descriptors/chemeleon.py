@@ -7,21 +7,32 @@ from ..utils.logging import logger
 
 from pathlib import Path
 from urllib.request import urlretrieve
-from lazyqsar.utils._install_extras import ensure_torch_cpu, ensure_chemprop
 
 try:
     import torch
 except ImportError:
-    ensure_torch_cpu()
-    import torch
+    raise ImportError(
+        "torch is required for ChemeleonDescriptor. "
+        'Install the full descriptor extras: pip install -e ".[all]"'
+    )
+
 try:
     import chemeleon  # noqa: F401
-except ImportError:
-    ensure_chemprop()
     from chemprop import featurizers, nn
     from chemprop.data import BatchMolGraph
     from chemprop.nn import RegressionFFN
     from chemprop.models import MPNN
+except ImportError:
+    try:
+        from chemprop import featurizers, nn
+        from chemprop.data import BatchMolGraph
+        from chemprop.nn import RegressionFFN
+        from chemprop.models import MPNN
+    except ImportError:
+        raise ImportError(
+            "chemprop is required for ChemeleonDescriptor. "
+            'Install the full descriptor extras: pip install -e ".[all]"'
+        )
 from rdkit.Chem import MolFromSmiles, Mol
 from rdkit import RDLogger
 
@@ -82,13 +93,22 @@ class ChemeleonDescriptor(object):
     def transform(self, smiles):
         chunk_size = 100
         R = []
-        logger.debug(f"Transforming CheMeleon descriptors in chunks of {chunk_size}...")
-        for i in range(0, len(smiles), chunk_size):
+        n_total = len(smiles)
+        milestones = {int(n_total * f / chunk_size) for f in (0.25, 0.5, 0.75)}
+        for i in range(0, n_total, chunk_size):
             chunk = smiles[i : i + chunk_size]
             X_chunk = np.array(self.chemeleon_fingerprint(chunk), dtype=np.float32)
-            R += [X_chunk]
-            logger.debug(f"Transformed {len(R) * chunk_size} samples so far...")
+            R.append(X_chunk)
+            done = len(R)
+            if done in milestones:
+                pct = int(done * chunk_size * 100 / n_total)
+                logger.debug(
+                    f"CheMeleon transform {pct}% ({done * chunk_size:,}/{n_total:,})"
+                )
         return np.concatenate(R, dtype=np.float32, axis=0)
+
+    def is_applicable(self, smiles_list: list) -> bool:
+        return True
 
     def save(self, dir_name: str):
         if not os.path.exists(dir_name):

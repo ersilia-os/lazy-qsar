@@ -1,6 +1,5 @@
 import os
 import json
-import multiprocessing
 import numpy as np
 from rdkit import Chem
 from rdkit.ML.Descriptors import MoleculeDescriptors
@@ -10,54 +9,35 @@ from ..utils.logging import logger
 
 RDLogger.DisableLog("rdApp.*")
 
-# Module-level worker state (initialised once per worker process)
-_worker_calculator = None
-_worker_n_desc = None
-
-
-def _init_rdkit_worker(descriptor_names):
-    global _worker_calculator, _worker_n_desc
-    from rdkit.ML.Descriptors import MoleculeDescriptors as _MD
-    _worker_calculator = _MD.MolecularDescriptorCalculator(descriptor_names)
-    _worker_n_desc = len(descriptor_names)
-
-
-def _compute_rdkit_worker(smiles):
-    import numpy as _np
-    from rdkit import Chem as _Chem
-    try:
-        mol = _Chem.MolFromSmiles(smiles)
-        if mol is None:
-            raise ValueError("Invalid molecule")
-        desc_values = _np.array(_worker_calculator.CalcDescriptors(mol), dtype=_np.float32)
-        desc_values[~_np.isfinite(desc_values)] = 0.0
-    except Exception:
-        desc_values = _np.zeros(_worker_n_desc, dtype=_np.float32)
-    return desc_values.tolist()
-
 
 class RDKitDescriptor(object):
     def __init__(self):
         self.featurizer_name = "rdkit"
-        self._descriptor_names = sorted([desc_name for desc_name, _ in Descriptors._descList])
+        self._descriptor_names = sorted(
+            [desc_name for desc_name, _ in Descriptors._descList]
+        )
         self.calculator = MoleculeDescriptors.MolecularDescriptorCalculator(
             self._descriptor_names
         )
         self.features = [n.lower() for n in self._descriptor_names]
 
     def transform(self, smiles_list):
-        n_workers = os.cpu_count() or 1
-        logger.debug(
-            f"Transforming RDKit descriptors using {n_workers} parallel workers..."
-        )
-        chunksize = max(1, len(smiles_list) // (n_workers * 4))
-        with multiprocessing.Pool(
-            n_workers,
-            initializer=_init_rdkit_worker,
-            initargs=(self._descriptor_names,),
-        ) as pool:
-            results = pool.map(_compute_rdkit_worker, smiles_list, chunksize=chunksize)
+        logger.debug("Transforming RDKit descriptors...")
+        results = []
+        for smi in smiles_list:
+            try:
+                mol = Chem.MolFromSmiles(smi)
+                if mol is None:
+                    raise ValueError("Invalid molecule")
+                vals = np.array(self.calculator.CalcDescriptors(mol), dtype=np.float32)
+                vals[~np.isfinite(vals)] = 0.0
+            except Exception:
+                vals = np.zeros(len(self._descriptor_names), dtype=np.float32)
+            results.append(vals)
         return np.clip(np.array(results, dtype=np.float32), -1e5, 1e5)
+
+    def is_applicable(self, smiles_list: list) -> bool:
+        return True
 
     def save(self, dir_name: str):
         if not os.path.exists(dir_name):

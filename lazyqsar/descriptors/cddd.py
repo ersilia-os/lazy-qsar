@@ -28,6 +28,7 @@ ORGANIC_ATOM_SET = set([5, 6, 7, 8, 9, 15, 16, 17, 35, 53])
 
 if rdkit_version != "2025.09.1":
     import warnings
+
     warnings.warn(
         f"CDDD was tested with RDKit 2025.09.1, but you have {rdkit_version}. "
         "Results may differ.",
@@ -39,6 +40,7 @@ if rdkit_version != "2025.09.1":
 class ChemblNearestNeighbour(object):
     def __init__(self, similarity_threshold=0.7):
         from FPSim2 import FPSim2Engine
+
         self.similarity_threshold = similarity_threshold
         ckpt_dir = Path().home() / ".lazyqsar"
         ckpt_dir.mkdir(exist_ok=True)
@@ -461,6 +463,15 @@ class ContinuousDataDrivenDescriptor(object):
         )
         embeddings = np.array(outputs, dtype=np.float32)
         return embeddings
+
+    def is_applicable(self, smiles_list: list) -> bool:
+        _MAX_SMILES_LEN = 150
+        n_inapplicable = sum(
+            1
+            for s in smiles_list
+            if len(s) > _MAX_SMILES_LEN or not isinstance(preprocess_smiles(s), str)
+        )
+        return n_inapplicable / len(smiles_list) <= 0.001
 
     def save(self, dir_name: str):
         if not os.path.exists(dir_name):
