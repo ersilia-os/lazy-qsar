@@ -552,8 +552,8 @@ class BaseSVCClassifier(BaseEstimator, ClassifierMixin):
                     self._use_linear_ = True
                     self.preset_name_ = self.preset_name_ + "+linear_guard"
 
-        self.decision_cutoff_ = _DEFAULT_DECISION_CUTOFF
-        self.decision_cutoff_source_ = "default_0.5"
+        self.decision_cutoff_raw_ = _DEFAULT_DECISION_CUTOFF
+        self.decision_cutoff_raw_source_ = "default_0.5"
         self.decision_cutoff_proba_ = _DEFAULT_DECISION_CUTOFF
         self.decision_cutoff_rank_ = _DEFAULT_DECISION_CUTOFF
         self.decision_cutoff_logit_ = 0.0
@@ -564,8 +564,8 @@ class BaseSVCClassifier(BaseEstimator, ClassifierMixin):
             f"n_sv={'N/A (linear)' if self._use_linear_ else self.svc_.support_vectors_.shape[0]}"
         )
         logger.info(
-            f"decision cutoff: {self.decision_cutoff_:.4f} | "
-            f"source={self.decision_cutoff_source_}"
+            f"decision cutoff: {self.decision_cutoff_raw_:.4f} | "
+            f"source={self.decision_cutoff_raw_source_}"
         )
         return self
 
@@ -628,16 +628,16 @@ class BaseSVCClassifier(BaseEstimator, ClassifierMixin):
             self.oof_probas_ = cal.predict_proba(oof_sigmoid.reshape(-1, 1))[:, 1]
             self.calibrator_method_ = "platt"
         self.calibrator_ = cal
-        self.decision_cutoff_, self.decision_cutoff_source_ = (
+        self.decision_cutoff_raw_, self.decision_cutoff_raw_source_ = (
             _learn_balanced_accuracy_cutoff(y, oof_sigmoid)
         )
         if self.calibrator_method_ == "isotonic":
             self.decision_cutoff_proba_ = float(np.clip(
-                self.calibrator_.predict(np.array([self.decision_cutoff_]))[0], 0.0, 1.0
+                self.calibrator_.predict(np.array([self.decision_cutoff_raw_]))[0], 0.0, 1.0
             ))
         else:
             self.decision_cutoff_proba_ = float(
-                self.calibrator_.predict_proba(np.array([[self.decision_cutoff_]]))[:, 1][0]
+                self.calibrator_.predict_proba(np.array([[self.decision_cutoff_raw_]]))[:, 1][0]
             )
         self.oof_y_ = y.copy()
 
@@ -651,7 +651,7 @@ class BaseSVCClassifier(BaseEstimator, ClassifierMixin):
             self._ranker_knots = sorted_scores
         n_k = len(self._ranker_knots)
         self.decision_cutoff_rank_ = float(np.interp(
-            self.decision_cutoff_, self._ranker_knots, np.linspace(0.0, 1.0, n_k)
+            self.decision_cutoff_raw_, self._ranker_knots, np.linspace(0.0, 1.0, n_k)
         ))
         _p = np.clip(self.decision_cutoff_proba_, 1e-7, 1.0 - 1e-7)
         self.decision_cutoff_logit_ = float(np.log(_p / (1.0 - _p)))
@@ -660,8 +660,8 @@ class BaseSVCClassifier(BaseEstimator, ClassifierMixin):
             f"minority={minority_count}) on {k}-fold OOF."
         )
         logger.info(
-            f"cutoff: {self.decision_cutoff_:.4f} | "
-            f"source={self.decision_cutoff_source_}"
+            f"cutoff: {self.decision_cutoff_raw_:.4f} | "
+            f"source={self.decision_cutoff_raw_source_}"
         )
         return self
 
@@ -711,7 +711,7 @@ class BaseSVCClassifier(BaseEstimator, ClassifierMixin):
 
     def predict(self, X, cutoff: float | None = None) -> np.ndarray:
         """Return binary 0/1 predictions."""
-        threshold = self.decision_cutoff_ if cutoff is None else float(cutoff)
+        threshold = self.decision_cutoff_raw_ if cutoff is None else float(cutoff)
         return (self.predict_score(X)[:, 1] >= threshold).astype(int)
 
     # ------------------------------------------------------------------
@@ -762,11 +762,11 @@ class BaseSVCClassifier(BaseEstimator, ClassifierMixin):
             "params": self.params_,
             "profile": profile_dict,
             "portfolio_scores": self.portfolio_scores_,
-            "decision_cutoff": float(
-                getattr(self, "decision_cutoff_", _DEFAULT_DECISION_CUTOFF)
+            "decision_cutoff_raw": float(
+                getattr(self, "decision_cutoff_raw_", _DEFAULT_DECISION_CUTOFF)
             ),
-            "decision_cutoff_source": getattr(
-                self, "decision_cutoff_source_", "default_0.5"
+            "decision_cutoff_raw_source": getattr(
+                self, "decision_cutoff_raw_source_", "default_0.5"
             ),
             "decision_cutoff_proba": float(
                 getattr(self, "decision_cutoff_proba_", _DEFAULT_DECISION_CUTOFF)
@@ -819,7 +819,7 @@ class BaseSVCArtifact:
         self.metadata: dict = {}
         self._cal = None
         self._ranker = None
-        self.decision_cutoff = _DEFAULT_DECISION_CUTOFF
+        self.decision_cutoff_raw = _DEFAULT_DECISION_CUTOFF
         self.decision_cutoff_proba = _DEFAULT_DECISION_CUTOFF
         self.decision_cutoff_rank = _DEFAULT_DECISION_CUTOFF
         self.decision_cutoff_logit = 0.0
@@ -840,8 +840,8 @@ class BaseSVCArtifact:
             )
         self._cal = self.metadata.get("calibrator", None)
         self._ranker = self.metadata.get("ranker", None)
-        self.decision_cutoff = float(
-            self.metadata.get("decision_cutoff", _DEFAULT_DECISION_CUTOFF)
+        self.decision_cutoff_raw = float(
+            self.metadata.get("decision_cutoff_raw", _DEFAULT_DECISION_CUTOFF)
         )
         self.decision_cutoff_proba = float(
             self.metadata.get("decision_cutoff_proba", _DEFAULT_DECISION_CUTOFF)
@@ -916,5 +916,5 @@ class BaseSVCArtifact:
 
     def predict(self, X, cutoff: float | None = None) -> np.ndarray:
         """Return binary 0/1 predictions."""
-        threshold = self.decision_cutoff if cutoff is None else float(cutoff)
+        threshold = self.decision_cutoff_raw if cutoff is None else float(cutoff)
         return (self.run(X)[:, 1] >= threshold).astype(int)

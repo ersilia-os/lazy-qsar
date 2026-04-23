@@ -350,6 +350,8 @@ class LazyClassifierQSAR(object):
         n = len(smiles_list)
         pos_rate = float(y.mean())
         self.population_prior_ = pos_rate
+        self.n_compounds_ = n
+        self.n_actives_ = int((y == 1).sum())
 
         applicable = DescriptorPortfolio(self.mode).select(smiles_list, y=y)
         self.descriptor_types = [name for name, _, _, _ in applicable]
@@ -593,9 +595,36 @@ class LazyClassifierQSAR(object):
         meta = {
             "mode": self.mode,
             "descriptor_types": self.descriptor_types,
+            "n_compounds": getattr(self, "n_compounds_", None),
+            "n_actives": getattr(self, "n_actives_", None),
+            "ratio_actives": float(self.population_prior_)
+            if hasattr(self, "population_prior_")
+            else None,
             "population_prior": float(self.population_prior_)
             if hasattr(self, "population_prior_")
             else 0.5,
+            "portfolio": self.models[0]._model.portfolio if self.models else [],
+            "num_batches": {
+                name: len(m._model.models)
+                for name, m in zip(self.descriptor_types, self.models)
+            }
+            if self.models
+            else {},
+            "decision_cutoff_raw": float(
+                np.mean([m._model.decision_cutoff_raw_ for m in self.models])
+            )
+            if self.models
+            else None,
+            "decision_cutoff_proba": float(
+                np.mean([m._model.decision_cutoff_proba_ for m in self.models])
+            )
+            if self.models
+            else None,
+            "decision_cutoff_rank": float(
+                np.mean([m._model.decision_cutoff_rank_ for m in self.models])
+            )
+            if self.models
+            else None,
             "oof_aucs": {
                 name: float(auc)
                 for name, auc in zip(self.descriptor_types, self.oof_aucs_)
@@ -641,6 +670,19 @@ class LazyClassifierQSAR(object):
             if hasattr(self, "_rank_error_curves_")
             else {},
         }
+        if self.models:
+            _avg_p = meta["decision_cutoff_proba"]
+            if _avg_p is not None:
+                _p_clip = float(np.clip(_avg_p, 1e-7, 1.0 - 1e-7))
+                meta["decision_cutoff_logit"] = float(np.log(_p_clip / (1.0 - _p_clip)))
+                _prior = meta.get("population_prior") or 0
+                meta["decision_cutoff_lift"] = float(_avg_p / _prior) if _prior > 0 else None
+            else:
+                meta["decision_cutoff_logit"] = None
+                meta["decision_cutoff_lift"] = None
+        else:
+            meta["decision_cutoff_logit"] = None
+            meta["decision_cutoff_lift"] = None
         with open(os.path.join(model_dir, "metadata.json"), "w") as f:
             json.dump(meta, f, indent=2)
 

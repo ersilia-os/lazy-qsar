@@ -180,7 +180,7 @@ class BaseRFClassifier(BaseEstimator):
         Calibrated out-of-fold probabilities for class 1 (after calibrate()).
     oof_y_ : ndarray, shape (n,)
         Training labels in the same order as X.
-    decision_cutoff_ : float
+    decision_cutoff_raw_ : float
         OOF-learned threshold that maximises balanced accuracy.
     classes_ : ndarray
         ``[0, 1]``
@@ -356,8 +356,8 @@ class BaseRFClassifier(BaseEstimator):
 
         self.timing_ = {"fit": _time.perf_counter() - _t_fit}
         self.classes_ = np.array([0, 1])
-        self.decision_cutoff_ = _DEFAULT_DECISION_CUTOFF
-        self.decision_cutoff_source_ = "default_0.5"
+        self.decision_cutoff_raw_ = _DEFAULT_DECISION_CUTOFF
+        self.decision_cutoff_raw_source_ = "default_0.5"
         self.decision_cutoff_proba_ = _DEFAULT_DECISION_CUTOFF
         self.decision_cutoff_rank_ = _DEFAULT_DECISION_CUTOFF
         self.decision_cutoff_logit_ = 0.0
@@ -375,7 +375,7 @@ class BaseRFClassifier(BaseEstimator):
         )
         logger.info(
             "decision cutoff: "
-            f"{self.decision_cutoff_:.4f} | metric=balanced_accuracy | source={self.decision_cutoff_source_}"
+            f"{self.decision_cutoff_raw_:.4f} | metric=balanced_accuracy | source={self.decision_cutoff_raw_source_}"
         )
         logger.rule("Done")
         return self
@@ -398,7 +398,7 @@ class BaseRFClassifier(BaseEstimator):
         return self._estimator.predict_proba(X)
 
     def predict(self, X, cutoff: float | None = None):
-        threshold = self.decision_cutoff_ if cutoff is None else float(cutoff)
+        threshold = self.decision_cutoff_raw_ if cutoff is None else float(cutoff)
         return (self.predict_score(X)[:, 1] >= threshold).astype(int)
 
     def predict_logit(self, X) -> np.ndarray:
@@ -458,16 +458,16 @@ class BaseRFClassifier(BaseEstimator):
             self.oof_probas_ = cal.predict_proba(oof_raw.reshape(-1, 1))[:, 1]
             self.calibrator_method_ = "platt"
         self.calibrator_ = cal
-        self.decision_cutoff_, self.decision_cutoff_source_ = (
+        self.decision_cutoff_raw_, self.decision_cutoff_raw_source_ = (
             _learn_balanced_accuracy_cutoff(y, oof_raw)
         )
         if self.calibrator_method_ == "isotonic":
             self.decision_cutoff_proba_ = float(np.clip(
-                self.calibrator_.predict(np.array([self.decision_cutoff_]))[0], 0.0, 1.0
+                self.calibrator_.predict(np.array([self.decision_cutoff_raw_]))[0], 0.0, 1.0
             ))
         else:
             self.decision_cutoff_proba_ = float(
-                self.calibrator_.predict_proba(np.array([[self.decision_cutoff_]]))[:, 1][0]
+                self.calibrator_.predict_proba(np.array([[self.decision_cutoff_raw_]]))[:, 1][0]
             )
         self.oof_y_ = y.copy()
         sorted_scores = np.sort(oof_raw)
@@ -479,7 +479,7 @@ class BaseRFClassifier(BaseEstimator):
             self._ranker_knots = sorted_scores
         n_k = len(self._ranker_knots)
         self.decision_cutoff_rank_ = float(np.interp(
-            self.decision_cutoff_, self._ranker_knots, np.linspace(0.0, 1.0, n_k)
+            self.decision_cutoff_raw_, self._ranker_knots, np.linspace(0.0, 1.0, n_k)
         ))
         _p = np.clip(self.decision_cutoff_proba_, 1e-7, 1.0 - 1e-7)
         self.decision_cutoff_logit_ = float(np.log(_p / (1.0 - _p)))
@@ -488,7 +488,7 @@ class BaseRFClassifier(BaseEstimator):
         )
         logger.info(
             "calibration cutoff learned from OOF scores: "
-            f"{self.decision_cutoff_:.4f} | metric=balanced_accuracy | source={self.decision_cutoff_source_}"
+            f"{self.decision_cutoff_raw_:.4f} | metric=balanced_accuracy | source={self.decision_cutoff_raw_source_}"
         )
         return self
 
@@ -545,11 +545,11 @@ class BaseRFClassifier(BaseEstimator):
             "n_estimators": params.get("n_estimators", self.n_estimators),
             "selected_preset": getattr(self, "selected_preset_", "unknown"),
             "n_features_in": self.n_features_in_,
-            "decision_cutoff": float(
-                getattr(self, "decision_cutoff_", _DEFAULT_DECISION_CUTOFF)
+            "decision_cutoff_raw": float(
+                getattr(self, "decision_cutoff_raw_", _DEFAULT_DECISION_CUTOFF)
             ),
-            "decision_cutoff_source": getattr(
-                self, "decision_cutoff_source_", "default_0.5"
+            "decision_cutoff_raw_source": getattr(
+                self, "decision_cutoff_raw_source_", "default_0.5"
             ),
             "decision_cutoff_proba": float(
                 getattr(self, "decision_cutoff_proba_", _DEFAULT_DECISION_CUTOFF)
@@ -602,8 +602,8 @@ class BaseRFArtifact:
         self.metadata = {}
         self.task = ""
         self._cal = None
-        self.decision_cutoff = _DEFAULT_DECISION_CUTOFF
-        self.decision_cutoff_source = "default_0.5"
+        self.decision_cutoff_raw = _DEFAULT_DECISION_CUTOFF
+        self.decision_cutoff_raw_source = "default_0.5"
         self.decision_cutoff_proba = _DEFAULT_DECISION_CUTOFF
         self.decision_cutoff_rank = _DEFAULT_DECISION_CUTOFF
         self.decision_cutoff_logit = 0.0
@@ -633,11 +633,11 @@ class BaseRFArtifact:
         artifact.task = artifact.metadata["task"]
         artifact._format = artifact.metadata.get("format", "onnx")
         artifact._cal = artifact.metadata.get("calibrator", None)
-        artifact.decision_cutoff = float(
-            artifact.metadata.get("decision_cutoff", _DEFAULT_DECISION_CUTOFF)
+        artifact.decision_cutoff_raw = float(
+            artifact.metadata.get("decision_cutoff_raw", _DEFAULT_DECISION_CUTOFF)
         )
-        artifact.decision_cutoff_source = artifact.metadata.get(
-            "decision_cutoff_source", "default_0.5"
+        artifact.decision_cutoff_raw_source = artifact.metadata.get(
+            "decision_cutoff_raw_source", "default_0.5"
         )
         artifact.decision_cutoff_proba = float(
             artifact.metadata.get("decision_cutoff_proba", _DEFAULT_DECISION_CUTOFF)
@@ -691,7 +691,7 @@ class BaseRFArtifact:
 
     def predict(self, X, cutoff: float | None = None) -> np.ndarray:
         """Return binary labels using the stored decision cutoff by default."""
-        threshold = self.decision_cutoff if cutoff is None else float(cutoff)
+        threshold = self.decision_cutoff_raw if cutoff is None else float(cutoff)
         return (self.run(X)[:, 1] >= threshold).astype(int)
 
     def predict_score(self, X) -> np.ndarray:

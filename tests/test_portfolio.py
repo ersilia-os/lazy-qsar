@@ -176,7 +176,7 @@ def test_assembler_consumes_portfolio_get_unchanged(monkeypatch):
     class DummyHead:
         def __init__(self, **kwargs):
             self.model = SimpleNamespace(
-                decision_cutoff_=0.5,
+                decision_cutoff_raw_=0.5,
                 timing_={},
             )
 

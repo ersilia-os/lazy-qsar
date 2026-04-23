@@ -118,15 +118,15 @@ class LazyClassifierArtifact:
         ]
         self._population_prior = metadata.get("population_prior", None)
         self._batch_priors = metadata.get("batch_priors", None)
-        if "decision_cutoff" in metadata:
-            self._decision_cutoff = float(metadata["decision_cutoff"])
+        if "decision_cutoff_raw" in metadata:
+            self._decision_cutoff_raw = float(metadata["decision_cutoff_raw"])
         else:
             all_cutoffs = [
-                h.metadata.get("decision_cutoff", 0.5)
+                h.metadata.get("decision_cutoff_raw", 0.5)
                 for b in self._batches
                 for h in b.heads
             ]
-            self._decision_cutoff = float(np.mean(all_cutoffs)) if all_cutoffs else 0.5
+            self._decision_cutoff_raw = float(np.mean(all_cutoffs)) if all_cutoffs else 0.5
         self._decision_cutoff_proba = float(metadata.get("decision_cutoff_proba", 0.5))
         self._decision_cutoff_rank = float(metadata.get("decision_cutoff_rank", 0.5))
         self._decision_cutoff_logit = float(metadata.get("decision_cutoff_logit", 0.0))
@@ -170,7 +170,7 @@ class LazyClassifierArtifact:
 
     def predict(self, X, cutoff: float = None) -> np.ndarray:
         """Return binary predictions (0 or 1)."""
-        threshold = self._decision_cutoff if cutoff is None else cutoff
+        threshold = self._decision_cutoff_raw if cutoff is None else cutoff
         return (self.predict_score(X)[:, 1] >= threshold).astype(int)
 
     def predict_lift(self, X) -> np.ndarray:

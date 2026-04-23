@@ -146,8 +146,8 @@ def test_svc_calibrated_learns_cutoff():
     X, y = make_clf_data()
     clf = BaseSVCClassifier(portfolio=False, calibrated=True)
     clf.fit(X, y)
-    assert hasattr(clf, "decision_cutoff_")
-    assert clf.decision_cutoff_source_ in {"oof_balanced_accuracy", "default_0.5"}
+    assert hasattr(clf, "decision_cutoff_raw_")
+    assert clf.decision_cutoff_raw_source_ in {"oof_balanced_accuracy", "default_0.5"}
 
 
 def test_svc_calibrated_has_calibrator():

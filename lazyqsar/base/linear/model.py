@@ -403,14 +403,14 @@ class BaseLinearClassifier(BaseEstimator):
             self.coef_ = None
 
         self.classes_ = self._label_encoder.classes_
-        self.decision_cutoff_ = _DEFAULT_DECISION_CUTOFF
-        self.decision_cutoff_source_ = "default_0.5"
+        self.decision_cutoff_raw_ = _DEFAULT_DECISION_CUTOFF
+        self.decision_cutoff_raw_source_ = "default_0.5"
         self.decision_cutoff_proba_ = _DEFAULT_DECISION_CUTOFF
         self.decision_cutoff_rank_ = _DEFAULT_DECISION_CUTOFF
         self.decision_cutoff_logit_ = 0.0
         logger.info(
             "decision cutoff: "
-            f"{self.decision_cutoff_:.4f} | metric=balanced_accuracy | source={self.decision_cutoff_source_}"
+            f"{self.decision_cutoff_raw_:.4f} | metric=balanced_accuracy | source={self.decision_cutoff_raw_source_}"
         )
 
         logger.rule("Done")
@@ -431,7 +431,7 @@ class BaseLinearClassifier(BaseEstimator):
 
     def predict(self, X, cutoff: float | None = None) -> np.ndarray:
         check_is_fitted(self, attributes=["_estimator"])
-        threshold = self.decision_cutoff_ if cutoff is None else float(cutoff)
+        threshold = self.decision_cutoff_raw_ if cutoff is None else float(cutoff)
         proba = self.predict_score(X)[:, 1]
         y_enc = (proba >= threshold).astype(int)
         return self._label_encoder.inverse_transform(y_enc)
@@ -596,16 +596,16 @@ class BaseLinearClassifier(BaseEstimator):
             self.oof_probas_ = cal.predict_proba(oof_raw.reshape(-1, 1))[:, 1]
             self.calibrator_method_ = "platt"
         self.calibrator_ = cal
-        self.decision_cutoff_, self.decision_cutoff_source_ = (
+        self.decision_cutoff_raw_, self.decision_cutoff_raw_source_ = (
             _learn_balanced_accuracy_cutoff(y, oof_raw)
         )
         if self.calibrator_method_ == "isotonic":
             self.decision_cutoff_proba_ = float(np.clip(
-                self.calibrator_.predict(np.array([self.decision_cutoff_]))[0], 0.0, 1.0
+                self.calibrator_.predict(np.array([self.decision_cutoff_raw_]))[0], 0.0, 1.0
             ))
         else:
             self.decision_cutoff_proba_ = float(
-                self.calibrator_.predict_proba(np.array([[self.decision_cutoff_]]))[:, 1][0]
+                self.calibrator_.predict_proba(np.array([[self.decision_cutoff_raw_]]))[:, 1][0]
             )
         self.oof_y_ = y.copy()
         sorted_scores = np.sort(oof_raw)
@@ -617,7 +617,7 @@ class BaseLinearClassifier(BaseEstimator):
             self._ranker_knots = sorted_scores
         n_k = len(self._ranker_knots)
         self.decision_cutoff_rank_ = float(np.interp(
-            self.decision_cutoff_, self._ranker_knots, np.linspace(0.0, 1.0, n_k)
+            self.decision_cutoff_raw_, self._ranker_knots, np.linspace(0.0, 1.0, n_k)
         ))
         _p = np.clip(self.decision_cutoff_proba_, 1e-7, 1.0 - 1e-7)
         self.decision_cutoff_logit_ = float(np.log(_p / (1.0 - _p)))
@@ -627,7 +627,7 @@ class BaseLinearClassifier(BaseEstimator):
         )
         logger.info(
             "calibration cutoff learned from OOF scores: "
-            f"{self.decision_cutoff_:.4f} | metric=balanced_accuracy | source={self.decision_cutoff_source_}"
+            f"{self.decision_cutoff_raw_:.4f} | metric=balanced_accuracy | source={self.decision_cutoff_raw_source_}"
         )
         return self
 
@@ -702,11 +702,11 @@ class BaseLinearClassifier(BaseEstimator):
             "n_features_in": self.n_features_in_,
             "classes": self._label_encoder.classes_.tolist(),
             "feature_mask": self.feature_mask_.tolist(),
-            "decision_cutoff": float(
-                getattr(self, "decision_cutoff_", _DEFAULT_DECISION_CUTOFF)
+            "decision_cutoff_raw": float(
+                getattr(self, "decision_cutoff_raw_", _DEFAULT_DECISION_CUTOFF)
             ),
-            "decision_cutoff_source": getattr(
-                self, "decision_cutoff_source_", "default_0.5"
+            "decision_cutoff_raw_source": getattr(
+                self, "decision_cutoff_raw_source_", "default_0.5"
             ),
             "decision_cutoff_proba": float(
                 getattr(self, "decision_cutoff_proba_", _DEFAULT_DECISION_CUTOFF)
@@ -1306,8 +1306,8 @@ class BaseLinearArtifact:
         self.metadata: dict = {}
         self.task: str = ""
         self._cal = None
-        self.decision_cutoff: float = _DEFAULT_DECISION_CUTOFF
-        self.decision_cutoff_source: str = "default_0.5"
+        self.decision_cutoff_raw: float = _DEFAULT_DECISION_CUTOFF
+        self.decision_cutoff_raw_source: str = "default_0.5"
         self.decision_cutoff_proba: float = _DEFAULT_DECISION_CUTOFF
         self.decision_cutoff_rank: float = _DEFAULT_DECISION_CUTOFF
         self.decision_cutoff_logit: float = 0.0
@@ -1341,11 +1341,11 @@ class BaseLinearArtifact:
         artifact._format = fmt
 
         artifact._cal = artifact.metadata.get("calibrator", None)
-        artifact.decision_cutoff = float(
-            artifact.metadata.get("decision_cutoff", _DEFAULT_DECISION_CUTOFF)
+        artifact.decision_cutoff_raw = float(
+            artifact.metadata.get("decision_cutoff_raw", _DEFAULT_DECISION_CUTOFF)
         )
-        artifact.decision_cutoff_source = artifact.metadata.get(
-            "decision_cutoff_source", "default_0.5"
+        artifact.decision_cutoff_raw_source = artifact.metadata.get(
+            "decision_cutoff_raw_source", "default_0.5"
         )
         artifact.decision_cutoff_proba = float(
             artifact.metadata.get("decision_cutoff_proba", _DEFAULT_DECISION_CUTOFF)
@@ -1431,6 +1431,6 @@ class BaseLinearArtifact:
             raise RuntimeError(
                 "predict() is only available for classification artifacts."
             )
-        threshold = self.decision_cutoff if cutoff is None else float(cutoff)
+        threshold = self.decision_cutoff_raw if cutoff is None else float(cutoff)
         classes = np.asarray(self.metadata.get("classes", [0, 1]))
         return classes[(self.run(X)[:, 1] >= threshold).astype(int)]

@@ -125,11 +125,11 @@ class _BatchLazyClassifier(object):
         self.pooler.fit(S, y, X_prep=X)
         t_pooler = _time.perf_counter() - _t_pooler
         cutoffs = [
-            h.model.decision_cutoff_
+            h.model.decision_cutoff_raw_
             for h in self.heads
-            if hasattr(getattr(h, "model", None), "decision_cutoff_")
+            if hasattr(getattr(h, "model", None), "decision_cutoff_raw_")
         ]
-        self.decision_cutoff_ = float(np.mean(cutoffs)) if cutoffs else 0.5
+        self.decision_cutoff_raw_ = float(np.mean(cutoffs)) if cutoffs else 0.5
         cutoffs_proba = [
             h.model.decision_cutoff_proba_
             for h in self.heads
@@ -236,7 +236,7 @@ class _BatchLazyClassifier(object):
 
     def predict(self, X, cutoff=None):
         """Return binary labels using the OOF-learned decision cutoff."""
-        threshold = self.decision_cutoff_ if cutoff is None else cutoff
+        threshold = self.decision_cutoff_raw_ if cutoff is None else cutoff
         return (self.predict_score(X)[:, 1] >= threshold).astype(int)
 
     def save(self, directory, batch_num):
@@ -351,8 +351,8 @@ class LazyClassifier(object):
             self.models.append(batch_classifier)
 
         self.batch_priors_ = [m.train_prior_ for m in self.models]
-        self.decision_cutoff_ = float(
-            np.mean([m.decision_cutoff_ for m in self.models])
+        self.decision_cutoff_raw_ = float(
+            np.mean([m.decision_cutoff_raw_ for m in self.models])
         )
         self.decision_cutoff_proba_ = float(
             np.mean([m.decision_cutoff_proba_ for m in self.models])
@@ -445,7 +445,7 @@ class LazyClassifier(object):
 
     def predict(self, X, cutoff=None):
         """Return binary labels using the OOF-learned decision cutoff."""
-        threshold = self.decision_cutoff_ if cutoff is None else cutoff
+        threshold = self.decision_cutoff_raw_ if cutoff is None else cutoff
         return (self.predict_score(X)[:, 1] >= threshold).astype(int)
 
     def save(self, directory):
@@ -460,7 +460,7 @@ class LazyClassifier(object):
             "num_batches": len(self.models),
             "population_prior": self.population_prior_,
             "batch_priors": self.batch_priors_,
-            "decision_cutoff": self.decision_cutoff_,
+            "decision_cutoff_raw": self.decision_cutoff_raw_,
             "decision_cutoff_proba": self.decision_cutoff_proba_,
             "decision_cutoff_rank": self.decision_cutoff_rank_,
             "decision_cutoff_logit": self.decision_cutoff_logit_,

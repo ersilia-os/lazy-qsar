@@ -792,9 +792,9 @@ def train_dataset(
     p1_active = p1[y_test == 1]
     p1_inactive = p1[y_test == 0]
     cutoffs = [
-        m._model.decision_cutoff_
+        m._model.decision_cutoff_raw_
         for m in model.models
-        if hasattr(getattr(m, "_model", None), "decision_cutoff_")
+        if hasattr(getattr(m, "_model", None), "decision_cutoff_raw_")
     ]
     optimal_cutoff = float(np.mean(cutoffs)) if cutoffs else np.nan
 

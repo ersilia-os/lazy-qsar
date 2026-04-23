@@ -1,3 +1,4 @@
+import json
 import os
 import csv
 import shutil
@@ -111,6 +112,9 @@ def fit(data_dir: str, model_dir: str, models_txt: str = None, mode: str = "defa
         smiles_list, y = get_task_data(data_dir, task_name)
         data[task_name] = (smiles_list, y)
 
+    # Collect per-(task, descriptor) metadata to build the task-level metadata.json
+    task_descriptor_meta = {task: {} for task in task_names}
+
     for descriptor_type in descriptor_types:
         X = np.load(os.path.join(model_dir, f"{descriptor_type}.npy"))
         for task_name in task_names:
@@ -128,6 +132,49 @@ def fit(data_dir: str, model_dir: str, models_txt: str = None, mode: str = "defa
                 os.path.join(model_dir, f"{descriptor_type}.json"),
                 os.path.join(model_subdir, "featurizer.json"),
             )
+            inner = model._model
+            task_descriptor_meta[task_name][descriptor_type] = {
+                "oof_auc": model.oof_auc_,
+                "train_auc": model.train_auc_,
+                "decision_cutoff_raw": inner.decision_cutoff_raw_,
+                "decision_cutoff_proba": inner.decision_cutoff_proba_,
+                "decision_cutoff_rank": inner.decision_cutoff_rank_,
+                "portfolio": inner.portfolio,
+                "num_batches": len(inner.models),
+            }
         os.remove(os.path.join(model_dir, f"{descriptor_type}.json"))
         os.remove(os.path.join(model_dir, f"{descriptor_type}.npy"))
+
+    # Write task-level metadata.json (aggregated across descriptors)
+    for task_name in task_names:
+        _, y = data[task_name]
+        desc_meta = task_descriptor_meta[task_name]
+        population_prior = float(np.mean(y == 1))
+
+        avg_raw = float(np.mean([m["decision_cutoff_raw"] for m in desc_meta.values()]))
+        avg_proba = float(np.mean([m["decision_cutoff_proba"] for m in desc_meta.values()]))
+        avg_rank = float(np.mean([m["decision_cutoff_rank"] for m in desc_meta.values()]))
+        _p_clip = float(np.clip(avg_proba, 1e-7, 1.0 - 1e-7))
+
+        meta = {
+            "mode": mode,
+            "descriptor_types": descriptor_types,
+            "n_compounds": int(len(y)),
+            "n_actives": int((y == 1).sum()),
+            "ratio_actives": population_prior,
+            "population_prior": population_prior,
+            "portfolio": desc_meta[descriptor_types[0]]["portfolio"],
+            "num_batches": {d: m["num_batches"] for d, m in desc_meta.items()},
+            "decision_cutoff_raw": avg_raw,
+            "decision_cutoff_proba": avg_proba,
+            "decision_cutoff_rank": avg_rank,
+            "decision_cutoff_logit": float(np.log(_p_clip / (1.0 - _p_clip))),
+            "decision_cutoff_lift": float(avg_proba / population_prior) if population_prior > 0 else None,
+            "oof_aucs": {d: m["oof_auc"] for d, m in desc_meta.items()},
+            "train_aucs": {d: m["train_auc"] for d, m in desc_meta.items()},
+        }
+        task_dir = os.path.join(model_dir, task_name)
+        with open(os.path.join(task_dir, "metadata.json"), "w") as f:
+            json.dump(meta, f, indent=4)
+
     logger.success(f"All models saved to {model_dir}")

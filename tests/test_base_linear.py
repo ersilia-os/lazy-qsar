@@ -138,15 +138,15 @@ class TestBaseLinearClassifier:
         X, y = make_clf_data(n=400, p=20)
         clf = BaseLinearClassifier(calibrated=False)
         clf.fit(X, y)
-        assert clf.decision_cutoff_ == 0.5
-        assert clf.decision_cutoff_source_ == "default_0.5"
+        assert clf.decision_cutoff_raw_ == 0.5
+        assert clf.decision_cutoff_raw_source_ == "default_0.5"
 
     def test_calibrated_fit_learns_decision_cutoff(self):
         X, y = make_clf_data(n=400, p=20)
         clf = BaseLinearClassifier(calibrated=True)
         clf.fit(X, y)
-        assert hasattr(clf, "decision_cutoff_")
-        assert clf.decision_cutoff_source_ == "oof_balanced_accuracy"
+        assert hasattr(clf, "decision_cutoff_raw_")
+        assert clf.decision_cutoff_raw_source_ == "oof_balanced_accuracy"
 
     def test_predict_explicit_cutoff_overrides_learned_default(self):
         X, y = make_clf_data(n=400, p=20)
@@ -426,11 +426,11 @@ class TestBaseLinearArtifactErrors:
             meta_path = os.path.join(d, "linear.json")
             with open(meta_path) as f:
                 meta = json.load(f)
-            meta.pop("decision_cutoff", None)
-            meta.pop("decision_cutoff_source", None)
+            meta.pop("decision_cutoff_raw", None)
+            meta.pop("decision_cutoff_raw_source", None)
             with open(meta_path, "w") as f:
                 json.dump(meta, f)
             artifact = BaseLinearArtifact.load(d)
             preds = artifact.predict(X)
-        assert artifact.decision_cutoff == 0.5
+        assert artifact.decision_cutoff_raw == 0.5
         assert preds.shape == (200,)
