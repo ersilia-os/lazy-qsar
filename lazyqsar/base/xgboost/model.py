@@ -341,6 +341,9 @@ class BaseXGBClassifier(BaseEstimator, ClassifierMixin):
         self.best_iteration_ = best_iter
         self.decision_cutoff_ = _DEFAULT_DECISION_CUTOFF
         self.decision_cutoff_source_ = "default_0.5"
+        self.decision_cutoff_proba_ = _DEFAULT_DECISION_CUTOFF
+        self.decision_cutoff_rank_ = _DEFAULT_DECISION_CUTOFF
+        self.decision_cutoff_logit_ = 0.0
         logger.rule("Done")
         logger.success(
             f"preset={self.preset_name_} | best_iteration={self.best_iteration_}"
@@ -485,6 +488,17 @@ class BaseXGBClassifier(BaseEstimator, ClassifierMixin):
             self.oof_probas_ = cal.predict_proba(oof_raw.reshape(-1, 1))[:, 1]
             self.calibrator_method_ = "platt"
         self.calibrator_ = cal
+        self.decision_cutoff_, self.decision_cutoff_source_ = (
+            _learn_balanced_accuracy_cutoff(y, oof_raw)
+        )
+        if self.calibrator_method_ == "isotonic":
+            self.decision_cutoff_proba_ = float(np.clip(
+                self.calibrator_.predict(np.array([self.decision_cutoff_]))[0], 0.0, 1.0
+            ))
+        else:
+            self.decision_cutoff_proba_ = float(
+                self.calibrator_.predict_proba(np.array([[self.decision_cutoff_]]))[:, 1][0]
+            )
         self.oof_y_ = y.copy()
         sorted_scores = np.sort(oof_raw)
         n_r = len(sorted_scores)
@@ -493,9 +507,12 @@ class BaseXGBClassifier(BaseEstimator, ClassifierMixin):
             self._ranker_knots = sorted_scores[idx]
         else:
             self._ranker_knots = sorted_scores
-        self.decision_cutoff_, self.decision_cutoff_source_ = (
-            _learn_balanced_accuracy_cutoff(y, oof_raw)
-        )
+        n_k = len(self._ranker_knots)
+        self.decision_cutoff_rank_ = float(np.interp(
+            self.decision_cutoff_, self._ranker_knots, np.linspace(0.0, 1.0, n_k)
+        ))
+        _p = np.clip(self.decision_cutoff_proba_, 1e-7, 1.0 - 1e-7)
+        self.decision_cutoff_logit_ = float(np.log(_p / (1.0 - _p)))
         logger.success(
             f"Calibrator fitted ({self.calibrator_method_}, minority={minority_count}) "
             f"on {k}-fold OOF predictions."
@@ -562,6 +579,15 @@ class BaseXGBClassifier(BaseEstimator, ClassifierMixin):
             ),
             "decision_cutoff_source": getattr(
                 self, "decision_cutoff_source_", "default_0.5"
+            ),
+            "decision_cutoff_proba": float(
+                getattr(self, "decision_cutoff_proba_", _DEFAULT_DECISION_CUTOFF)
+            ),
+            "decision_cutoff_rank": float(
+                getattr(self, "decision_cutoff_rank_", _DEFAULT_DECISION_CUTOFF)
+            ),
+            "decision_cutoff_logit": float(
+                getattr(self, "decision_cutoff_logit_", 0.0)
             ),
         }
         if hasattr(self, "calibrator_"):
@@ -1444,6 +1470,9 @@ class BaseXGBArtifact:
         self._cal = None
         self.decision_cutoff: float = _DEFAULT_DECISION_CUTOFF
         self.decision_cutoff_source: str = "default_0.5"
+        self.decision_cutoff_proba: float = _DEFAULT_DECISION_CUTOFF
+        self.decision_cutoff_rank: float = _DEFAULT_DECISION_CUTOFF
+        self.decision_cutoff_logit: float = 0.0
 
     @classmethod
     def load(cls, directory: str) -> "BaseXGBArtifact":
@@ -1496,6 +1525,15 @@ class BaseXGBArtifact:
         )
         artifact.decision_cutoff_source = artifact.metadata.get(
             "decision_cutoff_source", "default_0.5"
+        )
+        artifact.decision_cutoff_proba = float(
+            artifact.metadata.get("decision_cutoff_proba", _DEFAULT_DECISION_CUTOFF)
+        )
+        artifact.decision_cutoff_rank = float(
+            artifact.metadata.get("decision_cutoff_rank", _DEFAULT_DECISION_CUTOFF)
+        )
+        artifact.decision_cutoff_logit = float(
+            artifact.metadata.get("decision_cutoff_logit", 0.0)
         )
 
         if fmt == "onnx":

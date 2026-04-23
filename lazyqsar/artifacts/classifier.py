@@ -127,6 +127,11 @@ class LazyClassifierArtifact:
                 for h in b.heads
             ]
             self._decision_cutoff = float(np.mean(all_cutoffs)) if all_cutoffs else 0.5
+        self._decision_cutoff_proba = float(metadata.get("decision_cutoff_proba", 0.5))
+        self._decision_cutoff_rank = float(metadata.get("decision_cutoff_rank", 0.5))
+        self._decision_cutoff_logit = float(metadata.get("decision_cutoff_logit", 0.0))
+        raw_lift = metadata.get("decision_cutoff_lift")
+        self._decision_cutoff_lift = float(raw_lift) if raw_lift is not None else None
         return self
 
     def predict_proba(self, X) -> np.ndarray:
@@ -142,6 +147,26 @@ class LazyClassifierArtifact:
             R = np.array([b.predict_proba(X)[:, 1] for b in self._batches])
         proba = R.mean(axis=0)
         return np.column_stack([1 - proba, proba])
+
+    @property
+    def decision_cutoff_proba(self) -> float:
+        """Threshold to apply against predict_proba() output for binary predictions."""
+        return self._decision_cutoff_proba
+
+    @property
+    def decision_cutoff_rank(self) -> float:
+        """Threshold to apply against predict_rank() output for binary predictions."""
+        return self._decision_cutoff_rank
+
+    @property
+    def decision_cutoff_logit(self) -> float:
+        """Threshold to apply against predict_logit() output for binary predictions."""
+        return self._decision_cutoff_logit
+
+    @property
+    def decision_cutoff_lift(self):
+        """Threshold to apply against predict_lift() output; None if population_prior unavailable."""
+        return self._decision_cutoff_lift
 
     def predict(self, X, cutoff: float = None) -> np.ndarray:
         """Return binary predictions (0 or 1)."""

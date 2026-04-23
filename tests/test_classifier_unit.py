@@ -135,6 +135,9 @@ def test_lazy_classifier_batches_and_averages_predictions(monkeypatch):
             self.fit_y = y.copy()
             self.train_prior_ = float(np.mean(y == 1))
             self.decision_cutoff_ = 0.5
+            self.decision_cutoff_proba_ = 0.5
+            self.decision_cutoff_rank_ = 0.5
+            self.decision_cutoff_logit_ = 0.0
 
         def predict_proba(self, X):
             positive = np.full(X.shape[0], 0.2 + 0.2 * self.idx, dtype=float)

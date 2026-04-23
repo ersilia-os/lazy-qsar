@@ -554,6 +554,9 @@ class BaseSVCClassifier(BaseEstimator, ClassifierMixin):
 
         self.decision_cutoff_ = _DEFAULT_DECISION_CUTOFF
         self.decision_cutoff_source_ = "default_0.5"
+        self.decision_cutoff_proba_ = _DEFAULT_DECISION_CUTOFF
+        self.decision_cutoff_rank_ = _DEFAULT_DECISION_CUTOFF
+        self.decision_cutoff_logit_ = 0.0
         self.classes_ = np.array([0, 1])
         logger.rule("Done")
         logger.success(
@@ -625,6 +628,17 @@ class BaseSVCClassifier(BaseEstimator, ClassifierMixin):
             self.oof_probas_ = cal.predict_proba(oof_sigmoid.reshape(-1, 1))[:, 1]
             self.calibrator_method_ = "platt"
         self.calibrator_ = cal
+        self.decision_cutoff_, self.decision_cutoff_source_ = (
+            _learn_balanced_accuracy_cutoff(y, oof_sigmoid)
+        )
+        if self.calibrator_method_ == "isotonic":
+            self.decision_cutoff_proba_ = float(np.clip(
+                self.calibrator_.predict(np.array([self.decision_cutoff_]))[0], 0.0, 1.0
+            ))
+        else:
+            self.decision_cutoff_proba_ = float(
+                self.calibrator_.predict_proba(np.array([[self.decision_cutoff_]]))[:, 1][0]
+            )
         self.oof_y_ = y.copy()
 
         # Ranker knots (ECDF for predict_rank)
@@ -635,11 +649,12 @@ class BaseSVCClassifier(BaseEstimator, ClassifierMixin):
             self._ranker_knots = sorted_scores[idx]
         else:
             self._ranker_knots = sorted_scores
-
-        # Decision cutoff
-        self.decision_cutoff_, self.decision_cutoff_source_ = (
-            _learn_balanced_accuracy_cutoff(y, oof_sigmoid)
-        )
+        n_k = len(self._ranker_knots)
+        self.decision_cutoff_rank_ = float(np.interp(
+            self.decision_cutoff_, self._ranker_knots, np.linspace(0.0, 1.0, n_k)
+        ))
+        _p = np.clip(self.decision_cutoff_proba_, 1e-7, 1.0 - 1e-7)
+        self.decision_cutoff_logit_ = float(np.log(_p / (1.0 - _p)))
         logger.success(
             f"Calibrator fitted ({self.calibrator_method_}, "
             f"minority={minority_count}) on {k}-fold OOF."
@@ -753,6 +768,15 @@ class BaseSVCClassifier(BaseEstimator, ClassifierMixin):
             "decision_cutoff_source": getattr(
                 self, "decision_cutoff_source_", "default_0.5"
             ),
+            "decision_cutoff_proba": float(
+                getattr(self, "decision_cutoff_proba_", _DEFAULT_DECISION_CUTOFF)
+            ),
+            "decision_cutoff_rank": float(
+                getattr(self, "decision_cutoff_rank_", _DEFAULT_DECISION_CUTOFF)
+            ),
+            "decision_cutoff_logit": float(
+                getattr(self, "decision_cutoff_logit_", 0.0)
+            ),
         }
         if hasattr(self, "calibrator_"):
             if self.calibrator_method_ == "isotonic":
@@ -796,6 +820,9 @@ class BaseSVCArtifact:
         self._cal = None
         self._ranker = None
         self.decision_cutoff = _DEFAULT_DECISION_CUTOFF
+        self.decision_cutoff_proba = _DEFAULT_DECISION_CUTOFF
+        self.decision_cutoff_rank = _DEFAULT_DECISION_CUTOFF
+        self.decision_cutoff_logit = 0.0
 
     @classmethod
     def load(cls, directory: str) -> "BaseSVCArtifact":
@@ -815,6 +842,15 @@ class BaseSVCArtifact:
         self._ranker = self.metadata.get("ranker", None)
         self.decision_cutoff = float(
             self.metadata.get("decision_cutoff", _DEFAULT_DECISION_CUTOFF)
+        )
+        self.decision_cutoff_proba = float(
+            self.metadata.get("decision_cutoff_proba", _DEFAULT_DECISION_CUTOFF)
+        )
+        self.decision_cutoff_rank = float(
+            self.metadata.get("decision_cutoff_rank", _DEFAULT_DECISION_CUTOFF)
+        )
+        self.decision_cutoff_logit = float(
+            self.metadata.get("decision_cutoff_logit", 0.0)
         )
         import onnxruntime as rt
         onnx_path = os.path.join(directory, "svc.onnx")

@@ -130,6 +130,20 @@ class _BatchLazyClassifier(object):
             if hasattr(getattr(h, "model", None), "decision_cutoff_")
         ]
         self.decision_cutoff_ = float(np.mean(cutoffs)) if cutoffs else 0.5
+        cutoffs_proba = [
+            h.model.decision_cutoff_proba_
+            for h in self.heads
+            if hasattr(getattr(h, "model", None), "decision_cutoff_proba_")
+        ]
+        self.decision_cutoff_proba_ = float(np.mean(cutoffs_proba)) if cutoffs_proba else 0.5
+        cutoffs_rank = [
+            h.model.decision_cutoff_rank_
+            for h in self.heads
+            if hasattr(getattr(h, "model", None), "decision_cutoff_rank_")
+        ]
+        self.decision_cutoff_rank_ = float(np.mean(cutoffs_rank)) if cutoffs_rank else 0.5
+        _p = np.clip(self.decision_cutoff_proba_, 1e-7, 1.0 - 1e-7)
+        self.decision_cutoff_logit_ = float(np.log(_p / (1.0 - _p)))
 
         # Build and display per-step timing table
         steps = [("Preprocessing", t_prep, False)]
@@ -340,6 +354,18 @@ class LazyClassifier(object):
         self.decision_cutoff_ = float(
             np.mean([m.decision_cutoff_ for m in self.models])
         )
+        self.decision_cutoff_proba_ = float(
+            np.mean([m.decision_cutoff_proba_ for m in self.models])
+        )
+        self.decision_cutoff_rank_ = float(
+            np.mean([m.decision_cutoff_rank_ for m in self.models])
+        )
+        _p = np.clip(self.decision_cutoff_proba_, 1e-7, 1.0 - 1e-7)
+        self.decision_cutoff_logit_ = float(np.log(_p / (1.0 - _p)))
+        _prior = self.population_prior_
+        self.decision_cutoff_lift_ = (
+            float(self.decision_cutoff_proba_ / _prior) if _prior and _prior > 0 else None
+        )
         self.oof_auc_ = self._compute_oof_auc(X, y, batch_indices)
         self.train_auc_ = self._compute_train_auc(X, y)
         logger.success(
@@ -435,6 +461,10 @@ class LazyClassifier(object):
             "population_prior": self.population_prior_,
             "batch_priors": self.batch_priors_,
             "decision_cutoff": self.decision_cutoff_,
+            "decision_cutoff_proba": self.decision_cutoff_proba_,
+            "decision_cutoff_rank": self.decision_cutoff_rank_,
+            "decision_cutoff_logit": self.decision_cutoff_logit_,
+            "decision_cutoff_lift": self.decision_cutoff_lift_,
         }
         with open(f"{directory}/metadata.json", "w") as f:
             json.dump(metadata, f, indent=4)
