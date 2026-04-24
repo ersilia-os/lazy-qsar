@@ -291,10 +291,10 @@ def _print_summary(
     )
 
     # Baselines
-    print(f"\n  {'Baseline (Morgan)':<30}  {'AUC':>8}")
-    print(f"  {'─' * 30}  {'─' * 8}")
-    for name, auc in baselines:
-        print(f"  {name:<30}  {auc:>8.4f}")
+    print(f"\n  {'Baseline (Morgan)':<30}  {'AUC':>8}  {'AUPR':>8}  {'BEDROC':>8}")
+    print(f"  {'─' * 30}  {'─' * 8}  {'─' * 8}  {'─' * 8}")
+    for name, auc, aupr, bedroc_bl in baselines:
+        print(f"  {name:<30}  {auc:>8.4f}  {aupr:>8.4f}  {bedroc_bl:>8.4f}")
 
     # ONNX sizes
     active = sorted({d for d, _ in onnx_sizes})
@@ -447,6 +447,7 @@ def _save_run_csv(
     calibration_y: str,
     extra_stats: dict,
     ef_stats: dict,
+    decision_cutoffs: dict = None,
 ) -> None:
     """
     Write one row to output/results/03_train_models/{pathogen}_{dataset}_{mode}.csv.
@@ -568,7 +569,7 @@ def _save_run_csv(
                             the ranked list. 0 = none recovered; 1 = all
                             recovered.
     """
-    baseline_map = {name: auc for name, auc in baselines}
+    baseline_map = {name: (auc, aupr, bedroc_bl) for name, auc, aupr, bedroc_bl in baselines}
 
     size_cols = {
         f"onnx_{desc}_{m}_kb": round(onnx_sizes[(desc, m)], 1)
@@ -615,18 +616,18 @@ def _save_run_csv(
         "aupr_baseline": round(aupr_baseline, 4),
         "sensitivity": round(sensitivity, 4),
         "specificity": round(specificity, 4),
-        "auroc_rf": round(baseline_map["RF (n=100)"], 4)
-        if "RF (n=100)" in baseline_map
-        else None,
-        "auroc_lr": round(baseline_map["LR (L1)"], 4)
-        if "LR (L1)" in baseline_map
-        else np.nan,
-        "auroc_xgb": round(baseline_map["XGB (n=100)"], 4)
-        if "XGB (n=100)" in baseline_map
-        else None,
-        "auroc_svc": round(baseline_map["SVC (linear)"], 4)
-        if "SVC (linear)" in baseline_map
-        else np.nan,
+        "auroc_rf": round(baseline_map["RF (n=100)"][0], 4) if "RF (n=100)" in baseline_map else np.nan,
+        "aupr_rf": round(baseline_map["RF (n=100)"][1], 4) if "RF (n=100)" in baseline_map else np.nan,
+        "bedroc_rf": round(baseline_map["RF (n=100)"][2], 4) if "RF (n=100)" in baseline_map else np.nan,
+        "auroc_lr": round(baseline_map["LR (L1)"][0], 4) if "LR (L1)" in baseline_map else np.nan,
+        "aupr_lr": round(baseline_map["LR (L1)"][1], 4) if "LR (L1)" in baseline_map else np.nan,
+        "bedroc_lr": round(baseline_map["LR (L1)"][2], 4) if "LR (L1)" in baseline_map else np.nan,
+        "auroc_xgb": round(baseline_map["XGB (n=100)"][0], 4) if "XGB (n=100)" in baseline_map else np.nan,
+        "aupr_xgb": round(baseline_map["XGB (n=100)"][1], 4) if "XGB (n=100)" in baseline_map else np.nan,
+        "bedroc_xgb": round(baseline_map["XGB (n=100)"][2], 4) if "XGB (n=100)" in baseline_map else np.nan,
+        "auroc_svc": round(baseline_map["SVC (linear)"][0], 4) if "SVC (linear)" in baseline_map else np.nan,
+        "aupr_svc": round(baseline_map["SVC (linear)"][1], 4) if "SVC (linear)" in baseline_map else np.nan,
+        "bedroc_svc": round(baseline_map["SVC (linear)"][2], 4) if "SVC (linear)" in baseline_map else np.nan,
         **size_cols,
         **diag_cols,
         "time_lazyqsar_fit_s": round(lq_fit_s, 2),
@@ -641,6 +642,7 @@ def _save_run_csv(
             for k, v in extra_stats.items()
         },
         **ef_stats,
+        **(decision_cutoffs or {}),
     }
 
     out_path = os.path.join(output_dir, f"{pathogen}_{dataset}_{mode}.csv")
@@ -699,9 +701,13 @@ def train_dataset(
         n_estimators=100, class_weight="balanced", random_state=42, n_jobs=-1
     )
     rf.fit(X_train, y_train)
-    baselines.append(
-        ("RF (n=100)", roc_auc_score(y_test, rf.predict_proba(X_test)[:, 1]))
-    )
+    _rf_p = rf.predict_proba(X_test)[:, 1]
+    baselines.append((
+        "RF (n=100)",
+        roc_auc_score(y_test, _rf_p),
+        average_precision_score(y_test, _rf_p),
+        bedroc_score(y_test, _rf_p),
+    ))
 
     # --- LR baseline (skipped for large datasets — too slow) ---
     if len(smiles_train) <= 1_000:
@@ -715,12 +721,13 @@ def train_dataset(
             random_state=42,
         )
         lr.fit(scaler.fit_transform(X_train), y_train)
-        baselines.append(
-            (
-                "LR (L1)",
-                roc_auc_score(y_test, lr.predict_proba(scaler.transform(X_test))[:, 1]),
-            )
-        )
+        _lr_p = lr.predict_proba(scaler.transform(X_test))[:, 1]
+        baselines.append((
+            "LR (L1)",
+            roc_auc_score(y_test, _lr_p),
+            average_precision_score(y_test, _lr_p),
+            bedroc_score(y_test, _lr_p),
+        ))
 
     # --- XGB baseline (fast: histogram-based splits) ---
     pos_weight = (y_train == 0).sum() / max((y_train == 1).sum(), 1)
@@ -734,18 +741,26 @@ def train_dataset(
         verbosity=0,
     )
     xgb.fit(X_train, y_train)
-    baselines.append(
-        ("XGB (n=100)", roc_auc_score(y_test, xgb.predict_proba(X_test)[:, 1]))
-    )
+    _xgb_p = xgb.predict_proba(X_test)[:, 1]
+    baselines.append((
+        "XGB (n=100)",
+        roc_auc_score(y_test, _xgb_p),
+        average_precision_score(y_test, _xgb_p),
+        bedroc_score(y_test, _xgb_p),
+    ))
 
     # --- SVC baseline (LinearSVC on Morgan; decision_function used for AUROC) ---
     if len(smiles_train) <= 5_000:
         scaler_svc = MaxAbsScaler()
         svc = LinearSVC(C=1.0, class_weight="balanced", max_iter=2_000, random_state=42)
         svc.fit(scaler_svc.fit_transform(X_train), y_train)
-        baselines.append(
-            ("SVC (linear)", roc_auc_score(y_test, svc.decision_function(scaler_svc.transform(X_test))))
-        )
+        _svc_s = svc.decision_function(scaler_svc.transform(X_test))
+        baselines.append((
+            "SVC (linear)",
+            roc_auc_score(y_test, _svc_s),
+            average_precision_score(y_test, _svc_s),
+            bedroc_score(y_test, _svc_s),
+        ))
 
     # --- LazyClassifierQSAR ---
     t0 = time.perf_counter()
@@ -791,12 +806,22 @@ def train_dataset(
     # Probability distribution by class + model decision cutoff
     p1_active = p1[y_test == 1]
     p1_inactive = p1[y_test == 0]
-    cutoffs = [
-        m._model.decision_cutoff_raw_
-        for m in model.models
-        if hasattr(getattr(m, "_model", None), "decision_cutoff_raw_")
-    ]
-    optimal_cutoff = float(np.mean(cutoffs)) if cutoffs else np.nan
+    def _mean_cutoff(attr):
+        vals = [
+            getattr(m._model, attr)
+            for m in model.models
+            if hasattr(getattr(m, "_model", None), attr)
+        ]
+        return float(np.mean(vals)) if vals else np.nan
+
+    decision_cutoffs = {
+        "decision_cutoff_raw": _mean_cutoff("decision_cutoff_raw_"),
+        "decision_cutoff_proba": _mean_cutoff("decision_cutoff_proba_"),
+        "decision_cutoff_rank": _mean_cutoff("decision_cutoff_rank_"),
+        "decision_cutoff_logit": _mean_cutoff("decision_cutoff_logit_"),
+        "decision_cutoff_lift": _mean_cutoff("decision_cutoff_lift_"),
+    }
+    optimal_cutoff = decision_cutoffs["decision_cutoff_raw"]
 
     # Sensitivity / specificity at optimal cutoff
     n_pos_train, n_neg_train = int((y_train == 1).sum()), int((y_train == 0).sum())
@@ -895,6 +920,7 @@ def train_dataset(
         calibration_y,
         extra_stats,
         ef_stats,
+        decision_cutoffs,
     )
 
 
