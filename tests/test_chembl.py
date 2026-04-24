@@ -28,7 +28,7 @@ import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import average_precision_score, brier_score_loss, roc_auc_score
+from sklearn.metrics import average_precision_score, brier_score_loss, precision_recall_curve, roc_auc_score, roc_curve
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import MaxAbsScaler
 from sklearn.svm import LinearSVC
@@ -215,6 +215,36 @@ def _calibration_y(y_true: np.ndarray, proba: np.ndarray) -> tuple[str, str]:
         pos_parts.append(f"{float(y_true[mask].mean()):.4f}" if n > 0 else "nan")
         frac_parts.append(f"{n / n_total:.4f}" if n > 0 else "nan")
     return ";".join(pos_parts), ";".join(frac_parts)
+
+
+# 100 evenly-spaced x-axis points shared by all curve helpers (delta = 0.01)
+_CURVE_X = np.linspace(0, 1, 101)[1:]  # 0.01, 0.02, …, 1.00
+
+
+def _roc_y(y_true: np.ndarray, scores: np.ndarray) -> str:
+    """TPR at 100 fixed FPR thresholds (0.01 … 1.00), semicolon-separated."""
+    fpr, tpr, _ = roc_curve(y_true, scores)
+    return ";".join(f"{v:.4f}" for v in np.interp(_CURVE_X, fpr, tpr))
+
+
+def _pr_y(y_true: np.ndarray, scores: np.ndarray) -> str:
+    """Precision at 100 fixed recall thresholds (0.01 … 1.00), semicolon-separated."""
+    prec, rec, _ = precision_recall_curve(y_true, scores)
+    # sklearn returns decreasing recall — flip to get monotone increasing for interp
+    return ";".join(f"{v:.4f}" for v in np.interp(_CURVE_X, rec[::-1], prec[::-1]))
+
+
+def _enrichment_y(y_true: np.ndarray, scores: np.ndarray) -> str:
+    """Cumulative recall at 100 screening fractions (0.01 … 1.00), semicolon-separated.
+    This is the recovery curve underlying BEDROC."""
+    n = len(y_true)
+    n_pos = int(y_true.sum())
+    if n_pos == 0:
+        return ";".join(["nan"] * 100)
+    order = np.argsort(scores)[::-1]
+    recall = np.cumsum(y_true[order]) / n_pos
+    frac = np.arange(1, n + 1) / n
+    return ";".join(f"{v:.4f}" for v in np.interp(_CURVE_X, frac, recall))
 
 
 
@@ -452,6 +482,7 @@ def _save_run_csv(
     extra_stats: dict,
     ef_stats: dict,
     decision_cutoffs: dict = None,
+    curves: dict = None,
 ) -> None:
     """
     Write one row to output/results/03_train_models/{pathogen}_{dataset}_{mode}.csv.
@@ -648,6 +679,11 @@ def _save_run_csv(
         },
         **ef_stats,
         **(decision_cutoffs or {}),
+        **{
+            f"{metric}_y_{name}": val
+            for name, (roc, pr, enrich) in (curves or {}).items()
+            for metric, val in [("roc", roc), ("pr", pr), ("enrichment", enrich)]
+        },
     }
 
     out_path = os.path.join(output_dir, f"{pathogen}_{dataset}_{mode}.csv")
@@ -700,6 +736,7 @@ def train_dataset(
     X_test = morgan.transform(smiles_test)
 
     baselines = []
+    curves = {}  # {key: (roc_y, pr_y, enrichment_y)}
 
     # --- RF baseline ---
     rf = RandomForestClassifier(
@@ -713,6 +750,7 @@ def train_dataset(
         average_precision_score(y_test, _rf_p),
         bedroc_score(y_test, _rf_p),
     ))
+    curves["rf"] = (_roc_y(y_test, _rf_p), _pr_y(y_test, _rf_p), _enrichment_y(y_test, _rf_p))
 
     # --- LR baseline (skipped for large datasets — too slow) ---
     if len(smiles_train) <= 1_000:
@@ -733,6 +771,7 @@ def train_dataset(
             average_precision_score(y_test, _lr_p),
             bedroc_score(y_test, _lr_p),
         ))
+        curves["lr"] = (_roc_y(y_test, _lr_p), _pr_y(y_test, _lr_p), _enrichment_y(y_test, _lr_p))
 
     # --- XGB baseline (fast: histogram-based splits) ---
     pos_weight = (y_train == 0).sum() / max((y_train == 1).sum(), 1)
@@ -753,6 +792,7 @@ def train_dataset(
         average_precision_score(y_test, _xgb_p),
         bedroc_score(y_test, _xgb_p),
     ))
+    curves["xgb"] = (_roc_y(y_test, _xgb_p), _pr_y(y_test, _xgb_p), _enrichment_y(y_test, _xgb_p))
 
     # --- SVC baseline (LinearSVC on Morgan; decision_function used for AUROC) ---
     if len(smiles_train) <= 5_000:
@@ -766,6 +806,7 @@ def train_dataset(
             average_precision_score(y_test, _svc_s),
             bedroc_score(y_test, _svc_s),
         ))
+        curves["svc"] = (_roc_y(y_test, _svc_s), _pr_y(y_test, _svc_s), _enrichment_y(y_test, _svc_s))
 
     # --- LazyClassifierQSAR ---
     t0 = time.perf_counter()
@@ -775,6 +816,7 @@ def train_dataset(
 
     lazy_proba = model.predict_proba(smiles_test)
     lazy_auc = roc_auc_score(y_test, lazy_proba[:, 1])
+    curves["lazy"] = (_roc_y(y_test, lazy_proba[:, 1]), _pr_y(y_test, lazy_proba[:, 1]), _enrichment_y(y_test, lazy_proba[:, 1]))
 
     # Benchmark predict on a fixed 1k-compound batch
     rng = np.random.default_rng(42)
@@ -927,6 +969,7 @@ def train_dataset(
         extra_stats,
         ef_stats,
         decision_cutoffs,
+        curves,
     )
 
 
