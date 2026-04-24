@@ -202,16 +202,19 @@ def _ece(y_true: np.ndarray, proba: np.ndarray, n_bins: int = 10) -> float:
     return ece / len(y_true)
 
 
-def _calibration_y(y_true: np.ndarray, proba: np.ndarray) -> str:
-    """Return fraction-of-positives for 10 fixed-width bins; 'nan' for empty bins.
-    x-axis is implicitly np.arange(0, 1, 0.1). Last bin is [0.9, 1.0] (inclusive)."""
+def _calibration_y(y_true: np.ndarray, proba: np.ndarray) -> tuple[str, str]:
+    """Return (fraction-of-positives, fraction-of-samples) for 10 fixed-width bins.
+    Both are semicolon-separated; empty bins are 'nan'. Last bin is [0.9, 1.0] inclusive."""
     edges = list(np.arange(0, 1, 0.1)) + [1.0]
-    parts = []
+    n_total = len(y_true)
+    pos_parts, frac_parts = [], []
     for i in range(len(edges) - 1):
         lo, hi = edges[i], edges[i + 1]
         mask = (proba >= lo) & (proba <= hi if i == len(edges) - 2 else proba < hi)
-        parts.append(f"{float(y_true[mask].mean()):.4f}" if mask.sum() > 0 else "nan")
-    return ";".join(parts)
+        n = mask.sum()
+        pos_parts.append(f"{float(y_true[mask].mean()):.4f}" if n > 0 else "nan")
+        frac_parts.append(f"{n / n_total:.4f}" if n > 0 else "nan")
+    return ";".join(pos_parts), ";".join(frac_parts)
 
 
 
@@ -445,6 +448,7 @@ def _save_run_csv(
     ece: float,
     prob_stats: dict,
     calibration_y: str,
+    calibration_frac: str,
     extra_stats: dict,
     ef_stats: dict,
     decision_cutoffs: dict = None,
@@ -637,6 +641,7 @@ def _save_run_csv(
         "ece": round(ece, 4),
         **{k: round(v, 4) for k, v in prob_stats.items()},
         "calibration_y": calibration_y,
+        "calibration_frac": calibration_frac,
         **{
             k: (round(v, 4) if isinstance(v, float) and not np.isnan(v) else v)
             for k, v in extra_stats.items()
@@ -796,7 +801,7 @@ def train_dataset(
     pos_rate = y_test.mean()
     brier_baseline = pos_rate * (1 - pos_rate)
     ece = _ece(y_test, p1)
-    calibration_y = _calibration_y(y_test, p1)
+    calibration_y, calibration_frac = _calibration_y(y_test, p1)
 
     # AUPR + BEDROC
     lazy_aupr = average_precision_score(y_test, p1)
@@ -918,6 +923,7 @@ def train_dataset(
         ece,
         prob_stats,
         calibration_y,
+        calibration_frac,
         extra_stats,
         ef_stats,
         decision_cutoffs,
