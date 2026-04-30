@@ -118,3 +118,15 @@ class ClampDescriptor:
         metadata = {"featurizer": self.featurizer_name}
         with open(os.path.join(dir_name, "featurizer.json"), "w") as f:
             json.dump(metadata, f, indent=2)
+
+    @classmethod
+    def load(cls, dir_name: str):
+        if not os.path.exists(dir_name):
+            raise FileNotFoundError(f"Directory {dir_name} does not exist.")
+        with open(os.path.join(dir_name, "featurizer.json"), "r") as f:
+            metadata = json.load(f)
+        if metadata.get("featurizer") != "clamp":
+            raise ValueError(
+                f"Expected featurizer 'clamp', got '{metadata.get('featurizer')}'"
+            )
+        return cls()
