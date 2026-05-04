@@ -55,8 +55,10 @@ def _plan_batches(
     if ratio <= max_imbalance_ratio:
         if n <= max_batch_size:
             return [np.arange(n)]
+        rng = np.random.default_rng(random_state)
+        shuffled = rng.permutation(n)
         return [
-            np.arange(start, min(start + max_batch_size, n))
+            shuffled[start : min(start + max_batch_size, n)]
             for start in range(0, n, max_batch_size)
         ]
 
