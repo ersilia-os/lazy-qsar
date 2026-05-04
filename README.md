@@ -183,7 +183,7 @@ checkpoints/
     └── rdkit/       (same structure)
 ```
 
-The, the `code/main.py` inference script:
+The `code/main.py` inference script:
 
 ```python
 import os, sys
@@ -191,8 +191,10 @@ from lazyqsar.api.classifier_predict import predict
 
 root = os.path.dirname(os.path.abspath(__file__))
 checkpoints_dir = os.path.abspath(os.path.join(root, "..", "checkpoints"))
-predict(model_dir=checkpoints_dir, input_csv=sys.argv[1], output_csv=sys.argv[2])
+predict(model_dir=checkpoints_dir, input_csv=sys.argv[1], output_csv=sys.argv[2], predict_type="rank")
 ```
+
+This function computes descriptors once per descriptor type and reuses them across all tasks, making it suitable for scoring large compound libraries. `predict_type` can be `proba`, `rank`, `logit`, `lift`, `score`, or `binary` (default: `proba`).
 
 ## Roadmap
 
