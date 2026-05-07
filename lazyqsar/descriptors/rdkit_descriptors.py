@@ -29,8 +29,9 @@ class RDKitDescriptor(object):
                 mol = Chem.MolFromSmiles(smi)
                 if mol is None:
                     raise ValueError("Invalid molecule")
-                vals = np.array(self.calculator.CalcDescriptors(mol), dtype=np.float32)
+                vals = np.array(self.calculator.CalcDescriptors(mol), dtype=np.float64)
                 vals[~np.isfinite(vals)] = 0.0
+                vals = np.clip(vals, -1e5, 1e5).astype(np.float32)
             except Exception:
                 vals = np.zeros(len(self._descriptor_names), dtype=np.float32)
             results.append(vals)
