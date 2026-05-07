@@ -196,6 +196,26 @@ predict(model_dir=checkpoints_dir, input_csv=sys.argv[1], output_csv=sys.argv[2]
 
 This function computes descriptors once per descriptor type and reuses them across all tasks, making it suitable for scoring large compound libraries. `predict_type` can be `proba`, `rank`, `logit`, `lift`, `score`, or `binary` (default: `proba`).
 
+**Multi-model prediction across directories:**
+
+`model_dir` also accepts a `dict[str, str]` mapping each individual model directory (a leaf directory containing featurizer subdirs) to its exact output column name. This is useful when models for different targets are stored under separate paths:
+
+```python
+from lazyqsar.api.classifier_predict import predict
+
+predict(
+    model_dir={
+        "checkpoints/ecoli/individual_activity_a": "E. coli activity",
+        "checkpoints/mtb/individual_activity_a":   "M. tb activity",
+    },
+    input_csv=sys.argv[1],
+    output_csv=sys.argv[2],
+    predict_type="rank",
+)
+```
+
+The output CSV will contain one column per entry, named exactly as the dict values. Descriptors are still computed once per type and shared across all models.
+
 ## Roadmap
 
 We are currently working on regression models, mirroring what has been done for classification.

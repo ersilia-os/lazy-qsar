@@ -88,13 +88,90 @@ def load_featurizer(model_dir, featurizer_name):
     return featurizer
 
 
+def _predict_from_dict(
+    model_dir: dict[str, str],
+    input_csv: str,
+    output_csv: str,
+    models_txt: str | None,
+    predict_type: str,
+) -> None:
+    if predict_type not in _PREDICT_DISPATCH:
+        raise ValueError(
+            f"Unknown predict_type '{predict_type}'. "
+            f"Choose from: {sorted(_PREDICT_DISPATCH)}"
+        )
+
+    col_map = {os.path.abspath(p): col for p, col in model_dir.items()}
+    input_csv = os.path.abspath(input_csv)
+    output_csv = os.path.abspath(output_csv)
+
+    logger.info(
+        f"Running dict prediction | {len(col_map)} models | input: {input_csv} | "
+        f"output: {output_csv} | predict_type: {predict_type}"
+    )
+
+    smiles_list = read_smiles(input_csv)
+    logger.info(f"Loaded {len(smiles_list)} SMILES from {input_csv}")
+
+    if models_txt is not None:
+        with open(models_txt) as f:
+            allowed = {line.strip() for line in f}
+        col_map = {p: c for p, c in col_map.items() if c in allowed}
+        logger.info(f"Filtered to {len(col_map)} models via {models_txt}")
+    if not col_map:
+        raise ValueError("No valid models found.")
+
+    all_featurizers = sorted({
+        dn
+        for p in col_map
+        for dn in os.listdir(p)
+        if os.path.isdir(os.path.join(p, dn))
+    })
+    logger.info(f"Featurizers found: {all_featurizers}")
+
+    _predict_fn = _PREDICT_DISPATCH[predict_type]
+    results: dict[tuple[str, str], np.ndarray] = {}
+
+    for featurizer_name in all_featurizers:
+        featurizer = None
+        for p in col_map:
+            feat_dir = os.path.join(p, featurizer_name)
+            if os.path.isdir(feat_dir):
+                featurizer = get_descriptor_type(featurizer_name).load(feat_dir)
+                break
+        if featurizer is None:
+            continue
+        logger.info(f"Computing descriptors: {featurizer_name}")
+        X = featurizer.transform(smiles_list)
+        for p, col_name in col_map.items():
+            model_subdir = os.path.join(p, featurizer_name)
+            if os.path.isdir(model_subdir):
+                logger.debug(f"Predicting '{col_name}' with '{featurizer_name}'")
+                model = LazyClassifier.load(model_subdir)
+                results[(col_name, featurizer_name)] = _predict_fn(model, X)
+
+    aggregated: dict[str, np.ndarray] = {}
+    for col_name in col_map.values():
+        vals = [v for (c, _), v in results.items() if c == col_name]
+        if vals:
+            aggregated[col_name] = np.average(np.array(vals), axis=0)
+
+    cols_ordered = list(col_map.values())
+    R = np.array([aggregated[c] for c in cols_ordered]).T
+    pd.DataFrame(R, columns=cols_ordered).to_csv(output_csv, index=False)
+    logger.success(f"Predictions saved to {output_csv}")
+
+
 def predict(
-    model_dir: str,
+    model_dir: str | dict[str, str],
     input_csv: str,
     output_csv: str,
     models_txt: str = None,
     predict_type: str = "proba",
 ):
+    if isinstance(model_dir, dict):
+        return _predict_from_dict(model_dir, input_csv, output_csv, models_txt, predict_type)
+
     if predict_type not in _PREDICT_DISPATCH:
         raise ValueError(
             f"Unknown predict_type '{predict_type}'. "
