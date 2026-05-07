@@ -113,6 +113,7 @@ def _cmd_predict(args):
         input_csv=args.input,
         output_csv=args.output,
         models_txt=args.models_txt,
+        predict_type=args.predict_type,
     )
 
 
@@ -221,6 +222,14 @@ def main():
         default=None,
         metavar="FILE",
         help="Text file listing task names to predict. Uses all tasks if omitted.",
+    )
+    p_predict.add_argument(
+        "--predict_type",
+        type=str,
+        default="proba",
+        metavar="TYPE",
+        choices=["proba", "rank", "logit", "lift", "score", "binary"],
+        help="Type of prediction output (default: proba).",
     )
 
     args = parser.parse_args()

@@ -114,6 +114,8 @@ model = LazyClassifier.load(model_dir)
 y_hat = model.predict_proba(X=X_test)[:, 1]
 ```
 
+For multi-endpoint prediction across multiple model directories, see [Ersilia Model Hub integration](#ersilia-model-hub-integration).
+
 ## CLI
 
 All commands are available through the `lazyqsar` entry point.
@@ -131,10 +133,10 @@ Pass `--models_txt` to train a subset of tasks (one CSV stem per line); without 
 **Predict:**
 
 ```bash
-lazyqsar predict --input $INPUT_CSV --model $MODEL_DIR --output $OUTPUT_CSV
+lazyqsar predict --input $INPUT_CSV --model $MODEL_DIR --output $OUTPUT_CSV [--models_txt FILE] [--predict_type TYPE]
 ```
 
-The output CSV contains one predicted probability column per task, ordered alphabetically by task name, or according to the order provided by `--models_txt` at fit time.
+The output CSV contains one column per task, ordered alphabetically by task name, or filtered and ordered by `--models_txt` at predict time. `--predict_type` controls the output format: `proba` (default), `rank`, `logit`, `lift`, `score`, or `binary`.
 
 ## How it works
 
@@ -146,7 +148,7 @@ LazyQSAR builds an ensemble for each descriptor set through four steps:
 
 3. **Heads**: each selected head is fitted on preprocessed features. For severely imbalanced datasets, balanced sub-batches are used and the batch predictions are averaged.
 
-4. **Pooling**: head predictions are combined via a learned gating network (`InnerClassifierPooler` When using `LazyClassifierQSAR`, a separate ensemble is trained per descriptor type and their predictions are combined via an AUC-weighted ensemble that accounts for per-sample prediction confidence.
+4. **Pooling**: head predictions are combined via a learned gating network (`InnerClassifierPooler`). When using `LazyClassifierQSAR`, a separate ensemble is trained per descriptor type and their predictions are combined via an AUC-weighted ensemble that accounts for per-sample prediction confidence.
 
 5. **Export**: the full pipeline is exported to ONNX for dependency-free inference.
 
@@ -194,7 +196,7 @@ checkpoints_dir = os.path.abspath(os.path.join(root, "..", "checkpoints"))
 predict(model_dir=checkpoints_dir, input_csv=sys.argv[1], output_csv=sys.argv[2], predict_type="rank")
 ```
 
-This function computes descriptors once per descriptor type and reuses them across all tasks, making it suitable for scoring large compound libraries. `predict_type` can be `proba`, `rank`, `logit`, `lift`, `score`, or `binary` (default: `proba`).
+This function computes descriptors once per descriptor type and reuses them across all tasks, making it suitable for scoring large compound libraries. `predict_type` controls the output format and is available in both the Python API and the CLI (`--predict_type`).
 
 **Multi-model prediction across directories:**
 
