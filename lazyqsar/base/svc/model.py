@@ -395,12 +395,19 @@ def _to_onnx(svc, path: str, n_features: int) -> None:
         options = {id(svc): {"raw_scores": True}}
     else:
         options = {id(svc): {"zipmap": False}}
+    import onnx
     onnx_model = convert_sklearn(
         svc,
         initial_types=initial_types,
         target_opset=15,
         options=options,
     )
+    for output in onnx_model.graph.output:
+        for dim in output.type.tensor_type.shape.dim:
+            if dim.dim_value == 0:
+                dim.ClearField("dim_value")
+                dim.dim_param = "batch_size"
+    onnx_model = onnx.shape_inference.infer_shapes(onnx_model)
     with open(path, "wb") as f:
         f.write(onnx_model.SerializeToString())
 
