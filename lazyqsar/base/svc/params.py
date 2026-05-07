@@ -48,8 +48,8 @@ All rules are literature-backed for QSAR classification on molecular descriptors
 
   max_iter / tol
   --------------
-  max_iter = max(1000, min(10000, n * 5)): prevents infinite loops and scales
-  with dataset size to allow sufficient convergence iterations.
+  max_iter = max(5000, min(50000, n * 10)): floor of 5000 prevents liblinear
+  convergence failures on small datasets; cap of 50000 bounds wall time.
   tol = 1e-3: sklearn default; fast convergence for portfolio evaluation.
 """
 
@@ -106,7 +106,7 @@ def get_params(profile: DatasetProfile) -> dict:
     class_weight = "balanced"
 
     # ------------------------------------------------------ max_iter / tol
-    max_iter = max(1_000, min(10_000, n * 5))
+    max_iter = max(5_000, min(50_000, n * 10))
     tol = 1e-3
 
     params = {
