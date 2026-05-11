@@ -60,6 +60,8 @@ class XGBoostArtifact:
                 if meta.name == "probabilities"
             )
             proba = np.asarray(prob_output, dtype=np.float64)
+            if proba.ndim == 1 or proba.shape[1] == 1:
+                proba = np.column_stack([1 - proba.ravel(), proba.ravel()])
             if self._cal is not None:
                 raw_p1 = proba[:, 1]
                 if self._cal["method"] == "isotonic":

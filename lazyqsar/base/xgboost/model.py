@@ -1368,6 +1368,7 @@ def _booster_to_sklearn_wrapper(booster: xgb.Booster, task: str):
 
 def _export_onnx(model, path: str, n_features: int) -> None:
     """Convert an XGBoost sklearn estimator to ONNX and write to path."""
+    import onnx
     from onnxmltools.convert import convert_xgboost
     from onnxmltools.convert.common.data_types import FloatTensorType
 
@@ -1375,6 +1376,12 @@ def _export_onnx(model, path: str, n_features: int) -> None:
         model,
         initial_types=[("float_input", FloatTensorType([None, n_features]))],
     )
+    for output in onnx_model.graph.output:
+        for dim in output.type.tensor_type.shape.dim:
+            if dim.dim_value == 0:
+                dim.ClearField("dim_value")
+                dim.dim_param = "batch_size"
+    onnx_model = onnx.shape_inference.infer_shapes(onnx_model)
     with open(path, "wb") as f:
         f.write(onnx_model.SerializeToString())
 
