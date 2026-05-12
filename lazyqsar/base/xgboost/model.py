@@ -1381,6 +1381,7 @@ def _export_onnx(model, path: str, n_features: int) -> None:
             if dim.dim_value == 0:
                 dim.ClearField("dim_value")
                 dim.dim_param = "batch_size"
+    del onnx_model.graph.value_info[:]
     onnx_model = onnx.shape_inference.infer_shapes(onnx_model)
     with open(path, "wb") as f:
         f.write(onnx_model.SerializeToString())
