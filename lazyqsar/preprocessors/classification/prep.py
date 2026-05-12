@@ -22,5 +22,5 @@ class Preprocessor(object):
         return self.preprocessor.transform(X)
 
     def save(self, directory):
-        self.preprocessor.save(directory, onnx=True)
+        self.preprocessor.save(directory)
         logger.debug(f"Preprocessor saved to {directory}")

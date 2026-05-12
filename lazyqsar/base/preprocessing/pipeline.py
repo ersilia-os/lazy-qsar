@@ -142,22 +142,16 @@ class BasePreprocessor(BaseEstimator, TransformerMixin):
             "kept_feature_indices": self.kept_feature_indices_,
         }
 
-    def save(self, directory: str, onnx: bool = True) -> None:
+    def save(self, directory: str) -> None:
         """
         Save the fitted pipeline to *directory*.
 
-        Writes ``preprocessor.json`` (metadata) and either
-        ``preprocessor.onnx`` (default) or ``preprocessor.joblib``.
+        Writes ``preprocessor.json`` (metadata) and ``preprocessor.onnx``.
         """
         check_is_fitted(self, "pipeline_")
         os.makedirs(directory, exist_ok=True)
         base = os.path.join(directory, "preprocessor")
-        if onnx:
-            self.to_onnx(base + ".onnx")
-        else:
-            import joblib
-
-            joblib.dump(self.pipeline_, base + ".joblib")
+        self.to_onnx(base + ".onnx")
         with open(base + ".json", "w") as f:
             json.dump(self._metadata_dict(), f, indent=2)
 
@@ -181,9 +175,8 @@ class BasePreprocessorArtifact:
     """
     Inference-only preprocessor loaded from a saved directory.
 
-    Reads ``preprocessor.json`` and either ``preprocessor.onnx`` or
-    ``preprocessor.joblib``. No sklearn fit dependencies are required
-    when using the ONNX backend.
+    Reads ``preprocessor.json`` and ``preprocessor.onnx``.
+    Only ``onnxruntime`` is required at inference time.
     """
 
     @classmethod
@@ -202,34 +195,21 @@ class BasePreprocessorArtifact:
         self.n_features_out: int = meta["n_features_out"]
         self.kept_feature_indices: list = meta["kept_feature_indices"]
         onnx_path = os.path.join(directory, "preprocessor.onnx")
-        joblib_path = os.path.join(directory, "preprocessor.joblib")
-        if os.path.exists(onnx_path):
-            import onnxruntime as rt
+        if not os.path.exists(onnx_path):
+            raise FileNotFoundError(f"No preprocessor.onnx found in {directory!r}")
+        import onnxruntime as rt
 
-            self._session = rt.InferenceSession(onnx_path)
-            self._input_name = self._session.get_inputs()[0].name
-            self._backend = "onnx"
-        elif os.path.exists(joblib_path):
-            import joblib
-
-            self._pipeline = joblib.load(joblib_path)
-            self._backend = "joblib"
-        else:
-            raise FileNotFoundError(
-                f"No preprocessor.onnx or preprocessor.joblib found in {directory!r}"
-            )
+        self._session = rt.InferenceSession(onnx_path)
+        self._input_name = self._session.get_inputs()[0].name
         return self
 
     def run(self, X) -> np.ndarray:
         """Apply the preprocessor to X, returning float32 array."""
-        if self._backend == "onnx":
-            if hasattr(X, "toarray"):
-                X = X.toarray()
-            return self._session.run(
-                None, {self._input_name: np.asarray(X, dtype=np.float32)}
-            )[0]
-        else:
-            return self._pipeline.transform(X)
+        if hasattr(X, "toarray"):
+            X = X.toarray()
+        return self._session.run(
+            None, {self._input_name: np.asarray(X, dtype=np.float32)}
+        )[0]
 
 
 class BaseClassifierPreprocessor(BasePreprocessor):

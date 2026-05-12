@@ -875,15 +875,14 @@ class LazyClassifierQSAR(object):
             descriptor_types=descriptor_types,
         )
 
-    def save(self, model_dir: str, onnx: bool = True):
+    def save(self, model_dir: str):
         if model_dir.endswith(".zip"):
             zip = True
             model_dir = model_dir[:-4]
         else:
             zip = False
         self.save_raw(model_dir)
-        if onnx:
-            self.save_onnx(model_dir)
+        self.save_onnx(model_dir)
         if zip:
             shutil.make_archive(model_dir, "zip", model_dir)
             if os.path.exists(model_dir):

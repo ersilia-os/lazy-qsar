@@ -30,5 +30,5 @@ class Head(object):
         return (proba >= cutoff).astype(int)
 
     def save(self, directory):
-        self.model.save(directory, onnx=True)
+        self.model.save(directory)
         logger.debug(f"XGB head saved to {directory}")

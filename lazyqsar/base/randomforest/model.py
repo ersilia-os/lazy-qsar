@@ -5,7 +5,6 @@ import os
 import time as _time
 from contextlib import contextmanager
 
-import joblib
 import numpy as np
 from sklearn.base import BaseEstimator
 from sklearn.ensemble import RandomForestClassifier
@@ -516,32 +515,24 @@ class BaseRFClassifier(BaseEstimator):
         with open(path, "wb") as f:
             f.write(onnx_model.SerializeToString())
 
-    def save(self, directory: str, onnx: bool = True) -> None:
+    def save(self, directory: str) -> None:
         """
         Save the trained model to a directory.
 
-        Always writes ``randomforest.json`` (fit metadata). The model binary is
-        written as either:
-          - ``randomforest.onnx``   when ``onnx=True`` (default)
-          - ``randomforest.joblib`` when ``onnx=False``
+        Always writes ``randomforest.json`` (fit metadata) and ``randomforest.onnx``.
 
         Parameters
         ----------
         directory : str
             Destination directory (created if it does not exist).
-        onnx : bool
-            If True, export to ONNX format; otherwise use joblib.
         """
         check_is_fitted(self, attributes=["_estimator"])
         os.makedirs(directory, exist_ok=True)
-        if onnx:
-            self.to_onnx(os.path.join(directory, "randomforest.onnx"))
-        else:
-            joblib.dump(self._estimator, os.path.join(directory, "randomforest.joblib"))
+        self.to_onnx(os.path.join(directory, "randomforest.onnx"))
         params = getattr(self, "params_", {})
         metadata = {
             "task": "classification",
-            "format": "onnx" if onnx else "joblib",
+            "format": "onnx",
             "n_estimators": params.get("n_estimators", self.n_estimators),
             "selected_preset": getattr(self, "selected_preset_", "unknown"),
             "n_features_in": self.n_features_in_,
@@ -585,7 +576,7 @@ class BaseRFArtifact:
     Load a saved Random Forest model for forward inference.
 
     Reads the files written by ``BaseRFClassifier.save()``:
-      - ``randomforest.onnx``  or ``randomforest.joblib`` — model binary
+      - ``randomforest.onnx``  — model binary
       - ``randomforest.json``  — fit metadata (task, calibrator, ranker, …)
 
     Usage
@@ -597,8 +588,6 @@ class BaseRFArtifact:
 
     def __init__(self):
         self._session = None
-        self._estimator = None
-        self._format = ""
         self.metadata = {}
         self.task = ""
         self._cal = None
@@ -612,8 +601,6 @@ class BaseRFArtifact:
     def load(cls, directory: str) -> "BaseRFArtifact":
         """
         Load the model from *directory*.
-
-        Detects ONNX or joblib format from ``randomforest.json``.
 
         Parameters
         ----------
@@ -631,7 +618,6 @@ class BaseRFArtifact:
         with open(json_path) as f:
             artifact.metadata = json.load(f)
         artifact.task = artifact.metadata["task"]
-        artifact._format = artifact.metadata.get("format", "onnx")
         artifact._cal = artifact.metadata.get("calibrator", None)
         artifact.decision_cutoff_raw = float(
             artifact.metadata.get("decision_cutoff_raw", _DEFAULT_DECISION_CUTOFF)
@@ -649,16 +635,14 @@ class BaseRFArtifact:
             artifact.metadata.get("decision_cutoff_logit", 0.0)
         )
 
-        if artifact._format == "onnx":
-            import onnxruntime as rt
+        import onnxruntime as rt
 
-            onnx_path = os.path.join(directory, "randomforest.onnx")
-            artifact._session = rt.InferenceSession(
-                onnx_path, providers=["CPUExecutionProvider"]
-            )
-        else:
-            joblib_path = os.path.join(directory, "randomforest.joblib")
-            artifact._estimator = joblib.load(joblib_path)
+        onnx_path = os.path.join(directory, "randomforest.onnx")
+        if not os.path.isfile(onnx_path):
+            raise FileNotFoundError(f"No ONNX model found at {onnx_path!r}")
+        artifact._session = rt.InferenceSession(
+            onnx_path, providers=["CPUExecutionProvider"]
+        )
         return artifact
 
     def run(self, X) -> np.ndarray:
@@ -671,20 +655,17 @@ class BaseRFArtifact:
             Calibrated [P(class=0), P(class=1)].
         """
         X_f32 = np.asarray(X, dtype=np.float32)
-        if self._format == "onnx":
-            input_name = self._session.get_inputs()[0].name
-            outputs = self._session.run(None, {input_name: X_f32})
-            prob_raw = outputs[1]
-            if isinstance(prob_raw, list):
-                proba = np.array(
-                    [[d[k] for k in sorted(d)] for d in prob_raw], dtype=np.float64
-                )
-            else:
-                proba = np.asarray(prob_raw, dtype=np.float64)
-                if proba.ndim == 1:
-                    proba = np.column_stack([1 - proba, proba])
+        input_name = self._session.get_inputs()[0].name
+        outputs = self._session.run(None, {input_name: X_f32})
+        prob_raw = outputs[1]
+        if isinstance(prob_raw, list):
+            proba = np.array(
+                [[d[k] for k in sorted(d)] for d in prob_raw], dtype=np.float64
+            )
         else:
-            proba = self._estimator.predict_proba(X_f32).astype(np.float64)
+            proba = np.asarray(prob_raw, dtype=np.float64)
+            if proba.ndim == 1:
+                proba = np.column_stack([1 - proba, proba])
         if self._cal is not None:
             proba = _apply_calibrator_artifact(proba, self._cal)
         return proba
@@ -697,19 +678,17 @@ class BaseRFArtifact:
     def predict_score(self, X) -> np.ndarray:
         """Return raw (pre-calibration) probabilities, shape (n_samples, 2)."""
         X_f32 = np.asarray(X, dtype=np.float32)
-        if self._format == "onnx":
-            input_name = self._session.get_inputs()[0].name
-            outputs = self._session.run(None, {input_name: X_f32})
-            prob_raw = outputs[1]
-            if isinstance(prob_raw, list):
-                return np.array(
-                    [[d[k] for k in sorted(d)] for d in prob_raw], dtype=np.float64
-                )
-            proba = np.asarray(prob_raw, dtype=np.float64)
-            if proba.ndim == 1:
-                return np.column_stack([1 - proba, proba])
-            return proba
-        return self._estimator.predict_proba(X_f32).astype(np.float64)
+        input_name = self._session.get_inputs()[0].name
+        outputs = self._session.run(None, {input_name: X_f32})
+        prob_raw = outputs[1]
+        if isinstance(prob_raw, list):
+            return np.array(
+                [[d[k] for k in sorted(d)] for d in prob_raw], dtype=np.float64
+            )
+        proba = np.asarray(prob_raw, dtype=np.float64)
+        if proba.ndim == 1:
+            return np.column_stack([1 - proba, proba])
+        return proba
 
     def predict_logit(self, X) -> np.ndarray:
         """Return logit of calibrated probabilities, shape (n_samples, 2)."""

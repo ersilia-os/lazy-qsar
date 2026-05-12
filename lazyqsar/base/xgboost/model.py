@@ -541,34 +541,23 @@ class BaseXGBClassifier(BaseEstimator, ClassifierMixin):
         wrapper = _booster_to_sklearn_wrapper(self.booster_, task="classification")
         _export_onnx(wrapper, path, self.profile_.n_features)
 
-    def save(self, directory: str, onnx: bool = True) -> None:
+    def save(self, directory: str) -> None:
         """
         Save the trained model to a directory.
 
-        Always writes ``xgboost.json`` (fit metadata).  The model binary is
-        written as either:
-          - ``xgboost.onnx``   when ``onnx=True`` (default)
-          - ``xgboost.joblib`` when ``onnx=False``
+        Always writes ``xgboost.json`` (fit metadata) and ``xgboost.onnx``.
 
         Parameters
         ----------
         directory : str
             Path to the output directory (created if it does not exist).
-        onnx : bool
-            If True (default), export the booster in ONNX format.
-            If False, serialise the booster with joblib.
         """
         check_is_fitted(self, "booster_")
         os.makedirs(directory, exist_ok=True)
-        if onnx:
-            self.to_onnx(os.path.join(directory, "xgboost.onnx"))
-        else:
-            import joblib
-
-            joblib.dump(self.booster_, os.path.join(directory, "xgboost.joblib"))
+        self.to_onnx(os.path.join(directory, "xgboost.onnx"))
         metadata = {
             "task": "classification",
-            "format": "onnx" if onnx else "joblib",
+            "format": "onnx",
             "preset_name": self.preset_name_,
             "best_iteration": self.best_iteration_,
             "params": self.params_,
@@ -731,34 +720,23 @@ class BaseXGBRegressor(BaseEstimator, RegressorMixin):
         wrapper = _booster_to_sklearn_wrapper(self.booster_, task="regression")
         _export_onnx(wrapper, path, self.profile_.n_features)
 
-    def save(self, directory: str, onnx: bool = True) -> None:
+    def save(self, directory: str) -> None:
         """
         Save the trained model to a directory.
 
-        Always writes ``xgboost.json`` (fit metadata).  The model binary is
-        written as either:
-          - ``xgboost.onnx``   when ``onnx=True`` (default)
-          - ``xgboost.joblib`` when ``onnx=False``
+        Always writes ``xgboost.json`` (fit metadata) and ``xgboost.onnx``.
 
         Parameters
         ----------
         directory : str
             Path to the output directory (created if it does not exist).
-        onnx : bool
-            If True (default), export the booster in ONNX format.
-            If False, serialise the booster with joblib.
         """
         check_is_fitted(self, "booster_")
         os.makedirs(directory, exist_ok=True)
-        if onnx:
-            self.to_onnx(os.path.join(directory, "xgboost.onnx"))
-        else:
-            import joblib
-
-            joblib.dump(self.booster_, os.path.join(directory, "xgboost.joblib"))
+        self.to_onnx(os.path.join(directory, "xgboost.onnx"))
         metadata = {
             "task": "regression",
-            "format": "onnx" if onnx else "joblib",
+            "format": "onnx",
             "preset_name": self.preset_name_,
             "best_iteration": self.best_iteration_,
             "params": self.params_,
@@ -1470,9 +1448,7 @@ class BaseXGBArtifact:
     """
 
     def __init__(self):
-        self._session = None  # onnxruntime.InferenceSession (onnx path)
-        self._booster = None  # xgb.Booster (joblib path)
-        self._format: str = ""
+        self._session = None  # onnxruntime.InferenceSession
         self.metadata: dict = {}
         self.task: str = ""
         self._cal = None
@@ -1486,11 +1462,6 @@ class BaseXGBArtifact:
     def load(cls, directory: str) -> "BaseXGBArtifact":
         """
         Load the model from *directory*.
-
-        Automatically detects whether the saved format is ONNX or joblib by
-        reading the ``"format"`` field in ``xgboost.json``.  Falls back to
-        probing for the files directly if the field is absent (models saved
-        before this field was introduced).
 
         Parameters
         ----------
@@ -1510,23 +1481,6 @@ class BaseXGBArtifact:
             artifact.metadata = json.load(f)
         artifact.task = artifact.metadata["task"]
 
-        # Resolve format: prefer the field in JSON, fall back to file probing.
-        fmt = artifact.metadata.get("format")
-        if fmt is None:
-            onnx_path = os.path.join(directory, "xgboost.onnx")
-            joblib_path = os.path.join(directory, "xgboost.joblib")
-            if os.path.isfile(onnx_path):
-                fmt = "onnx"
-            elif os.path.isfile(joblib_path):
-                fmt = "joblib"
-            else:
-                raise FileNotFoundError(
-                    f"No model file found in {directory!r} "
-                    "(expected xgboost.onnx or xgboost.joblib)"
-                )
-
-        artifact._format = fmt
-
         artifact._cal = artifact.metadata.get("calibrator", None)
         artifact.decision_cutoff_raw = float(
             artifact.metadata.get("decision_cutoff_raw", _DEFAULT_DECISION_CUTOFF)
@@ -1544,22 +1498,14 @@ class BaseXGBArtifact:
             artifact.metadata.get("decision_cutoff_logit", 0.0)
         )
 
-        if fmt == "onnx":
-            import onnxruntime as rt
+        import onnxruntime as rt
 
-            onnx_path = os.path.join(directory, "xgboost.onnx")
-            if not os.path.isfile(onnx_path):
-                raise FileNotFoundError(f"No ONNX model found at {onnx_path!r}")
-            artifact._session = rt.InferenceSession(
-                onnx_path, providers=["CPUExecutionProvider"]
-            )
-        else:
-            import joblib
-
-            joblib_path = os.path.join(directory, "xgboost.joblib")
-            if not os.path.isfile(joblib_path):
-                raise FileNotFoundError(f"No joblib model found at {joblib_path!r}")
-            artifact._booster = joblib.load(joblib_path)
+        onnx_path = os.path.join(directory, "xgboost.onnx")
+        if not os.path.isfile(onnx_path):
+            raise FileNotFoundError(f"No ONNX model found at {onnx_path!r}")
+        artifact._session = rt.InferenceSession(
+            onnx_path, providers=["CPUExecutionProvider"]
+        )
 
         return artifact
 
@@ -1578,36 +1524,24 @@ class BaseXGBArtifact:
             - Classification: shape ``(n_samples, 2)`` — ``[P(class=0), P(class=1)]``
             - Regression: shape ``(n_samples,)`` — predicted values
         """
-        if self._session is None and self._booster is None:
+        if self._session is None:
             raise RuntimeError("No model loaded. Call BaseXGBArtifact.load() first.")
 
-        if self._format == "onnx":
-            X_f32 = np.asarray(X, dtype=np.float32)
-            input_name = self._session.get_inputs()[0].name
-            outputs = self._session.run(None, {input_name: X_f32})
-            if self.task == "classification":
-                prob_output = next(
-                    o
-                    for o, meta in zip(outputs, self._session.get_outputs())
-                    if meta.name == "probabilities"
-                )
-                proba = np.asarray(prob_output, dtype=np.float64)
-                if self._cal is not None:
-                    proba = _apply_calibrator_artifact(proba, self._cal)
-                return proba
-            else:
-                return np.asarray(outputs[0], dtype=np.float64).ravel()
+        X_f32 = np.asarray(X, dtype=np.float32)
+        input_name = self._session.get_inputs()[0].name
+        outputs = self._session.run(None, {input_name: X_f32})
+        if self.task == "classification":
+            prob_output = next(
+                o
+                for o, meta in zip(outputs, self._session.get_outputs())
+                if meta.name == "probabilities"
+            )
+            proba = np.asarray(prob_output, dtype=np.float64)
+            if self._cal is not None:
+                proba = _apply_calibrator_artifact(proba, self._cal)
+            return proba
         else:
-            best_iter = self.metadata["best_iteration"]
-            dmat = xgb.DMatrix(X)
-            raw = self._booster.predict(dmat, iteration_range=(0, best_iter + 1))
-            if self.task == "classification":
-                proba = np.column_stack([1 - raw, raw]).astype(np.float64)
-                if self._cal is not None:
-                    proba = _apply_calibrator_artifact(proba, self._cal)
-                return proba
-            else:
-                return raw.astype(np.float64)
+            return np.asarray(outputs[0], dtype=np.float64).ravel()
 
     def predict(self, X, cutoff: float | None = None) -> np.ndarray:
         """Return binary predictions using the stored decision cutoff by default."""

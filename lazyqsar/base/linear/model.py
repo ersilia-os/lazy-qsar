@@ -23,7 +23,6 @@ import json
 import os
 import time as _time
 
-import joblib
 import numpy as np
 from sklearn.base import BaseEstimator
 from sklearn.feature_selection import (
@@ -670,34 +669,23 @@ class BaseLinearClassifier(BaseEstimator):
         with open(path, "wb") as f:
             f.write(onnx_model.SerializeToString())
 
-    def save(self, directory: str, onnx: bool = True) -> None:
+    def save(self, directory: str) -> None:
         """
         Save the trained model to a directory.
 
-        Always writes ``linear.json`` (fit metadata).  The model binary is
-        written as either:
-          - ``linear.onnx``   when ``onnx=True`` (default)
-          - ``linear.joblib`` when ``onnx=False``
+        Always writes ``linear.json`` (fit metadata) and ``linear.onnx``.
 
         Parameters
         ----------
         directory : str
             Destination directory (created if it does not exist).
-        onnx : bool
-            If True, export to ONNX format; otherwise use joblib.
         """
         check_is_fitted(self, attributes=["_estimator"])
         os.makedirs(directory, exist_ok=True)
-        if onnx:
-            self.to_onnx(os.path.join(directory, "linear.onnx"))
-        else:
-            joblib.dump(
-                {"vt": self._vt, "sfm": self._sfm, "estimator": self._estimator},
-                os.path.join(directory, "linear.joblib"),
-            )
+        self.to_onnx(os.path.join(directory, "linear.onnx"))
         metadata = {
             "task": "classification",
-            "format": "onnx" if onnx else "joblib",
+            "format": "onnx",
             "regime": self.regime_,
             "n_features_in": self.n_features_in_,
             "classes": self._label_encoder.classes_.tolist(),
@@ -1119,34 +1107,23 @@ class BaseLinearRegressor(BaseEstimator):
         with open(path, "wb") as f:
             f.write(onnx_model.SerializeToString())
 
-    def save(self, directory: str, onnx: bool = True) -> None:
+    def save(self, directory: str) -> None:
         """
         Save the trained model to a directory.
 
-        Always writes ``linear.json`` (fit metadata).  The model binary is
-        written as either:
-          - ``linear.onnx``   when ``onnx=True`` (default)
-          - ``linear.joblib`` when ``onnx=False``
+        Always writes ``linear.json`` (fit metadata) and ``linear.onnx``.
 
         Parameters
         ----------
         directory : str
             Destination directory (created if it does not exist).
-        onnx : bool
-            If True, export to ONNX format; otherwise use joblib.
         """
         check_is_fitted(self, attributes=["_estimator"])
         os.makedirs(directory, exist_ok=True)
-        if onnx:
-            self.to_onnx(os.path.join(directory, "linear.onnx"))
-        else:
-            joblib.dump(
-                {"vt": self._vt, "sfm": self._sfm, "estimator": self._estimator},
-                os.path.join(directory, "linear.joblib"),
-            )
+        self.to_onnx(os.path.join(directory, "linear.onnx"))
         metadata = {
             "task": "regression",
-            "format": "onnx" if onnx else "joblib",
+            "format": "onnx",
             "regime": self.regime_,
             "n_features_in": self.n_features_in_,
             "feature_mask": self.feature_mask_.tolist(),
@@ -1290,8 +1267,8 @@ class BaseLinearArtifact:
     Load a saved linear model for forward inference.
 
     Reads the files written by BaseLinearClassifier.save() or BaseLinearRegressor.save():
-      - linear.onnx  or linear.joblib — model binary
-      - linear.json                   — fit metadata (task, format, regime, …)
+      - linear.onnx  — model binary
+      - linear.json  — fit metadata (task, format, regime, …)
 
     Usage
     -----
@@ -1300,9 +1277,7 @@ class BaseLinearArtifact:
     """
 
     def __init__(self):
-        self._session = None  # onnxruntime.InferenceSession (onnx path)
-        self._bundle = None  # dict with vt / sfm / estimator (joblib path)
-        self._format: str = ""
+        self._session = None  # onnxruntime.InferenceSession
         self.metadata: dict = {}
         self.task: str = ""
         self._cal = None
@@ -1324,22 +1299,6 @@ class BaseLinearArtifact:
             artifact.metadata = json.load(f)
         artifact.task = artifact.metadata["task"]
 
-        fmt = artifact.metadata.get("format")
-        if fmt is None:
-            onnx_path = os.path.join(directory, "linear.onnx")
-            joblib_path = os.path.join(directory, "linear.joblib")
-            if os.path.isfile(onnx_path):
-                fmt = "onnx"
-            elif os.path.isfile(joblib_path):
-                fmt = "joblib"
-            else:
-                raise FileNotFoundError(
-                    f"No model file found in {directory!r} "
-                    "(expected linear.onnx or linear.joblib)"
-                )
-
-        artifact._format = fmt
-
         artifact._cal = artifact.metadata.get("calibrator", None)
         artifact.decision_cutoff_raw = float(
             artifact.metadata.get("decision_cutoff_raw", _DEFAULT_DECISION_CUTOFF)
@@ -1357,20 +1316,14 @@ class BaseLinearArtifact:
             artifact.metadata.get("decision_cutoff_logit", 0.0)
         )
 
-        if fmt == "onnx":
-            import onnxruntime as rt
+        import onnxruntime as rt
 
-            onnx_path = os.path.join(directory, "linear.onnx")
-            if not os.path.isfile(onnx_path):
-                raise FileNotFoundError(f"No ONNX model found at {onnx_path!r}")
-            artifact._session = rt.InferenceSession(
-                onnx_path, providers=["CPUExecutionProvider"]
-            )
-        else:
-            joblib_path = os.path.join(directory, "linear.joblib")
-            if not os.path.isfile(joblib_path):
-                raise FileNotFoundError(f"No joblib model found at {joblib_path!r}")
-            artifact._bundle = joblib.load(joblib_path)
+        onnx_path = os.path.join(directory, "linear.onnx")
+        if not os.path.isfile(onnx_path):
+            raise FileNotFoundError(f"No ONNX model found at {onnx_path!r}")
+        artifact._session = rt.InferenceSession(
+            onnx_path, providers=["CPUExecutionProvider"]
+        )
 
         return artifact
 
@@ -1385,45 +1338,29 @@ class BaseLinearArtifact:
         Regression : ndarray of shape (n_samples,)
             Predicted continuous values.
         """
-        if self._session is None and self._bundle is None:
+        if self._session is None:
             raise RuntimeError("No model loaded. Call BaseLinearArtifact.load() first.")
 
         X_f32 = np.asarray(X, dtype=np.float32)
-
-        if self._format == "onnx":
-            input_name = self._session.get_inputs()[0].name
-            outputs = self._session.run(None, {input_name: X_f32})
-            if self.task == "classification":
-                # skl2onnx classifier pipeline: outputs[0]=labels, outputs[1]=prob dict/array
-                prob_raw = outputs[1]
-                if isinstance(prob_raw, list):
-                    # list of dicts [{0: p0, 1: p1}, …]
-                    proba = np.array(
-                        [[d[k] for k in sorted(d)] for d in prob_raw], dtype=np.float64
-                    )
-                else:
-                    proba = np.asarray(prob_raw, dtype=np.float64)
-                    if proba.ndim == 1:
-                        proba = np.column_stack([1 - proba, proba])
-                if self._cal is not None:
-                    proba = _apply_calibrator_artifact(proba, self._cal)
-                return proba
+        input_name = self._session.get_inputs()[0].name
+        outputs = self._session.run(None, {input_name: X_f32})
+        if self.task == "classification":
+            # skl2onnx classifier pipeline: outputs[0]=labels, outputs[1]=prob dict/array
+            prob_raw = outputs[1]
+            if isinstance(prob_raw, list):
+                # list of dicts [{0: p0, 1: p1}, …]
+                proba = np.array(
+                    [[d[k] for k in sorted(d)] for d in prob_raw], dtype=np.float64
+                )
             else:
-                return np.asarray(outputs[0], dtype=np.float64).ravel()
+                proba = np.asarray(prob_raw, dtype=np.float64)
+                if proba.ndim == 1:
+                    proba = np.column_stack([1 - proba, proba])
+            if self._cal is not None:
+                proba = _apply_calibrator_artifact(proba, self._cal)
+            return proba
         else:
-            vt = self._bundle["vt"]
-            sfm = self._bundle["sfm"]
-            estimator = self._bundle["estimator"]
-            X_t = vt.transform(X_f32)
-            if sfm is not None:
-                X_t = sfm.transform(X_t)
-            if self.task == "classification":
-                proba = estimator.predict_proba(X_t).astype(np.float64)
-                if self._cal is not None:
-                    proba = _apply_calibrator_artifact(proba, self._cal)
-                return proba
-            else:
-                return estimator.predict(X_t).astype(np.float64)
+            return np.asarray(outputs[0], dtype=np.float64).ravel()
 
     def predict(self, X, cutoff: float | None = None) -> np.ndarray:
         """Return class predictions using the stored decision cutoff by default."""

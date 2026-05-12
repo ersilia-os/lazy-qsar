@@ -158,8 +158,7 @@ class LazyClassifier:
         obj = cls.__new__(cls)
         obj._model = _AssemblerClassifier()
         raise NotImplementedError(
-            "Loading a raw (non-ONNX) LazyClassifier is not yet supported. "
-            "Save with onnx=True (the default) to enable loading."
+            "Loading a raw (non-ONNX) LazyClassifier is not yet supported."
         )
 
 
