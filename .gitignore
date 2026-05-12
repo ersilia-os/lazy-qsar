@@ -6,17 +6,20 @@ development/
 calibration_*.png
 swarm_*.png
 smoke_swarm.png
-tests/test_model/
-benchmark/data/admet_group.zip
-benchmark/data/admet_group/
-benchmark/data/ersilia_preds/
-benchmark/preds/
-benchmark
 lazyqsar_test_output
 lazyqsar_test_output.zip
 development.py
 my_output
 nts_perc_10.csv
+
+# dev/ generated outputs
+dev/data/*.tab
+dev/tests/data/*
+!dev/tests/data/README.md
+dev/tests/results/*
+!dev/tests/results/README.md
+dev/benchmarks/results/*
+!dev/benchmarks/results/README.md
 
 
 # Byte-compiled / optimized / DLL files

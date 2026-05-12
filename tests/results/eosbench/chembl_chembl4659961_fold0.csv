@@ -1,2 +1,0 @@
-source,dataset,fold,n_folds,n_train,n_test,n_pos_train,n_neg_train,n_pos_test,n_neg_test,auroc,aupr,aupr_baseline,aupr_ratio,auroc_ref_mean,auroc_ref_std,aupr_ref_mean,aupr_ref_std
-chembl,chembl4659961,0,5,42532,10633,719,41813,179,10454,0.8435,0.2111,0.0168,12.539,0.7956,0.0107,0.1749,0.0189

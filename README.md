@@ -35,8 +35,8 @@ You can install optional extras depending on your use case:
 
 | Extra | Command | Adds |
 |-------|---------|------|
-| `fit` | `pip install -e .[fit]` | Required to train models (scikit-learn, XGBoost, scipy, skl2onnx) |
-| `descriptors` | `pip install -e .[descriptors]` | Required for built-in molecular descriptors (e.g. RDKit, FPSim2) |
+| `fit` | `pip install -e .[fit]` | Training dependencies (scikit-learn, XGBoost, scipy, ONNX conversion tools) |
+| `descriptors` | `pip install -e .[descriptors]` | Built-in molecular descriptors (RDKit, FPSim2, deep-learning models) |
 | `all` | `pip install -e .[all]` | Everything above |
 
 The first time you use deep-learning descriptors (Chemeleon, CLAMP, CDDD), their checkpoints are downloaded automatically. To do this in advance:
@@ -54,25 +54,18 @@ Pass SMILES strings directly. Choose a descriptor mode:
 | Mode | Descriptors | Notes |
 |------|-------------|-------|
 | `fast` | Morgan fingerprints | No deep-learning models, fastest |
-| `slow` | Chemeleon, CLAMP, Morgan, RDKit (physchem), CDDD | Most thorough |
+| `slow` | CDDD, Chemeleon, CLAMP, Morgan, RDKit | Most thorough |
 
 ```python
 from lazyqsar.qsar import LazyClassifierQSAR
 
 model = LazyClassifierQSAR(mode="slow") # default is "slow"
 model.fit(smiles_list=smiles_train, y=y_train)
+
+ranks = model.predict_rank(smiles_list=smiles_test)[:, 1]  # percentile rank vs training set
 ```
 
-Available prediction methods:
-
-| Method | Returns | Description |
-|--------|---------|-------------|
-| `predict(smiles_list)` | `(N,)` | Binary labels at an optimized threshold |
-| `predict_proba(smiles_list)` | `(N, 2)` | Calibrated class probabilities |
-| `predict_logit(smiles_list)` | `(N, 2)` | Log-odds scores |
-| `predict_rank(smiles_list)` | `(N, 2)` | Rank quantiles (0–1) |
-| `predict_score(smiles_list)` | `(N, 2)` | Raw model scores |
-| `predict_lift(smiles_list)` | `(N, 2)` | Probability / population prior |
+Other prediction methods include `predict_proba`, `predict`, `predict_lift`, and more — see [docs/internals.md](docs/internals.md#part-8-prediction-methods) for the full list.
 
 ### LazyClassifier (custom descriptors)
 
@@ -150,7 +143,7 @@ LazyQSAR builds an ensemble for each descriptor set through four steps:
 
 4. **Pooling**: head predictions are combined via a learned gating network (`InnerClassifierPooler`). When using `LazyClassifierQSAR`, a separate ensemble is trained per descriptor type and their predictions are combined via an AUC-weighted ensemble that accounts for per-sample prediction confidence.
 
-5. **Export**: the full pipeline is exported to ONNX for dependency-free inference.
+The full pipeline is exported to ONNX, so inference requires only `numpy` and `onnxruntime`.
 
 ## Base Models
 
@@ -162,6 +155,7 @@ The components under `lazyqsar/base/` can be used independently of the full pipe
 | [`lazyqsar.base.xgboost`](lazyqsar/base/xgboost/README.md) | Automatic XGBoost hyperparameter selection with portfolio comparison |
 | [`lazyqsar.base.linear`](lazyqsar/base/linear/README.md) | Automatic linear model selection (logistic/ridge/SGD) |
 | [`lazyqsar.base.randomforest`](lazyqsar/base/randomforest/README.md) | Random Forest classifier with zero-shot hyperparameter selection |
+| [`lazyqsar.base.svc`](lazyqsar/base/svc/) | Support Vector Classifier with automatic kernel and C selection |
 
 ## Ersilia Model Hub integration
 
@@ -198,25 +192,7 @@ predict(model_dir=checkpoints_dir, input_csv=sys.argv[1], output_csv=sys.argv[2]
 
 This function computes descriptors once per descriptor type and reuses them across all tasks, making it suitable for scoring large compound libraries. `predict_type` controls the output format and is available in both the Python API and the CLI (`--predict_type`).
 
-**Multi-model prediction across directories:**
-
-`model_dir` also accepts a `dict[str, str]` mapping each individual model directory (a leaf directory containing featurizer subdirs) to its exact output column name. This is useful when models for different targets are stored under separate paths:
-
-```python
-from lazyqsar.api.classifier_predict import predict
-
-predict(
-    model_dir={
-        "checkpoints/ecoli/individual_activity_a": "E. coli activity",
-        "checkpoints/mtb/individual_activity_a":   "M. tb activity",
-    },
-    input_csv=sys.argv[1],
-    output_csv=sys.argv[2],
-    predict_type="rank",
-)
-```
-
-The output CSV will contain one column per entry, named exactly as the dict values. Descriptors are still computed once per type and shared across all models.
+`model_dir` also accepts a `dict[str, str]` mapping **column names to model directories**, for scoring multiple targets stored under separate paths — see [docs/internals.md](docs/internals.md) for details.
 
 ## Roadmap
 

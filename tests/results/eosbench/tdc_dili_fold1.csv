@@ -1,2 +1,0 @@
-source,dataset,fold,n_folds,n_train,n_test,n_pos_train,n_neg_train,n_pos_test,n_neg_test,auroc,aupr,aupr_baseline,aupr_ratio,auroc_ref_mean,auroc_ref_std,aupr_ref_mean,aupr_ref_std
-tdc,dili,1,5,380,95,189,191,47,48,0.871,0.873,0.4947,1.7647,0.8914,0.0385,0.888,0.0376

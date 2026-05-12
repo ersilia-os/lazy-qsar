@@ -101,7 +101,7 @@ def _predict_from_dict(
             f"Choose from: {sorted(_PREDICT_DISPATCH)}"
         )
 
-    col_map = {os.path.abspath(p): col for p, col in model_dir.items()}
+    col_map = {os.path.abspath(p): col for col, p in model_dir.items()}
     input_csv = os.path.abspath(input_csv)
     output_csv = os.path.abspath(output_csv)
 

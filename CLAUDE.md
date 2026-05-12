@@ -16,14 +16,14 @@ pip install -e .[fit]
 pip install -e .[all]
 
 # Run full test suite
-pytest tests/
+pytest
 
 # Run a single test file
-pytest tests/test_classifier_unit.py -v
+pytest dev/tests/test_classifier_unit.py -v
 
 # Quick smoke tests (validates pipeline end-to-end with synthetic data)
-python smoke/smoke_classifier.py           # 500 samples, 100 features
-python smoke/smoke_classifier.py 1000 200  # custom size
+python dev/smoke/smoke_classifier.py           # 500 samples, 100 features
+python dev/smoke/smoke_classifier.py 1000 200  # custom size
 ```
 
 ## Architecture

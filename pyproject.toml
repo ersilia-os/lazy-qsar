@@ -69,7 +69,10 @@ exclude = ["utilities"]
 [project.scripts]
 lazyqsar = "lazyqsar.cli.main:main"
 
+[tool.pytest.ini_options]
+testpaths = ["dev/tests"]
+
 [tool.ruff.lint.per-file-ignores]
-"smoke/*.py" = ["E402"]
-"benchmarks/*.py" = ["E402", "F841"]
-"tests/notebooks/*.ipynb" = ["E402", "E701", "E722"]
+"dev/smoke/*.py" = ["E402"]
+"dev/benchmarks/*.py" = ["E402", "F841"]
+"dev/tests/notebooks/*.ipynb" = ["E402", "E701", "E722"]
