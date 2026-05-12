@@ -37,12 +37,15 @@ class MorganFingerprint(object):
         results = []
         for smi in smiles:
             mol = Chem.MolFromSmiles(smi)
+            if mol is None:
+                results.append([np.nan] * self.n_dim)
+                continue
             v = self.mfpgen.GetCountFingerprint(mol)
             row = [0] * self.n_dim
             for i, val in v.GetNonzeroElements().items():
                 row[i] = val if val < 255 else 255
             results.append(row)
-        return np.array(results, dtype=np.uint8)
+        return np.array(results, dtype=np.float32)
 
     def is_applicable(self, smiles_list: list) -> bool:
         return True

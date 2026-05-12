@@ -64,15 +64,23 @@ class _CheMeleonFingerprint:
             self.model.to(device=device)
 
     def __call__(self, molecules: list[str | Mol]) -> np.ndarray:
-        def _featurize(m):
-            mol = MolFromSmiles(m) if isinstance(m, str) else m
-            return self.featurizer(mol)
+        mols = [MolFromSmiles(m) if isinstance(m, str) else m for m in molecules]
+        valid_idx = [i for i, m in enumerate(mols) if m is not None]
 
+        if not valid_idx:
+            raise ValueError("No valid molecules in batch.")
+
+        valid_mols = [mols[i] for i in valid_idx]
         with ThreadPoolExecutor() as ex:
-            mol_graphs = list(ex.map(_featurize, molecules))
+            mol_graphs = list(ex.map(self.featurizer, valid_mols))
         bmg = BatchMolGraph(mol_graphs)
         bmg.to(device=self.model.device)
-        return self.model.fingerprint(bmg).numpy(force=True)
+        embeddings = self.model.fingerprint(bmg).numpy(force=True)
+
+        result = np.full((len(molecules), embeddings.shape[1]), np.nan, dtype=np.float32)
+        for out_i, src_i in enumerate(valid_idx):
+            result[src_i] = embeddings[out_i]
+        return result
 
 
 class ChemeleonDescriptor(object):
