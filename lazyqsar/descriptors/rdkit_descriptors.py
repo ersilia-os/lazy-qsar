@@ -6,6 +6,7 @@ from rdkit.ML.Descriptors import MoleculeDescriptors
 from rdkit.Chem import Descriptors
 from rdkit import RDLogger
 from ..utils.logging import logger
+from ._validate import validate_smiles
 
 RDLogger.DisableLog("rdApp.*")
 
@@ -22,20 +23,26 @@ class RDKitDescriptor(object):
         self.features = [n.lower() for n in self._descriptor_names]
 
     def transform(self, smiles_list):
+        validate_smiles(smiles_list)
         logger.debug("Transforming RDKit descriptors...")
         results = []
         for smi in smiles_list:
             try:
                 mol = Chem.MolFromSmiles(smi)
-                if mol is None:
-                    raise ValueError("Invalid molecule")
                 vals = np.array(self.calculator.CalcDescriptors(mol), dtype=np.float64)
-                vals[~np.isfinite(vals)] = 0.0
+                vals[~np.isfinite(vals)] = np.nan
                 vals = np.clip(vals, -1e5, 1e5).astype(np.float32)
             except Exception:
-                vals = np.zeros(len(self._descriptor_names), dtype=np.float32)
+                vals = np.full(len(self._descriptor_names), np.nan, dtype=np.float32)
             results.append(vals)
-        return np.clip(np.array(results, dtype=np.float32), -1e5, 1e5)
+        result = np.clip(np.array(results, dtype=np.float32), -1e5, 1e5)
+        nan_rows = np.where(np.isnan(result).any(axis=1))[0]
+        if len(nan_rows):
+            logger.warning(
+                f"[rdkit] {len(nan_rows)} SMILES produced NaN descriptors "
+                f"and will be median-imputed (indices: {nan_rows.tolist()})"
+            )
+        return result
 
     def is_applicable(self, smiles_list: list) -> bool:
         return True

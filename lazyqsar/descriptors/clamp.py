@@ -11,6 +11,7 @@ from rdkit.Chem.rdmolops import FastFindRings
 from rdkit import RDLogger
 
 from ..utils.logging import logger
+from ._validate import validate_smiles
 
 RDLogger.DisableLog("rdApp.*")
 
@@ -32,29 +33,23 @@ def _smiles_to_fp(smi: str) -> np.ndarray:
     v = np.zeros(_FP_SIZE, dtype=np.float32)
 
     # morganc: count-based Morgan fingerprint (radius 2, with chirality/bond types/features)
-    try:
-        counts = AllChem.GetMorganFingerprint(
-            mol,
-            _RADIUS,
-            useChirality=True,
-            useBondTypes=True,
-            useFeatures=True,
-            useCounts=True,
-        ).GetNonzeroElements()
-        for k, c in counts.items():
-            v[int(k) % _FP_SIZE] += float(c)
-    except Exception:
-        pass
+    counts = AllChem.GetMorganFingerprint(
+        mol,
+        _RADIUS,
+        useChirality=True,
+        useBondTypes=True,
+        useFeatures=True,
+        useCounts=True,
+    ).GetNonzeroElements()
+    for k, c in counts.items():
+        v[int(k) % _FP_SIZE] += float(c)
 
     # rdkc: count-based RDKit path fingerprint (maxPath=6)
-    try:
-        counts = AllChem.UnfoldedRDKFingerprintCountBased(
-            mol, maxPath=6
-        ).GetNonzeroElements()
-        for k, c in counts.items():
-            v[int(k) % _FP_SIZE] += float(c)
-    except Exception:
-        pass
+    counts = AllChem.UnfoldedRDKFingerprintCountBased(
+        mol, maxPath=6
+    ).GetNonzeroElements()
+    for k, c in counts.items():
+        v[int(k) % _FP_SIZE] += float(c)
 
     return np.log1p(v)
 
@@ -92,22 +87,39 @@ class ClampDescriptor:
         self._out_name = self._session.get_outputs()[0].name
 
     def transform(self, smiles_list: list, chunk_size: int = 100) -> np.ndarray:
+        validate_smiles(smiles_list)
         self._ensure_model()
         n_total = len(smiles_list)
+        result = np.full((n_total, self.n_dim), np.nan, dtype=np.float32)
+        chunks_done = 0
         milestones = {int(n_total * f / chunk_size) for f in (0.25, 0.5, 0.75)}
-        chunks = []
-        for i in range(0, n_total, chunk_size):
-            chunk = smiles_list[i : i + chunk_size]
-            fps = np.stack([_smiles_to_fp(s) for s in chunk], axis=0).astype(np.float32)
-            emb = self._session.run([self._out_name], {self._in_name: fps})[0]
-            chunks.append(emb)
-            done = len(chunks)
-            if done in milestones:
-                pct = int(done * chunk_size * 100 / n_total)
+        for chunk_start in range(0, n_total, chunk_size):
+            chunk = smiles_list[chunk_start : chunk_start + chunk_size]
+            fps, valid_idx = [], []
+            for j, s in enumerate(chunk):
+                try:
+                    fps.append(_smiles_to_fp(s))
+                    valid_idx.append(chunk_start + j)
+                except Exception:
+                    pass
+            if valid_idx:
+                fps_arr = np.stack(fps).astype(np.float32)
+                emb = self._session.run([self._out_name], {self._in_name: fps_arr})[0]
+                for out_i, src_i in enumerate(valid_idx):
+                    result[src_i] = emb[out_i]
+            chunks_done += 1
+            if chunks_done in milestones:
+                pct = int(chunks_done * chunk_size * 100 / n_total)
                 logger.debug(
-                    f"CLAMP transform {pct}% ({done * chunk_size:,}/{n_total:,})"
+                    f"CLAMP transform {pct}% ({chunks_done * chunk_size:,}/{n_total:,})"
                 )
-        return np.concatenate(chunks, axis=0).astype(np.float32)
+        nan_rows = np.where(np.isnan(result).any(axis=1))[0]
+        if len(nan_rows):
+            logger.warning(
+                f"[clamp] {len(nan_rows)} SMILES produced NaN descriptors "
+                f"and will be median-imputed (indices: {nan_rows.tolist()})"
+            )
+        return result
 
     def is_applicable(self, smiles_list: list) -> bool:
         return True

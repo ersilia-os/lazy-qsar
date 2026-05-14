@@ -5,6 +5,7 @@ from rdkit import Chem
 from rdkit.Chem import rdFingerprintGenerator
 from rdkit import RDLogger
 from ..utils.logging import logger
+from ._validate import validate_smiles
 
 RDLogger.DisableLog("rdApp.*")
 
@@ -33,19 +34,27 @@ class MorganFingerprint(object):
         return Chem.MolFromSmiles(smiles)
 
     def transform(self, smiles):
+        validate_smiles(smiles)
         logger.debug("Transforming Morgan fingerprints...")
         results = []
         for smi in smiles:
             mol = Chem.MolFromSmiles(smi)
-            if mol is None:
+            try:
+                v = self.mfpgen.GetCountFingerprint(mol)
+                row = [0] * self.n_dim
+                for i, val in v.GetNonzeroElements().items():
+                    row[i] = val if val < 255 else 255
+                results.append(row)
+            except Exception:
                 results.append([np.nan] * self.n_dim)
-                continue
-            v = self.mfpgen.GetCountFingerprint(mol)
-            row = [0] * self.n_dim
-            for i, val in v.GetNonzeroElements().items():
-                row[i] = val if val < 255 else 255
-            results.append(row)
-        return np.array(results, dtype=np.float32)
+        result = np.array(results, dtype=np.float32)
+        nan_rows = np.where(np.isnan(result).any(axis=1))[0]
+        if len(nan_rows):
+            logger.warning(
+                f"[morgan] {len(nan_rows)} SMILES produced NaN descriptors "
+                f"and will be median-imputed (indices: {nan_rows.tolist()})"
+            )
+        return result
 
     def is_applicable(self, smiles_list: list) -> bool:
         return True

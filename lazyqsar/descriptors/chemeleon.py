@@ -35,6 +35,7 @@ except ImportError:
         )
 from rdkit.Chem import MolFromSmiles, Mol
 from rdkit import RDLogger
+from ._validate import validate_smiles
 
 RDLogger.DisableLog("rdApp.*")
 
@@ -76,7 +77,6 @@ class _CheMeleonFingerprint:
         bmg = BatchMolGraph(mol_graphs)
         bmg.to(device=self.model.device)
         embeddings = self.model.fingerprint(bmg).numpy(force=True)
-
         result = np.full((len(molecules), embeddings.shape[1]), np.nan, dtype=np.float32)
         for out_i, src_i in enumerate(valid_idx):
             result[src_i] = embeddings[out_i]
@@ -99,13 +99,17 @@ class ChemeleonDescriptor(object):
         self.features = ["dim_{0}".format(i) for i in range(self.n_dim)]
 
     def transform(self, smiles):
+        validate_smiles(smiles)
         chunk_size = 100
         R = []
         n_total = len(smiles)
         milestones = {int(n_total * f / chunk_size) for f in (0.25, 0.5, 0.75)}
         for i in range(0, n_total, chunk_size):
             chunk = smiles[i : i + chunk_size]
-            X_chunk = np.array(self.chemeleon_fingerprint(chunk), dtype=np.float32)
+            try:
+                X_chunk = np.array(self.chemeleon_fingerprint(chunk), dtype=np.float32)
+            except Exception:
+                X_chunk = np.full((len(chunk), self.n_dim), np.nan, dtype=np.float32)
             R.append(X_chunk)
             done = len(R)
             if done in milestones:
@@ -113,7 +117,14 @@ class ChemeleonDescriptor(object):
                 logger.debug(
                     f"CheMeleon transform {pct}% ({done * chunk_size:,}/{n_total:,})"
                 )
-        return np.concatenate(R, dtype=np.float32, axis=0)
+        result = np.concatenate(R, dtype=np.float32, axis=0)
+        nan_rows = np.where(np.isnan(result).any(axis=1))[0]
+        if len(nan_rows):
+            logger.warning(
+                f"[chemeleon] {len(nan_rows)} SMILES produced NaN descriptors "
+                f"and will be median-imputed (indices: {nan_rows.tolist()})"
+            )
+        return result
 
     def is_applicable(self, smiles_list: list) -> bool:
         return True

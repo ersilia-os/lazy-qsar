@@ -17,6 +17,7 @@ from pathlib import Path
 from urllib.request import urlretrieve
 
 from ..utils.logging import logger
+from ._validate import validate_smiles
 
 RDLogger.DisableLog("rdApp.*")
 
@@ -412,25 +413,27 @@ class InferenceModel:
         if len(good_smiles) == 0:
             return X
 
-        input_pipeline = InputPipelineInferEncode(good_smiles, self.hparams)
-        input_pipeline.initialize()
-        emb_list = []
-        while True:
-            try:
-                input_seq, input_len = input_pipeline.get_next()
-
-                outputs = self.encoder_session.run(
-                    None,
-                    {
-                        "Input/Placeholder:0": input_seq.astype(np.int32),
-                        "Input/Placeholder_1:0": input_len.astype(np.int32),
-                    },
-                )
-                emb_list.append(outputs[0])
-            except StopIteration:
-                break
-        embeddings = np.vstack(emb_list)
-        X[accepted_idxs] = embeddings
+        try:
+            input_pipeline = InputPipelineInferEncode(good_smiles, self.hparams)
+            input_pipeline.initialize()
+            emb_list = []
+            while True:
+                try:
+                    input_seq, input_len = input_pipeline.get_next()
+                    outputs = self.encoder_session.run(
+                        None,
+                        {
+                            "Input/Placeholder:0": input_seq.astype(np.int32),
+                            "Input/Placeholder_1:0": input_len.astype(np.int32),
+                        },
+                    )
+                    emb_list.append(outputs[0])
+                except StopIteration:
+                    break
+            embeddings = np.vstack(emb_list)
+            X[accepted_idxs] = embeddings
+        except Exception:
+            pass  # X[accepted_idxs] stays NaN; ChEMBL fallback in transform() handles them
         return X
 
 
@@ -442,6 +445,7 @@ class ContinuousDataDrivenDescriptor(object):
         self.smiles_indexed = load_smiles_indexed()
 
     def transform(self, smiles_list):
+        validate_smiles(smiles_list)
         outputs = self.model.seq_to_emb(smiles_list)
         nan_rows = np.isnan(outputs).any(axis=1)
         n_rows_with_nan = int(nan_rows.sum())
@@ -462,6 +466,12 @@ class ContinuousDataDrivenDescriptor(object):
             "CDDD output length does not match input length"
         )
         embeddings = np.array(outputs, dtype=np.float32)
+        residual_nan = np.where(np.isnan(embeddings).any(axis=1))[0]
+        if len(residual_nan):
+            logger.warning(
+                f"[cddd] {len(residual_nan)} SMILES produced NaN descriptors after "
+                f"ChEMBL fallback and will be median-imputed (indices: {residual_nan.tolist()})"
+            )
         return embeddings
 
     def is_applicable(self, smiles_list: list) -> bool:
