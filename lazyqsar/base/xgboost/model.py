@@ -36,12 +36,30 @@ import os
 import time as _time
 
 import numpy as np
-from joblib import Parallel, delayed
-from sklearn.base import BaseEstimator, ClassifierMixin, RegressorMixin
-from sklearn.metrics import balanced_accuracy_score
-from sklearn.model_selection import train_test_split
-from sklearn.utils.validation import check_is_fitted
-import xgboost as xgb
+# ---------------------------------------------------------------------------
+# Fit-time dependencies — NOT required for ONNX inference.
+# Guarded so lean [descriptors]-only installs can import this module to reach
+# BaseXGBArtifact without errors.
+# ---------------------------------------------------------------------------
+try:
+    from joblib import Parallel, delayed
+    from sklearn.base import BaseEstimator, ClassifierMixin, RegressorMixin
+    from sklearn.metrics import balanced_accuracy_score
+    from sklearn.model_selection import train_test_split
+    from sklearn.utils.validation import check_is_fitted
+    import xgboost as xgb
+    _FIT_DEPS_AVAILABLE = True
+except ImportError:
+    Parallel = delayed = None  # type: ignore[assignment,misc]
+    class BaseEstimator:  # type: ignore[no-redef]
+        pass
+    class ClassifierMixin:  # type: ignore[no-redef]
+        pass
+    class RegressorMixin:  # type: ignore[no-redef]
+        pass
+    balanced_accuracy_score = train_test_split = check_is_fitted = None  # type: ignore[assignment]
+    xgb = None  # type: ignore[assignment]
+    _FIT_DEPS_AVAILABLE = False
 
 from .inspector import inspect as _inspect, DatasetProfile
 from .params import get_params as _get_params
@@ -188,6 +206,8 @@ def _resolve_device(device: str) -> str:
     attempted on CUDA; if it succeeds, 'gpu' is returned for all subsequent
     calls.
     """
+    if xgb is None:
+        return "cpu"
     global _GPU_AVAILABLE
     if device != "auto":
         return device
@@ -266,6 +286,11 @@ class BaseXGBClassifier(BaseEstimator, ClassifierMixin):
 
         When ``calibrated=False``, runs the raw training only (no OOF pass).
         """
+        if not _FIT_DEPS_AVAILABLE:
+            raise ImportError(
+                "Training requires xgboost and scikit-learn. "
+                "Install with: pip install 'lazyqsar[fit]'"
+            )
         if self.calibrated:
             y_arr = np.asarray(y, dtype=int)
             if np.bincount(y_arr).min() >= 2:
@@ -277,6 +302,11 @@ class BaseXGBClassifier(BaseEstimator, ClassifierMixin):
     # ------------------------------------------------------------------
 
     def _fit_raw(self, X, y):
+        if not _FIT_DEPS_AVAILABLE:
+            raise ImportError(
+                "Training requires xgboost and scikit-learn. "
+                "Install with: pip install 'lazyqsar[fit]'"
+            )
         y = np.asarray(y).ravel()
         profile = _inspect(X, y, task="classification")
         self.profile_ = profile
@@ -425,6 +455,11 @@ class BaseXGBClassifier(BaseEstimator, ClassifierMixin):
         self.calibrator_ : IsotonicRegression
             Fitted isotonic calibrator. predict_proba() will apply this layer.
         """
+        if not _FIT_DEPS_AVAILABLE:
+            raise ImportError(
+                "Training requires xgboost and scikit-learn. "
+                "Install with: pip install 'lazyqsar[fit]'"
+            )
         from sklearn.isotonic import IsotonicRegression
         import scipy.sparse as sp
 
@@ -637,6 +672,11 @@ class BaseXGBRegressor(BaseEstimator, RegressorMixin):
         self.nthread = nthread
 
     def fit(self, X, y):
+        if not _FIT_DEPS_AVAILABLE:
+            raise ImportError(
+                "Training requires xgboost and scikit-learn. "
+                "Install with: pip install 'lazyqsar[fit]'"
+            )
         y = np.asarray(y).ravel()
         profile = _inspect(X, y, task="regression")
         self.profile_ = profile
@@ -1326,7 +1366,7 @@ def _portfolio_select(
     return best_name, winner_params, best_iter, fast_scores
 
 
-def _booster_to_sklearn_wrapper(booster: xgb.Booster, task: str):
+def _booster_to_sklearn_wrapper(booster: "xgb.Booster", task: str):
     """
     Wrap a raw Booster in an sklearn-compatible object for onnxmltools export.
 

@@ -24,31 +24,50 @@ import os
 import time as _time
 
 import numpy as np
-from sklearn.base import BaseEstimator
-from sklearn.feature_selection import (
-    SelectFromModel,
-    SelectKBest,
-    VarianceThreshold,
-    f_classif,
-)
-from sklearn.linear_model import (
-    ElasticNetCV,
-    Lasso,
-    LogisticRegression,
-    LogisticRegressionCV,
-    RidgeCV,
-    SGDClassifier,
-    SGDRegressor,
-)
-from sklearn.metrics import balanced_accuracy_score, r2_score, roc_auc_score
-from sklearn.model_selection import (
-    GridSearchCV,
-    KFold,
-    StratifiedKFold,
-    StratifiedShuffleSplit,
-)
-from sklearn.preprocessing import LabelEncoder
-from sklearn.utils.validation import check_array, check_is_fitted
+
+# ---------------------------------------------------------------------------
+# Fit-time dependencies — NOT required for ONNX inference.
+# Guarded so lean [descriptors]-only installs can import this module to reach
+# the artifact (inference) classes without errors.
+# ---------------------------------------------------------------------------
+try:
+    from sklearn.base import BaseEstimator
+    from sklearn.feature_selection import (
+        SelectFromModel,
+        SelectKBest,
+        VarianceThreshold,
+        f_classif,
+    )
+    from sklearn.linear_model import (
+        ElasticNetCV,
+        Lasso,
+        LogisticRegression,
+        LogisticRegressionCV,
+        RidgeCV,
+        SGDClassifier,
+        SGDRegressor,
+    )
+    from sklearn.metrics import balanced_accuracy_score, r2_score, roc_auc_score
+    from sklearn.model_selection import (
+        GridSearchCV,
+        KFold,
+        StratifiedKFold,
+        StratifiedShuffleSplit,
+    )
+    from sklearn.preprocessing import LabelEncoder
+    from sklearn.utils.validation import check_array, check_is_fitted
+    _FIT_DEPS_AVAILABLE = True
+except ImportError:
+    class BaseEstimator:  # type: ignore[no-redef]
+        pass
+    SelectFromModel = SelectKBest = VarianceThreshold = f_classif = None  # type: ignore[assignment,misc]
+    ElasticNetCV = Lasso = LogisticRegression = LogisticRegressionCV = None  # type: ignore[assignment,misc]
+    RidgeCV = SGDClassifier = SGDRegressor = None  # type: ignore[assignment,misc]
+    balanced_accuracy_score = r2_score = roc_auc_score = None  # type: ignore[assignment]
+    GridSearchCV = KFold = StratifiedKFold = StratifiedShuffleSplit = None  # type: ignore[assignment,misc]
+    LabelEncoder = None  # type: ignore[assignment,misc]
+    check_array = check_is_fitted = None  # type: ignore[assignment]
+    _FIT_DEPS_AVAILABLE = False
 
 from lazyqsar.utils.logging import logger
 from lazyqsar.utils.splits import (
@@ -307,6 +326,10 @@ class BaseLinearClassifier(BaseEstimator):
 
     def fit(self, X, y) -> "BaseLinearClassifier":
         """Fit the model. If calibrated=True, runs calibrate() for OOF calibration."""
+        if not _FIT_DEPS_AVAILABLE:
+            raise ImportError(
+                "Training requires scikit-learn. Install with: pip install 'lazyqsar[fit]'"
+            )
         if self.calibrated:
             y_arr = np.asarray(y, dtype=int)
             if np.bincount(y_arr).min() >= 2:
@@ -314,6 +337,10 @@ class BaseLinearClassifier(BaseEstimator):
         return self._fit_raw(X, y)
 
     def _fit_raw(self, X, y) -> "BaseLinearClassifier":
+        if not _FIT_DEPS_AVAILABLE:
+            raise ImportError(
+                "Training requires scikit-learn. Install with: pip install 'lazyqsar[fit]'"
+            )
         logger.rule("BaseLinearClassifier")
 
         X = check_array(X, dtype="numeric", accept_sparse="csr")
@@ -478,6 +505,10 @@ class BaseLinearClassifier(BaseEstimator):
             Fitted isotonic calibrator.  predict_proba() will apply this
             layer to new-data predictions.
         """
+        if not _FIT_DEPS_AVAILABLE:
+            raise ImportError(
+                "Training requires scikit-learn. Install with: pip install 'lazyqsar[fit]'"
+            )
         from sklearn.isotonic import IsotonicRegression
 
         X = check_array(X, dtype="numeric", accept_sparse="csr")
@@ -991,6 +1022,10 @@ class BaseLinearRegressor(BaseEstimator):
     # ------------------------------------------------------------------
 
     def fit(self, X, y) -> "BaseLinearRegressor":
+        if not _FIT_DEPS_AVAILABLE:
+            raise ImportError(
+                "Training requires scikit-learn. Install with: pip install 'lazyqsar[fit]'"
+            )
         logger.rule("BaseLinearRegressor")
 
         X = check_array(X, dtype="numeric", accept_sparse="csr")

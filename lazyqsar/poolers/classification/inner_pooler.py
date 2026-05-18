@@ -2,7 +2,13 @@ import json
 import os
 
 import numpy as np
-from sklearn.linear_model import Ridge
+
+try:
+    from sklearn.linear_model import Ridge
+    _FIT_DEPS_AVAILABLE = True
+except ImportError:
+    Ridge = None  # type: ignore[assignment,misc]
+    _FIT_DEPS_AVAILABLE = False
 
 from lazyqsar.utils.logging import logger
 from lazyqsar.utils.metrics import composite_score

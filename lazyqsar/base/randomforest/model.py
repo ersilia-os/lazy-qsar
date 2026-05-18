@@ -6,12 +6,27 @@ import time as _time
 from contextlib import contextmanager
 
 import numpy as np
-from sklearn.base import BaseEstimator
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.isotonic import IsotonicRegression
-from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import balanced_accuracy_score, roc_auc_score
-from sklearn.utils.validation import check_array, check_is_fitted
+# ---------------------------------------------------------------------------
+# Fit-time dependencies — NOT required for ONNX inference.
+# Guarded so lean [descriptors]-only installs can import this module to reach
+# BaseRFArtifact without errors.
+# ---------------------------------------------------------------------------
+try:
+    from sklearn.base import BaseEstimator
+    from sklearn.ensemble import RandomForestClassifier
+    from sklearn.isotonic import IsotonicRegression
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.metrics import balanced_accuracy_score, roc_auc_score
+    from sklearn.utils.validation import check_array, check_is_fitted
+    _FIT_DEPS_AVAILABLE = True
+except ImportError:
+    class BaseEstimator:  # type: ignore[no-redef]
+        pass
+    RandomForestClassifier = None  # type: ignore[assignment,misc]
+    IsotonicRegression = LogisticRegression = None  # type: ignore[assignment,misc]
+    balanced_accuracy_score = roc_auc_score = None  # type: ignore[assignment]
+    check_array = check_is_fitted = None  # type: ignore[assignment]
+    _FIT_DEPS_AVAILABLE = False
 
 from lazyqsar.utils.logging import logger
 from lazyqsar.utils.splits import make_stratified_oof_splits
@@ -239,6 +254,10 @@ class BaseRFClassifier(BaseEstimator):
         return out
 
     def fit(self, X, y) -> "BaseRFClassifier":
+        if not _FIT_DEPS_AVAILABLE:
+            raise ImportError(
+                "Training requires scikit-learn. Install with: pip install 'lazyqsar[fit]'"
+            )
         if self.calibrated:
             y_arr = np.asarray(y, dtype=int)
             if np.bincount(y_arr).min() >= 2:
@@ -262,6 +281,10 @@ class BaseRFClassifier(BaseEstimator):
         )
 
     def _fit_raw(self, X, y) -> "BaseRFClassifier":
+        if not _FIT_DEPS_AVAILABLE:
+            raise ImportError(
+                "Training requires scikit-learn. Install with: pip install 'lazyqsar[fit]'"
+            )
         logger.rule("BaseRFClassifier")
         X = check_array(X, dtype="numeric", accept_sparse="csr")
         y = np.asarray(y, dtype=int)
@@ -418,6 +441,10 @@ class BaseRFClassifier(BaseEstimator):
     def calibrate(
         self, X, y, n_splits: int | None = None, random_state: int = 42
     ) -> "BaseRFClassifier":
+        if not _FIT_DEPS_AVAILABLE:
+            raise ImportError(
+                "Training requires scikit-learn. Install with: pip install 'lazyqsar[fit]'"
+            )
         X = check_array(X, dtype="numeric", accept_sparse="csr")
         y = np.asarray(y, dtype=int)
         n = len(y)

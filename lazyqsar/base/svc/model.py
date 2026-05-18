@@ -50,12 +50,28 @@ import os
 import time as _time
 
 import numpy as np
-from sklearn.base import BaseEstimator, ClassifierMixin
-from sklearn.isotonic import IsotonicRegression
-from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import balanced_accuracy_score, roc_auc_score
-from sklearn.model_selection import train_test_split
-from sklearn.utils.validation import check_array, check_is_fitted
+# ---------------------------------------------------------------------------
+# Fit-time dependencies — NOT required for ONNX inference.
+# Guarded so lean [descriptors]-only installs can import this module to reach
+# BaseSVCArtifact without errors.
+# ---------------------------------------------------------------------------
+try:
+    from sklearn.base import BaseEstimator, ClassifierMixin
+    from sklearn.isotonic import IsotonicRegression
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.metrics import balanced_accuracy_score, roc_auc_score
+    from sklearn.model_selection import train_test_split
+    from sklearn.utils.validation import check_array, check_is_fitted
+    _FIT_DEPS_AVAILABLE = True
+except ImportError:
+    class BaseEstimator:  # type: ignore[no-redef]
+        pass
+    class ClassifierMixin:  # type: ignore[no-redef]
+        pass
+    IsotonicRegression = LogisticRegression = None  # type: ignore[assignment,misc]
+    balanced_accuracy_score = roc_auc_score = None  # type: ignore[assignment]
+    train_test_split = check_array = check_is_fitted = None  # type: ignore[assignment]
+    _FIT_DEPS_AVAILABLE = False
 
 from .inspector import inspect as _inspect, DatasetProfile
 from .params import get_params as _get_params
@@ -468,6 +484,10 @@ class BaseSVCClassifier(BaseEstimator, ClassifierMixin):
 
     def fit(self, X, y):
         """Fit the classifier (full calibration workflow when calibrated=True)."""
+        if not _FIT_DEPS_AVAILABLE:
+            raise ImportError(
+                "Training requires scikit-learn. Install with: pip install 'lazyqsar[fit]'"
+            )
         if self.calibrated:
             y_arr = np.asarray(y, dtype=int)
             if np.bincount(y_arr).min() >= 2:
@@ -479,6 +499,10 @@ class BaseSVCClassifier(BaseEstimator, ClassifierMixin):
     # ------------------------------------------------------------------
 
     def _fit_raw(self, X, y) -> "BaseSVCClassifier":
+        if not _FIT_DEPS_AVAILABLE:
+            raise ImportError(
+                "Training requires scikit-learn. Install with: pip install 'lazyqsar[fit]'"
+            )
         X = check_array(X, dtype="numeric", accept_sparse=False)
         y = np.asarray(y, dtype=int).ravel()
         profile = _inspect(X, y, task="classification")
@@ -590,6 +614,10 @@ class BaseSVCClassifier(BaseEstimator, ClassifierMixin):
         the winning params without re-running portfolio comparison per fold.
         The calibrator is fitted on sigmoid(decision_function) OOF scores.
         """
+        if not _FIT_DEPS_AVAILABLE:
+            raise ImportError(
+                "Training requires scikit-learn. Install with: pip install 'lazyqsar[fit]'"
+            )
         X = check_array(X, dtype="numeric", accept_sparse=False)
         y = np.asarray(y, dtype=int).ravel()
         n = len(y)

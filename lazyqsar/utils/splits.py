@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import numpy as np
-from sklearn.model_selection import StratifiedKFold
+
+try:
+    from sklearn.model_selection import StratifiedKFold
+except ImportError:
+    StratifiedKFold = None  # type: ignore[assignment,misc]
 
 
 def auto_stratified_oof_n_splits(y: np.ndarray) -> int:
