@@ -3,8 +3,12 @@ lazyqsar — unified CLI entry point.
 
 Subcommands
 -----------
-lazyqsar setup [--descriptors] [--fit]
+lazyqsar setup [--descriptors] [--fit] [--only LIST] [--target-dir DIR]
     Install optional dependencies and download model checkpoints.
+    --only       Comma-separated subset of descriptors to download: chemeleon, cddd, clamp.
+                 Default: all three. Only meaningful with --descriptors.
+    --target-dir Directory to write checkpoint files into (default: ~/.lazyqsar/).
+                 Only meaningful with --descriptors.
 
 lazyqsar fit --task classification --input DATA_DIR --output MODEL_DIR [--mode MODE] [--models_txt FILE]
     Fit a classifier on CSV data.
@@ -22,16 +26,27 @@ import sys
 # ---------------------------------------------------------------------------
 
 
+_ALL_DESCRIPTORS = {"chemeleon", "cddd", "clamp"}
+
+
 def _cmd_setup(args):
     if not args.descriptors and not args.fit:
         print("Nothing to do. Use --descriptors, --fit, or both.", file=sys.stderr)
         sys.exit(1)
 
+    if not args.descriptors:
+        for flag, name in [(args.only, "--only"), (args.target_dir, "--target-dir")]:
+            if flag is not None:
+                print(
+                    f"Warning: {name} has no effect without --descriptors.",
+                    file=sys.stderr,
+                )
+
     if args.fit:
         _setup_fit()
 
     if args.descriptors:
-        _setup_descriptors()
+        _setup_descriptors(args)
 
 
 def _setup_fit():
@@ -59,21 +74,41 @@ def _setup_fit():
     print("Fit dependencies installed.")
 
 
-def _setup_descriptors():
+def _setup_descriptors(args):
     from ..utils.setup import (
         install_torch,
         install_chemprop,
         install_rdkit,
         install_fpsim2,
+        download_chemeleon,
+        download_cddd,
+        download_clamp,
     )
-    from ..utils.setup import download_chemeleon, download_cddd
+
+    only = (
+        {d.strip() for d in args.only.split(",")}
+        if args.only
+        else _ALL_DESCRIPTORS
+    )
+    unknown = only - _ALL_DESCRIPTORS
+    if unknown:
+        print(
+            f"Unknown descriptor(s): {', '.join(sorted(unknown))}. "
+            f"Valid options: {', '.join(sorted(_ALL_DESCRIPTORS))}.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     install_torch()
     install_chemprop()
     install_rdkit()
     install_fpsim2()
-    download_chemeleon()
-    download_cddd()
+    if "chemeleon" in only:
+        download_chemeleon(target_dir=args.target_dir)
+    if "cddd" in only:
+        download_cddd(target_dir=args.target_dir)
+    if "clamp" in only:
+        download_clamp(target_dir=args.target_dir)
 
 
 # ---------------------------------------------------------------------------
@@ -144,6 +179,23 @@ def main():
         "--fit",
         action="store_true",
         help="Install fit dependencies (sklearn, xgboost, scipy, skl2onnx, onnxmltools, joblib).",
+    )
+    p_setup.add_argument(
+        "--only",
+        type=str,
+        default=None,
+        metavar="LIST",
+        help=(
+            "Comma-separated subset of descriptors to download: chemeleon, cddd, clamp "
+            "(default: all three). Only meaningful with --descriptors."
+        ),
+    )
+    p_setup.add_argument(
+        "--target-dir",
+        type=str,
+        default=None,
+        metavar="DIR",
+        help="Directory to download checkpoints into (default: ~/.lazyqsar/). Only meaningful with --descriptors.",
     )
 
     # --- fit ---

@@ -5,6 +5,8 @@ from urllib.request import urlretrieve
 
 from .logging import logger
 
+_CLAMP_ONNX_URL = "https://ersilia-models.s3.eu-central-1.amazonaws.com/eos3l5f/model/checkpoints/clamp_clip/compound_encoder.onnx"
+
 
 def _safe_download(url: str, dest: Path) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -13,26 +15,34 @@ def _safe_download(url: str, dest: Path) -> None:
     tmp.replace(dest)
 
 
-def download_chemeleon():
-    logger.info("Downloading Chemeleon model...")
-    ckpt_dir = Path().home() / ".lazyqsar"
+def download_chemeleon(target_dir: str | None = None):
+    ckpt_dir = Path(target_dir) if target_dir else Path.home() / ".lazyqsar"
     mp_path = ckpt_dir / "chemeleon_mp.pt"
     if not mp_path.exists():
+        logger.info("Downloading Chemeleon model...")
         _safe_download(
             "https://zenodo.org/records/15460715/files/chemeleon_mp.pt",
             mp_path,
         )
 
 
-def download_cddd():
-    logger.info("Downloading CDDD encoder...")
-    ckpt_dir = Path().home() / ".lazyqsar"
+def download_cddd(target_dir: str | None = None):
+    ckpt_dir = Path(target_dir) if target_dir else Path.home() / ".lazyqsar"
     cddd_path = ckpt_dir / "cddd_encoder.onnx"
     if not cddd_path.exists():
+        logger.info("Downloading CDDD encoder...")
         _safe_download(
             "https://zenodo.org/records/14811055/files/encoder.onnx?download=1",
             cddd_path,
         )
+
+
+def download_clamp(target_dir: str | None = None):
+    ckpt_dir = Path(target_dir) if target_dir else Path.home() / ".lazyqsar"
+    clamp_path = ckpt_dir / "clamp_encoder.onnx"
+    if not clamp_path.exists():
+        logger.info("Downloading CLAMP encoder (~167 MB)...")
+        _safe_download(_CLAMP_ONNX_URL, clamp_path)
 
 
 def install_torch():
