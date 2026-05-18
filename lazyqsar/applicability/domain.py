@@ -83,9 +83,8 @@ class ApplicabilityDomain:
             raise ValueError(f"Need at least 2 training samples, got {n}.")
 
         self.imputer_: SimpleImputer | None = None
-        if np.isnan(X).any():
-            self.imputer_ = SimpleImputer(strategy="median")
-            X = self.imputer_.fit_transform(X)
+        self.imputer_ = SimpleImputer(strategy="median")
+        X = self.imputer_.fit_transform(X)
 
         # StandardScaler — fitted independently, not shared with any model
         self.scaler_mean_ = X.mean(axis=0).astype(np.float32)  # (p,)
@@ -145,7 +144,7 @@ class ApplicabilityDomain:
         Uses numpy — works before/without ONNX export.
         """
         X = _to_dense(X)
-        if self.imputer_ is not None and np.isnan(X).any():
+        if np.isnan(X).any():
             X = self.imputer_.transform(X)
         X = self._scale(X)
         X_pca = self.pca_.transform(X)
