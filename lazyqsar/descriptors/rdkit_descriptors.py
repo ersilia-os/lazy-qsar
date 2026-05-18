@@ -6,8 +6,6 @@ from rdkit.ML.Descriptors import MoleculeDescriptors
 from rdkit.Chem import Descriptors
 from rdkit import RDLogger
 from ..utils.logging import logger
-from ._validate import validate_smiles
-
 RDLogger.DisableLog("rdApp.*")
 
 
@@ -23,7 +21,6 @@ class RDKitDescriptor(object):
         self.features = [n.lower() for n in self._descriptor_names]
 
     def transform(self, smiles_list):
-        validate_smiles(smiles_list)
         logger.debug("Transforming RDKit descriptors...")
         results = []
         for smi in smiles_list:

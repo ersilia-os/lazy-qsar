@@ -4,6 +4,7 @@ import os
 import shutil
 import numpy as np
 
+from .descriptors._validate import validate_smiles
 from .utils.logging import logger
 
 
@@ -162,6 +163,8 @@ class ArtifactWrapper(object):
         cache_key = _smiles_md5(smiles_list)
         if cache_key in self._ensemble_cache:
             return self._ensemble_cache[cache_key]
+
+        validate_smiles(smiles_list)
 
         active_mask = self.active_descriptors or [True] * len(self.descriptors)
         active_indices = [i for i, a in enumerate(active_mask) if a]
@@ -347,6 +350,7 @@ class LazyClassifierQSAR(object):
         self._ensemble_cache.clear()
 
         y = np.array(y, dtype=int)
+        validate_smiles(smiles_list)
         n = len(smiles_list)
         pos_rate = float(y.mean())
         self.population_prior_ = pos_rate
@@ -472,6 +476,8 @@ class LazyClassifierQSAR(object):
         cache_key = self._smiles_hash(smiles_list)
         if cache_key in self._ensemble_cache:
             return self._ensemble_cache[cache_key]
+
+        validate_smiles(smiles_list)
 
         active_mask = getattr(
             self, "active_descriptors_", [True] * len(self.descriptor_types)

@@ -35,8 +35,6 @@ except ImportError:
         )
 from rdkit.Chem import MolFromSmiles, Mol
 from rdkit import RDLogger
-from ._validate import validate_smiles
-
 RDLogger.DisableLog("rdApp.*")
 
 
@@ -99,7 +97,6 @@ class ChemeleonDescriptor(object):
         self.features = ["dim_{0}".format(i) for i in range(self.n_dim)]
 
     def transform(self, smiles):
-        validate_smiles(smiles)
         chunk_size = 100
         R = []
         n_total = len(smiles)

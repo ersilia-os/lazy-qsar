@@ -11,8 +11,6 @@ from rdkit.Chem.rdmolops import FastFindRings
 from rdkit import RDLogger
 
 from ..utils.logging import logger
-from ._validate import validate_smiles
-
 RDLogger.DisableLog("rdApp.*")
 
 _CLAMP_ONNX_URL = "https://ersilia-models.s3.eu-central-1.amazonaws.com/eos3l5f/model/checkpoints/clamp_clip/compound_encoder.onnx"
@@ -87,7 +85,6 @@ class ClampDescriptor:
         self._out_name = self._session.get_outputs()[0].name
 
     def transform(self, smiles_list: list, chunk_size: int = 100) -> np.ndarray:
-        validate_smiles(smiles_list)
         self._ensure_model()
         n_total = len(smiles_list)
         result = np.full((n_total, self.n_dim), np.nan, dtype=np.float32)

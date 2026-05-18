@@ -7,6 +7,7 @@ import tempfile
 import numpy as np
 
 from ..agnostic import LazyClassifier
+from ..descriptors._validate import validate_smiles
 from ..qsar import DESCRIPTOR_TYPES, DESCRIPTORS_MODE, get_descriptor_type
 from ..utils.logging import logger
 
@@ -87,6 +88,7 @@ def fit(data_dir: str, model_dir: str, models_txt: str = None, mode: str = "defa
     descriptor_types = DESCRIPTORS_MODE[mode]
 
     all_smiles = read_all_smiles(data_dir)
+    validate_smiles(all_smiles)
     all_smiles2idx = {s: i for i, s in enumerate(all_smiles)}
     logger.info(f"Found {len(all_smiles)} unique SMILES across all tasks")
 

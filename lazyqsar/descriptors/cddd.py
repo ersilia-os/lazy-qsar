@@ -17,8 +17,6 @@ from pathlib import Path
 from urllib.request import urlretrieve
 
 from ..utils.logging import logger
-from ._validate import validate_smiles
-
 RDLogger.DisableLog("rdApp.*")
 
 root = os.path.dirname(os.path.abspath(__file__))
@@ -445,7 +443,6 @@ class ContinuousDataDrivenDescriptor(object):
         self.smiles_indexed = load_smiles_indexed()
 
     def transform(self, smiles_list):
-        validate_smiles(smiles_list)
         outputs = self.model.seq_to_emb(smiles_list)
         nan_rows = np.isnan(outputs).any(axis=1)
         n_rows_with_nan = int(nan_rows.sum())

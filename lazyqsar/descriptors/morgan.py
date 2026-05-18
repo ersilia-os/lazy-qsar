@@ -5,8 +5,6 @@ from rdkit import Chem
 from rdkit.Chem import rdFingerprintGenerator
 from rdkit import RDLogger
 from ..utils.logging import logger
-from ._validate import validate_smiles
-
 RDLogger.DisableLog("rdApp.*")
 
 
@@ -34,7 +32,6 @@ class MorganFingerprint(object):
         return Chem.MolFromSmiles(smiles)
 
     def transform(self, smiles):
-        validate_smiles(smiles)
         logger.debug("Transforming Morgan fingerprints...")
         results = []
         for smi in smiles:
