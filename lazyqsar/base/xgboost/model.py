@@ -1394,6 +1394,15 @@ def _export_onnx(model, path: str, n_features: int) -> None:
         model,
         initial_types=[("float_input", FloatTensorType([None, n_features]))],
     )
+    # onnxmltools fixes the second dim of probabilities to 2; onnxruntime infers
+    # {N,1} from the missing n_targets attribute → conflict → MergeShapeInfo warning.
+    # Clearing the fixed value makes the dim fully dynamic, resolving the conflict.
+    for _out in onnx_model.graph.output:
+        if _out.name == "probabilities":
+            _dims = _out.type.tensor_type.shape.dim
+            if len(_dims) >= 2 and _dims[1].dim_value != 0:
+                _dims[1].ClearField("dim_value")
+            break
     for output in onnx_model.graph.output:
         for dim in output.type.tensor_type.shape.dim:
             if dim.dim_value == 0:
