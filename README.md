@@ -159,7 +159,7 @@ The components under `lazyqsar/base/` can be used independently of the full pipe
 
 ## Ersilia Model Hub integration
 
-LazyQSAR models can be used inside an [Ersilia Model Hub template](https://github.com/ersilia-os/eos-template). See [eos1lb5](https://github.com/ersilia-os/eos1lb5) for an example.
+LazyQSAR models can be used inside an [Ersilia Model Hub template](https://github.com/ersilia-os/eos-template). See [eos3dys](https://github.com/ersilia-os/eos3dys) for an example.
 
 Basically, `lazyqsar fit` can be used to produce a `checkpoints` folder with one sub-directory per task and per descriptor type:
 
@@ -184,19 +184,18 @@ The `code/main.py` inference script:
 ```python
 import os, sys
 from lazyqsar.api.classifier_predict import predict
+from ersilia_pack_utils.core import read_smiles, write_out
 
 root = os.path.dirname(os.path.abspath(__file__))
 checkpoints_dir = os.path.abspath(os.path.join(root, "..", "checkpoints"))
-predict(model_dir=checkpoints_dir, input_csv=sys.argv[1], output_csv=sys.argv[2], predict_type="rank")
+_, smiles_list = read_smiles(input_file)
+outputs, header = predict(model_dir=checkpoints_dir, smiles=smiles_list, predict_type="rank")
+write_out(outputs, header, output_file, np.float32)
 ```
 
 This function computes descriptors once per descriptor type and reuses them across all tasks, making it suitable for scoring large compound libraries. `predict_type` controls the output format and is available in both the Python API and the CLI (`--predict_type`).
 
 `model_dir` also accepts a `dict[str, str]` mapping **column names to model directories**, for scoring multiple targets stored under separate paths — see [docs/internals.md](docs/internals.md) for details.
-
-## Roadmap
-
-We are currently working on regression models, mirroring what has been done for classification.
 
 ## Disclaimer
 

@@ -90,11 +90,12 @@ def load_featurizer(model_dir, featurizer_name):
 
 def _predict_from_dict(
     model_dir: dict[str, str],
-    input_csv: str,
-    output_csv: str,
+    input_csv: str | None,
+    output_csv: str | None,
     models_txt: str | None,
     predict_type: str,
-) -> None:
+    smiles: list | None = None,
+) -> tuple[np.ndarray, list[str]]:
     if predict_type not in _PREDICT_DISPATCH:
         raise ValueError(
             f"Unknown predict_type '{predict_type}'. "
@@ -102,16 +103,22 @@ def _predict_from_dict(
         )
 
     col_map = {os.path.abspath(p): col for col, p in model_dir.items()}
-    input_csv = os.path.abspath(input_csv)
-    output_csv = os.path.abspath(output_csv)
+    if input_csv is not None:
+        input_csv = os.path.abspath(input_csv)
+    if output_csv is not None:
+        output_csv = os.path.abspath(output_csv)
 
     logger.info(
         f"Running dict prediction | {len(col_map)} models | input: {input_csv} | "
         f"output: {output_csv} | predict_type: {predict_type}"
     )
 
-    smiles_list = read_smiles(input_csv)
-    logger.info(f"Loaded {len(smiles_list)} SMILES from {input_csv}")
+    if smiles is not None:
+        smiles_list = smiles
+        logger.info(f"Using {len(smiles_list)} SMILES from argument")
+    else:
+        smiles_list = read_smiles(input_csv)
+        logger.info(f"Loaded {len(smiles_list)} SMILES from {input_csv}")
 
     if models_txt is not None:
         with open(models_txt) as f:
@@ -158,19 +165,22 @@ def _predict_from_dict(
 
     cols_ordered = list(col_map.values())
     R = np.array([aggregated[c] for c in cols_ordered]).T
-    pd.DataFrame(R, columns=cols_ordered).to_csv(output_csv, index=False)
-    logger.success(f"Predictions saved to {output_csv}")
+    if output_csv is not None:
+        pd.DataFrame(R, columns=cols_ordered).to_csv(output_csv, index=False)
+        logger.success(f"Predictions saved to {output_csv}")
+    return R, cols_ordered
 
 
 def predict(
     model_dir: str | dict[str, str],
-    input_csv: str,
-    output_csv: str,
+    input_csv: str = None,
+    output_csv: str = None,
     models_txt: str = None,
     predict_type: str = "proba",
-):
+    smiles: list = None,
+) -> tuple[np.ndarray, list[str]]:
     if isinstance(model_dir, dict):
-        return _predict_from_dict(model_dir, input_csv, output_csv, models_txt, predict_type)
+        return _predict_from_dict(model_dir, input_csv, output_csv, models_txt, predict_type, smiles)
 
     if predict_type not in _PREDICT_DISPATCH:
         raise ValueError(
@@ -179,15 +189,21 @@ def predict(
         )
 
     model_dir = os.path.abspath(model_dir)
-    input_csv = os.path.abspath(input_csv)
-    output_csv = os.path.abspath(output_csv)
+    if input_csv is not None:
+        input_csv = os.path.abspath(input_csv)
+    if output_csv is not None:
+        output_csv = os.path.abspath(output_csv)
 
     logger.info(
         f"Running prediction | model: {model_dir} | input: {input_csv} | output: {output_csv} | predict_type: {predict_type}"
     )
 
-    smiles_list = read_smiles(input_csv)
-    logger.info(f"Loaded {len(smiles_list)} SMILES from {input_csv}")
+    if smiles is not None:
+        smiles_list = smiles
+        logger.info(f"Using {len(smiles_list)} SMILES from argument")
+    else:
+        smiles_list = read_smiles(input_csv)
+        logger.info(f"Loaded {len(smiles_list)} SMILES from {input_csv}")
 
     tasks = get_task_names(model_dir)
     logger.info(f"Found tasks: {tasks}")
@@ -229,6 +245,7 @@ def predict(
         R += [aggregated_results[task]]
     R = np.array(R).T
 
-    df = pd.DataFrame(R, columns=tasks)
-    df.to_csv(output_csv, index=False)
-    logger.success(f"Predictions saved to {output_csv}")
+    if output_csv is not None:
+        pd.DataFrame(R, columns=tasks).to_csv(output_csv, index=False)
+        logger.success(f"Predictions saved to {output_csv}")
+    return R, tasks
