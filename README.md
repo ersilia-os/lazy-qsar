@@ -39,6 +39,8 @@ You can install optional extras depending on your use case:
 | `descriptors` | `pip install -e .[descriptors]` | Built-in molecular descriptors (RDKit, FPSim2, deep-learning models) |
 | `all` | `pip install -e .[all]` | Everything above |
 
+> Since v3.3.0, the `descriptors` extra installs the CPU-only PyTorch wheel by default on Linux, macOS arm64, and Windows — no `--index-url` workaround needed.
+
 The first time you use deep-learning descriptors (Chemeleon, CLAMP, CDDD), their checkpoints are downloaded automatically. To do this in advance:
 
 ```bash
