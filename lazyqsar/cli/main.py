@@ -35,8 +35,12 @@ def _cmd_setup(args):
         sys.exit(1)
 
     if not args.descriptors:
-        for flag, name in [(args.only, "--only"), (args.target_dir, "--target-dir")]:
-            if flag is not None:
+        for flag, name in [
+            (args.only, "--only"),
+            (args.target_dir, "--target-dir"),
+            (args.cpu_torch, "--cpu-torch"),
+        ]:
+            if flag:
                 print(
                     f"Warning: {name} has no effect without --descriptors.",
                     file=sys.stderr,
@@ -77,6 +81,7 @@ def _setup_fit():
 def _setup_descriptors(args):
     from ..utils.setup import (
         install_torch,
+        install_cpu_torch_force,
         install_chemprop,
         install_rdkit,
         install_fpsim2,
@@ -99,7 +104,10 @@ def _setup_descriptors(args):
         )
         sys.exit(1)
 
-    install_torch()
+    if args.cpu_torch:
+        install_cpu_torch_force()
+    else:
+        install_torch()
     install_chemprop()
     install_rdkit()
     install_fpsim2()
@@ -196,6 +204,11 @@ def main():
         default=None,
         metavar="DIR",
         help="Directory to download checkpoints into (default: ~/.lazyqsar/). Only meaningful with --descriptors.",
+    )
+    p_setup.add_argument(
+        "--cpu-torch",
+        action="store_true",
+        help="Force-reinstall torch from PyTorch's CPU index, replacing any CUDA wheel pip may have installed via PyPI. Only meaningful with --descriptors.",
     )
 
     # --- fit ---
