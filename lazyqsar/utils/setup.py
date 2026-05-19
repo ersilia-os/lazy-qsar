@@ -61,6 +61,24 @@ def install_torch():
     )
 
 
+def install_cpu_torch_force():
+    logger.info("Force-reinstalling PyTorch as CPU (replacing any CUDA wheel)...")
+    subprocess.check_call(
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--quiet",
+            "--upgrade",
+            "--force-reinstall",
+            "torch==2.6.0",
+            "--index-url",
+            "https://download.pytorch.org/whl/cpu",
+        ]
+    )
+
+
 def install_chemprop():
     logger.info("Installing chemprop...")
     subprocess.check_call(
