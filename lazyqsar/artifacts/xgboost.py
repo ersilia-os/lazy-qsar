@@ -12,6 +12,41 @@ import numpy as np
 import onnxruntime as rt
 
 
+def _build_xgb_session(onnx_path: str) -> rt.InferenceSession:
+    """Build an ORT session for an XGBoost classifier ONNX, suppressing the benign
+    MergeShapeInfo warning emitted on legacy models (saved before the export-time fix).
+
+    The warning comes from onnxmltools annotating the 'probabilities' output with
+    dim_value=2 while ORT infers {N,1} from the missing n_targets attribute. When the
+    `onnx` package is available we clear the fixed dim so the model becomes well-formed;
+    otherwise we silence warnings on the session as a fallback.
+    """
+    try:
+        import onnx  # type: ignore
+
+        model = onnx.load(onnx_path)
+        changed = False
+        for _out in model.graph.output:
+            if _out.name == "probabilities":
+                _dims = _out.type.tensor_type.shape.dim
+                if len(_dims) >= 2 and _dims[1].dim_value != 0:
+                    _dims[1].ClearField("dim_value")
+                    changed = True
+                break
+        if changed:
+            return rt.InferenceSession(
+                model.SerializeToString(), providers=["CPUExecutionProvider"]
+            )
+    except Exception:
+        pass
+
+    so = rt.SessionOptions()
+    so.log_severity_level = 3
+    return rt.InferenceSession(
+        onnx_path, sess_options=so, providers=["CPUExecutionProvider"]
+    )
+
+
 class XGBoostArtifact:
     """Load and run a saved XGBoost ONNX model."""
 
@@ -33,9 +68,7 @@ class XGBoostArtifact:
         with open(json_path) as f:
             self.metadata = json.load(f)
         self.task = self.metadata["task"]
-        self._session = rt.InferenceSession(
-            onnx_path, providers=["CPUExecutionProvider"]
-        )
+        self._session = _build_xgb_session(onnx_path)
         self._input_name = self._session.get_inputs()[0].name
         self._cal = self.metadata.get("calibrator", None)
         self._ranker = self.metadata.get("ranker", None)
