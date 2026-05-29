@@ -1,3 +1,7 @@
+This tool has been financed by Project PID2023-148309OA-I00 funded by MICIU/AEI/10.13039/501100011033 and by ERDF, EU.
+
+<img src="https://raw.githubusercontent.com/ersilia-os/ersilia/master/assets/miciu_cofinanciado.jpg" width="300">
+
 # Ersilia's LazyQSAR
 
 A Python library for building supervised QSAR models quickly, with minimal configuration. LazyQSAR automates chemical descriptor computation, and model selection to produce robust models for property and activity prediction.
@@ -217,11 +221,6 @@ ZairaChem's version, with an earlier version of LazyQSAR, was presented in this 
   url = {https://doi.org/10.1038/s41467-023-41512-2}
 }
 ```
-
-## Funding
-This tool has been financed by Project PID2023-148309OA-I00 funded by MICIU/AEI/10.13039/501100011033 and by ERDF, EU.
-
-<img src="https://raw.githubusercontent.com/ersilia-os/ersilia/master/assets/miciu_cofinanciado.jpg" width="300">
 
 
 ## About the Ersilia Open Source Initiative
