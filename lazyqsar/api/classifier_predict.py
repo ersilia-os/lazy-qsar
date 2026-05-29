@@ -1,13 +1,105 @@
 import csv
+import gc
 import os
+import shutil
 import tempfile
 
 import numpy as np
 import pandas as pd
+from rich.progress import (
+    BarColumn,
+    MofNCompleteColumn,
+    Progress,
+    TextColumn,
+    TimeElapsedColumn,
+)
 
 from ..agnostic import LazyClassifier
 from ..qsar import get_descriptor_type
 from ..utils.logging import logger
+
+
+def _new_progress() -> Progress:
+    return Progress(
+        TextColumn("[bold blue]{task.description}"),
+        BarColumn(),
+        MofNCompleteColumn(),
+        TextColumn("•"),
+        TimeElapsedColumn(),
+        transient=True,
+    )
+
+
+def _get_chunk_size() -> int:
+    try:
+        v = int(os.environ.get("LAZYQSAR_PREDICT_CHUNK", "1000"))
+        return v if v > 0 else 1000
+    except ValueError:
+        return 1000
+
+
+def _persist_descriptors(
+    featurizer,
+    smiles_list: list,
+    out_path: str,
+    chunk_size: int,
+    progress: Progress | None = None,
+    task_id=None,
+) -> None:
+    """Compute descriptors in chunks and stream each chunk into a memmap-backed .npy at `out_path`.
+
+    Never materialises an X matrix with more than `chunk_size` rows in RAM. The output is a
+    standard .npy file so it can be read back with `np.load(..., mmap_mode='r')`.
+    """
+    n_total = len(smiles_list)
+    if n_total == 0:
+        return
+
+    first_end = min(chunk_size, n_total)
+    first_chunk = featurizer.transform(smiles_list[:first_end])
+    if first_chunk.ndim != 2:
+        raise ValueError(
+            f"featurizer.transform must return a 2D array; got shape {first_chunk.shape}"
+        )
+    n_dim = int(first_chunk.shape[1])
+    dtype = first_chunk.dtype
+
+    X_mm = np.lib.format.open_memmap(
+        out_path, mode="w+", dtype=dtype, shape=(n_total, n_dim)
+    )
+    try:
+        X_mm[:first_end] = first_chunk
+        del first_chunk
+        if progress is not None and task_id is not None:
+            progress.update(task_id, advance=1)
+
+        for start in range(first_end, n_total, chunk_size):
+            end = min(start + chunk_size, n_total)
+            chunk = featurizer.transform(smiles_list[start:end])
+            X_mm[start:end] = chunk
+            del chunk
+            if progress is not None and task_id is not None:
+                progress.update(task_id, advance=1)
+        X_mm.flush()
+    finally:
+        del X_mm
+    gc.collect()
+
+
+def _predict_from_persisted(
+    model, x_path: str, predict_fn, chunk_size: int
+) -> np.ndarray:
+    """Run `predict_fn(model, X_chunk)` over mmapped chunks of the persisted descriptor matrix."""
+    X_mm = np.load(x_path, mmap_mode="r")
+    n_total = X_mm.shape[0]
+    parts: list[np.ndarray] = []
+    for start in range(0, n_total, chunk_size):
+        end = min(start + chunk_size, n_total)
+        X_chunk = np.ascontiguousarray(X_mm[start:end])
+        parts.append(predict_fn(model, X_chunk))
+        del X_chunk
+    del X_mm
+    return np.concatenate(parts) if len(parts) > 1 else parts[0]
 
 _PREDICT_DISPATCH = {
     "proba":  lambda model, X: model.predict_proba(X)[:, 1],
@@ -139,23 +231,61 @@ def _predict_from_dict(
     _predict_fn = _PREDICT_DISPATCH[predict_type]
     results: dict[tuple[str, str], np.ndarray] = {}
 
-    for featurizer_name in all_featurizers:
-        featurizer = None
-        for p in col_map:
-            feat_dir = os.path.join(p, featurizer_name)
-            if os.path.isdir(feat_dir):
-                featurizer = get_descriptor_type(featurizer_name).load(feat_dir)
-                break
-        if featurizer is None:
-            continue
-        logger.info(f"Computing descriptors: {featurizer_name}")
-        X = featurizer.transform(smiles_list)
-        for p, col_name in col_map.items():
-            model_subdir = os.path.join(p, featurizer_name)
-            if os.path.isdir(model_subdir):
-                logger.debug(f"Predicting '{col_name}' with '{featurizer_name}'")
-                model = LazyClassifier.load(model_subdir)
-                results[(col_name, featurizer_name)] = _predict_fn(model, X)
+    chunk_size = _get_chunk_size()
+    n_total = len(smiles_list)
+    n_chunks = (n_total + chunk_size - 1) // chunk_size
+    scratch_dir = tempfile.mkdtemp(prefix="lazyqsar-predict-")
+    try:
+        for featurizer_name in all_featurizers:
+            featurizer = None
+            for p in col_map:
+                feat_dir = os.path.join(p, featurizer_name)
+                if os.path.isdir(feat_dir):
+                    featurizer = get_descriptor_type(featurizer_name).load(feat_dir)
+                    break
+            if featurizer is None:
+                continue
+
+            cols_with_models = [
+                (p, c) for p, c in col_map.items()
+                if os.path.isdir(os.path.join(p, featurizer_name))
+            ]
+            if not cols_with_models:
+                continue
+
+            logger.info(f"Computing descriptors: {featurizer_name}")
+            x_path = os.path.join(scratch_dir, f"X_{featurizer_name}.npy")
+
+            with _new_progress() as progress:
+                desc_task = progress.add_task(
+                    f"[{featurizer_name}] descriptors", total=n_chunks
+                )
+                _persist_descriptors(
+                    featurizer, smiles_list, x_path, chunk_size,
+                    progress=progress, task_id=desc_task,
+                )
+                del featurizer
+                gc.collect()
+
+                pred_task = progress.add_task(
+                    f"[{featurizer_name}] predicting", total=len(cols_with_models)
+                )
+                for p, col_name in cols_with_models:
+                    model_subdir = os.path.join(p, featurizer_name)
+                    model = LazyClassifier.load(model_subdir)
+                    results[(col_name, featurizer_name)] = _predict_from_persisted(
+                        model, x_path, _predict_fn, chunk_size
+                    )
+                    del model
+                    gc.collect()
+                    progress.update(pred_task, advance=1)
+
+            try:
+                os.remove(x_path)
+            except OSError:
+                pass
+    finally:
+        shutil.rmtree(scratch_dir, ignore_errors=True)
 
     aggregated: dict[str, np.ndarray] = {}
     for col_name in col_map.values():
@@ -218,19 +348,55 @@ def predict(
     featurizers = get_featurizer_names(model_dir, tasks)
     _predict = _PREDICT_DISPATCH[predict_type]
 
+    chunk_size = _get_chunk_size()
+
     results = {}
-    for featurizer_name in featurizers:
-        logger.info(f"Computing descriptors: {featurizer_name}")
-        featurizer = load_featurizer(model_dir, featurizer_name)
-        X = featurizer.transform(smiles_list)
-        for task_name in tasks:
-            model_subdir = os.path.join(model_dir, task_name, featurizer_name)
-            if os.path.isdir(model_subdir):
-                logger.debug(
-                    f"Predicting task '{task_name}' with descriptor '{featurizer_name}'"
+    n_total = len(smiles_list)
+    n_chunks = (n_total + chunk_size - 1) // chunk_size
+    scratch_dir = tempfile.mkdtemp(prefix="lazyqsar-predict-")
+    try:
+        for featurizer_name in featurizers:
+            tasks_with_models = [
+                t for t in tasks
+                if os.path.isdir(os.path.join(model_dir, t, featurizer_name))
+            ]
+            if not tasks_with_models:
+                continue
+
+            logger.info(f"Computing descriptors: {featurizer_name}")
+            featurizer = load_featurizer(model_dir, featurizer_name)
+            x_path = os.path.join(scratch_dir, f"X_{featurizer_name}.npy")
+
+            with _new_progress() as progress:
+                desc_task = progress.add_task(
+                    f"[{featurizer_name}] descriptors", total=n_chunks
                 )
-                model = LazyClassifier.load(model_subdir)
-                results[(task_name, featurizer_name)] = _predict(model, X)
+                _persist_descriptors(
+                    featurizer, smiles_list, x_path, chunk_size,
+                    progress=progress, task_id=desc_task,
+                )
+                del featurizer
+                gc.collect()
+
+                pred_task = progress.add_task(
+                    f"[{featurizer_name}] predicting", total=len(tasks_with_models)
+                )
+                for task_name in tasks_with_models:
+                    model_subdir = os.path.join(model_dir, task_name, featurizer_name)
+                    model = LazyClassifier.load(model_subdir)
+                    results[(task_name, featurizer_name)] = _predict_from_persisted(
+                        model, x_path, _predict, chunk_size
+                    )
+                    del model
+                    gc.collect()
+                    progress.update(pred_task, advance=1)
+
+            try:
+                os.remove(x_path)
+            except OSError:
+                pass
+    finally:
+        shutil.rmtree(scratch_dir, ignore_errors=True)
 
     aggregated_results = {}
     for task_name in tasks:
