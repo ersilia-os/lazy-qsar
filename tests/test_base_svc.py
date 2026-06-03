@@ -2,14 +2,12 @@ import os
 import tempfile
 
 import numpy as np
-import pytest
 
 from lazyqsar.base.svc import BaseSVCArtifact, BaseSVCClassifier
 from lazyqsar.base.svc.params import get_params
 from lazyqsar.base.svc.presets import (
     svc_balanced_rbf_params,
     svc_default_params,
-    svc_heuristic_params,
     svc_linear_params,
 )
 from lazyqsar.base.xgboost.inspector import inspect as _inspect
@@ -18,6 +16,7 @@ from lazyqsar.base.xgboost.inspector import inspect as _inspect
 # ---------------------------------------------------------------------------
 # Data helpers
 # ---------------------------------------------------------------------------
+
 
 def make_clf_data(n=400, p=20, seed=42):
     rng = np.random.RandomState(seed)
@@ -52,6 +51,7 @@ def _make_profile(n=400, p=20, sparse=False):
 # params.py — heuristic rules
 # ---------------------------------------------------------------------------
 
+
 def test_heuristic_sparse_fingerprints_chooses_linear():
     profile = _make_profile(n=400, p=2048, sparse=True)
     params = get_params(profile)
@@ -78,7 +78,6 @@ def test_heuristic_dense_large_n_chooses_linear():
 
 
 def test_heuristic_c_increases_with_n_linear():
-    p10 = get_params(_make_profile(n=100, p=20, sparse=False))
     p100 = get_params(_make_profile(n=100, p=20, sparse=True))
     # For linear (sparse), C < 500 samples → 0.1
     assert p100["C"] <= 1.0
@@ -87,6 +86,7 @@ def test_heuristic_c_increases_with_n_linear():
 # ---------------------------------------------------------------------------
 # presets.py
 # ---------------------------------------------------------------------------
+
 
 def test_preset_default_is_rbf():
     profile = _make_profile(n=400, p=20)
@@ -113,6 +113,7 @@ def test_preset_balanced_rbf_c_scales_with_minority():
 # ---------------------------------------------------------------------------
 # BaseSVCClassifier — core functionality
 # ---------------------------------------------------------------------------
+
 
 def test_svc_predict_proba_shape():
     X, y = make_clf_data()
@@ -171,6 +172,7 @@ def test_svc_has_oof_probas():
 # Portfolio selection
 # ---------------------------------------------------------------------------
 
+
 def test_svc_portfolio_sets_preset_name():
     X, y = make_clf_data(n=300, p=20)
     clf = BaseSVCClassifier(portfolio=True, calibrated=False)
@@ -205,6 +207,7 @@ def test_svc_portfolio_scores_populated():
 # ---------------------------------------------------------------------------
 # ONNX save / load roundtrip
 # ---------------------------------------------------------------------------
+
 
 def test_svc_save_load_artifact_roundtrip_dense():
     X, y = make_clf_data(n=300, p=20)
@@ -269,6 +272,7 @@ def test_svc_artifact_predict_rank():
 # Imbalanced data
 # ---------------------------------------------------------------------------
 
+
 def test_svc_imbalanced_predict_proba_is_finite():
     X, y = make_imbalanced_clf_data(n=600, p=20, pos_frac=0.05)
     clf = BaseSVCClassifier(portfolio=False, calibrated=True)
@@ -293,6 +297,7 @@ def test_svc_imbalanced_artifact_finite():
 # ONNX size constraint
 # ---------------------------------------------------------------------------
 
+
 def test_svc_onnx_size_within_budget():
     """Kernel SVC on n=1000, p=50 should produce ONNX < 20 MB."""
     X, y = make_clf_data(n=1000, p=50)
@@ -310,6 +315,7 @@ def test_svc_onnx_size_within_budget():
 # predict_rank from model (requires calibration)
 # ---------------------------------------------------------------------------
 
+
 def test_svc_predict_rank_shape():
     X, y = make_clf_data(n=300, p=20)
     clf = BaseSVCClassifier(portfolio=False, calibrated=True)
@@ -322,6 +328,7 @@ def test_svc_predict_rank_shape():
 # ---------------------------------------------------------------------------
 # predict_logit
 # ---------------------------------------------------------------------------
+
 
 def test_svc_predict_logit_finite():
     X, y = make_clf_data(n=300, p=20)

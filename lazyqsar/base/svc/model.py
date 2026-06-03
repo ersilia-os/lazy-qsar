@@ -58,7 +58,6 @@ from sklearn.model_selection import train_test_split
 from sklearn.utils.validation import check_array, check_is_fitted
 
 from .inspector import inspect as _inspect, DatasetProfile
-from .params import get_params as _get_params
 from .presets import (
     svc_heuristic_params,
     svc_default_params,
@@ -73,8 +72,8 @@ from lazyqsar.utils.splits import make_stratified_oof_splits
 # Constants
 # ---------------------------------------------------------------------------
 
-_VAL_FRACTION    = 0.1
-_VAL_MIN_ROWS    = 200
+_VAL_FRACTION = 0.1
+_VAL_MIN_ROWS = 200
 _VAL_MIN_MINORITY = 15
 
 # Minimum AUC gain over default for a non-default preset to win portfolio
@@ -97,6 +96,7 @@ _RANDOM_STATE = 42
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _sigmoid(x: np.ndarray) -> np.ndarray:
     """Numerically stable sigmoid."""
@@ -121,6 +121,7 @@ def _make_svc(params: dict):
     }
     if use_linear:
         from sklearn.svm import LinearSVC
+
         return LinearSVC(
             **common,
             random_state=params.get("random_state", 42),
@@ -128,11 +129,12 @@ def _make_svc(params: dict):
         )
     else:
         from sklearn.svm import SVC
+
         return SVC(
             **common,
             kernel=params.get("kernel", "rbf"),
             gamma=params.get("gamma", "scale"),
-            probability=False,   # export raw scores; calibration is external
+            probability=False,  # export raw scores; calibration is external
             random_state=params.get("random_state", 42),
         )
 
@@ -152,7 +154,7 @@ def _svc_cost(params: dict, n_tr: int, n_features: int) -> float:
     """
     if params.get("use_linear", False):
         return float(n_tr * n_features)
-    return float(n_tr ** 2 * n_features)
+    return float(n_tr**2 * n_features)
 
 
 def _min_gain_threshold(profile: DatasetProfile, y_train: np.ndarray) -> float:
@@ -167,8 +169,9 @@ def _min_gain_threshold(profile: DatasetProfile, y_train: np.ndarray) -> float:
     return max(_PORTFOLIO_MIN_GAIN, coef / max(1, n_eff) ** 0.5)
 
 
-def _validation_split(X, y: np.ndarray, profile: DatasetProfile,
-                      random_state: int = _RANDOM_STATE):
+def _validation_split(
+    X, y: np.ndarray, profile: DatasetProfile, random_state: int = _RANDOM_STATE
+):
     """
     Create a stratified 90/10 holdout split.
 
@@ -195,8 +198,9 @@ def _validation_split(X, y: np.ndarray, profile: DatasetProfile,
         return X, X, y, y, False
 
 
-def _learn_balanced_accuracy_cutoff(y_true: np.ndarray,
-                                    p1: np.ndarray) -> tuple[float, str]:
+def _learn_balanced_accuracy_cutoff(
+    y_true: np.ndarray, p1: np.ndarray
+) -> tuple[float, str]:
     """Learn a decision threshold that maximises balanced accuracy on OOF scores."""
     y_arr = np.asarray(y_true, dtype=int)
     p_arr = np.asarray(p1, dtype=float)
@@ -208,12 +212,21 @@ def _learn_balanced_accuracy_cutoff(y_true: np.ndarray,
     unique = np.unique(probs)
     if unique.size == 0:
         return _DEFAULT_DECISION_CUTOFF, "default_0.5"
-    candidates = np.unique(np.concatenate([
-        unique,
-        np.array([np.nextafter(unique[0], -np.inf),
-                  _DEFAULT_DECISION_CUTOFF,
-                  np.nextafter(unique[-1], np.inf)], dtype=float),
-    ]))
+    candidates = np.unique(
+        np.concatenate(
+            [
+                unique,
+                np.array(
+                    [
+                        np.nextafter(unique[0], -np.inf),
+                        _DEFAULT_DECISION_CUTOFF,
+                        np.nextafter(unique[-1], np.inf),
+                    ],
+                    dtype=float,
+                ),
+            ]
+        )
+    )
     best_threshold = _DEFAULT_DECISION_CUTOFF
     best_key = None
     for thr in candidates:
@@ -230,7 +243,8 @@ def _apply_calibrator_artifact(proba: np.ndarray, cal: dict) -> np.ndarray:
     if cal["method"] == "isotonic":
         p1 = np.clip(
             np.interp(raw_p1, cal["X_thresholds"], cal["y_thresholds"]),
-            0, 1,
+            0,
+            1,
         )
     else:
         A, B = cal["coef"], cal["intercept"]
@@ -238,8 +252,9 @@ def _apply_calibrator_artifact(proba: np.ndarray, cal: dict) -> np.ndarray:
     return np.column_stack([1 - p1, p1])
 
 
-def _portfolio_select_svc(X, y: np.ndarray, profile: DatasetProfile,
-                          random_state: int = _RANDOM_STATE):
+def _portfolio_select_svc(
+    X, y: np.ndarray, profile: DatasetProfile, random_state: int = _RANDOM_STATE
+):
     """
     Single-stage portfolio selection for SVC.
 
@@ -257,23 +272,28 @@ def _portfolio_select_svc(X, y: np.ndarray, profile: DatasetProfile,
     """
     n_features = profile.n_features
     candidates = [
-        ("heuristic",    svc_heuristic_params(profile)),
-        ("default",      svc_default_params(profile)),
-        ("linear",       svc_linear_params(profile)),
+        ("heuristic", svc_heuristic_params(profile)),
+        ("default", svc_default_params(profile)),
+        ("linear", svc_linear_params(profile)),
         ("balanced_rbf", svc_balanced_rbf_params(profile)),
     ]
 
-    X_tr, X_val, y_tr, y_val, did_split = _validation_split(X, y, profile,
-                                                              random_state=random_state)
+    X_tr, X_val, y_tr, y_val, did_split = _validation_split(
+        X, y, profile, random_state=random_state
+    )
     if not did_split:
         # Too small: use heuristic directly
         params = svc_heuristic_params(profile)
         return "heuristic", params, {}
 
     n_tr = len(y_tr)
-    default_cost = _svc_cost(dict(candidates)[1][1] if False else
-                             next(p for n, p in candidates if n == "default"),
-                             n_tr, n_features)
+    default_cost = _svc_cost(
+        dict(candidates)[1][1]
+        if False
+        else next(p for n, p in candidates if n == "default"),
+        n_tr,
+        n_features,
+    )
     budget = _MAX_COST_MULTIPLIER * default_cost
 
     logger.rule("SVC Portfolio — Stage 1")
@@ -408,6 +428,7 @@ def _to_onnx(svc, path: str, n_features: int) -> None:
 # ---------------------------------------------------------------------------
 # BaseSVCClassifier
 # ---------------------------------------------------------------------------
+
 
 class BaseSVCClassifier(BaseEstimator, ClassifierMixin):
     """
@@ -573,8 +594,9 @@ class BaseSVCClassifier(BaseEstimator, ClassifierMixin):
     # Calibration (OOF + Platt/isotonic)
     # ------------------------------------------------------------------
 
-    def calibrate(self, X, y, n_splits: int | None = None,
-                  random_state: int = 42) -> "BaseSVCClassifier":
+    def calibrate(
+        self, X, y, n_splits: int | None = None, random_state: int = 42
+    ) -> "BaseSVCClassifier":
         """
         Full calibration workflow.
 
@@ -585,8 +607,9 @@ class BaseSVCClassifier(BaseEstimator, ClassifierMixin):
         X = check_array(X, dtype="numeric", accept_sparse=False)
         y = np.asarray(y, dtype=int).ravel()
         n = len(y)
-        k, fold_splits = make_stratified_oof_splits(y, n_splits=n_splits,
-                                                     random_state=random_state)
+        k, fold_splits = make_stratified_oof_splits(
+            y, n_splits=n_splits, random_state=random_state
+        )
 
         logger.info(
             f"BaseSVCClassifier.calibrate: full fit on n={n} (portfolio runs once)"
@@ -632,12 +655,18 @@ class BaseSVCClassifier(BaseEstimator, ClassifierMixin):
             _learn_balanced_accuracy_cutoff(y, oof_sigmoid)
         )
         if self.calibrator_method_ == "isotonic":
-            self.decision_cutoff_proba_ = float(np.clip(
-                self.calibrator_.predict(np.array([self.decision_cutoff_raw_]))[0], 0.0, 1.0
-            ))
+            self.decision_cutoff_proba_ = float(
+                np.clip(
+                    self.calibrator_.predict(np.array([self.decision_cutoff_raw_]))[0],
+                    0.0,
+                    1.0,
+                )
+            )
         else:
             self.decision_cutoff_proba_ = float(
-                self.calibrator_.predict_proba(np.array([[self.decision_cutoff_raw_]]))[:, 1][0]
+                self.calibrator_.predict_proba(np.array([[self.decision_cutoff_raw_]]))[
+                    :, 1
+                ][0]
             )
         self.oof_y_ = y.copy()
 
@@ -650,9 +679,13 @@ class BaseSVCClassifier(BaseEstimator, ClassifierMixin):
         else:
             self._ranker_knots = sorted_scores
         n_k = len(self._ranker_knots)
-        self.decision_cutoff_rank_ = float(np.interp(
-            self.decision_cutoff_raw_, self._ranker_knots, np.linspace(0.0, 1.0, n_k)
-        ))
+        self.decision_cutoff_rank_ = float(
+            np.interp(
+                self.decision_cutoff_raw_,
+                self._ranker_knots,
+                np.linspace(0.0, 1.0, n_k),
+            )
+        )
         _p = np.clip(self.decision_cutoff_proba_, 1e-7, 1.0 - 1e-7)
         self.decision_cutoff_logit_ = float(np.log(_p / (1.0 - _p)))
         logger.success(
@@ -802,6 +835,7 @@ class BaseSVCClassifier(BaseEstimator, ClassifierMixin):
 # BaseSVCArtifact — inference only (numpy + onnxruntime, no sklearn)
 # ---------------------------------------------------------------------------
 
+
 class BaseSVCArtifact:
     """
     Inference-only loader for a model saved by BaseSVCClassifier.save().
@@ -853,6 +887,7 @@ class BaseSVCArtifact:
             self.metadata.get("decision_cutoff_logit", 0.0)
         )
         import onnxruntime as rt
+
         onnx_path = os.path.join(directory, "svc.onnx")
         if not os.path.isfile(onnx_path):
             raise FileNotFoundError(f"svc.onnx not found in {directory!r}")

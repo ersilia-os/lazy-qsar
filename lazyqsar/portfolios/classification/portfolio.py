@@ -125,7 +125,9 @@ class Portfolio(object):
             reasons.append(f"svc +1: signal p90={profile.feature_signal_p90:.2f}")
         if profile.n_p_ratio < 3:
             scores["svc"] += 1
-            reasons.append(f"svc +1: low n/p={profile.n_p_ratio:.1f} suits SVM regularisation")
+            reasons.append(
+                f"svc +1: low n/p={profile.n_p_ratio:.1f} suits SVM regularisation"
+            )
         # Penalties
         if profile.is_sparse_counts and profile.sparsity >= 0.85:
             scores["svc"] -= 2
@@ -180,7 +182,9 @@ class Portfolio(object):
         # SVC decision: include when score >= 2 (at least one bonus firing)
         include_svc = scores["svc"] >= 2
         if include_svc:
-            reasons = reasons + [f"decision: svc score={scores['svc']} >= 2 -> include svc"]
+            reasons = reasons + [
+                f"decision: svc score={scores['svc']} >= 2 -> include svc"
+            ]
         else:
             reasons = reasons + [f"decision: svc score={scores['svc']} < 2 -> skip svc"]
 
@@ -214,7 +218,9 @@ class Portfolio(object):
         payload = {
             "portfolio": self.portfolio,
             "selector_version": getattr(self, "selector_version_", _SELECTOR_VERSION),
-            "scores": getattr(self, "selector_scores_", {"lr": 0, "xgb": 0, "rf": 0, "svc": 0}),
+            "scores": getattr(
+                self, "selector_scores_", {"lr": 0, "xgb": 0, "rf": 0, "svc": 0}
+            ),
             "reasons": getattr(self, "selector_reasons_", []),
             "profile": profile_payload,
         }

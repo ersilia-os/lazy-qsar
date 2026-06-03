@@ -28,7 +28,13 @@ import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import average_precision_score, brier_score_loss, precision_recall_curve, roc_auc_score, roc_curve
+from sklearn.metrics import (
+    average_precision_score,
+    brier_score_loss,
+    precision_recall_curve,
+    roc_auc_score,
+    roc_curve,
+)
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import MaxAbsScaler
 from sklearn.svm import LinearSVC
@@ -247,7 +253,6 @@ def _enrichment_y(y_true: np.ndarray, scores: np.ndarray) -> str:
     return ";".join(f"{v:.4f}" for v in np.interp(_CURVE_X, frac, recall))
 
 
-
 def _class_dist_stats(y_true: np.ndarray, scores1: np.ndarray, prefix: str) -> dict:
     """Return {prefix}_{active|inactive}_{min/p5/.../max} for a (n,) score array."""
     result = {}
@@ -351,7 +356,11 @@ def _print_summary(
             + "".join(f"  {m:>{CW}}" for m in HEADS_ALL)
             + f"  {'pooler':>{CW}}  {'score':>8}"
         )
-        print(f"  {'─' * 16}" + ("  " + "─" * CW) * len(HEADS_ALL) + f"  {'─' * CW}  {'─' * 8}")
+        print(
+            f"  {'─' * 16}"
+            + ("  " + "─" * CW) * len(HEADS_ALL)
+            + f"  {'─' * CW}  {'─' * 8}"
+        )
         for desc in active:
             line = f"  {desc:<16}"
             for m in HEADS_ALL:
@@ -604,7 +613,9 @@ def _save_run_csv(
                             the ranked list. 0 = none recovered; 1 = all
                             recovered.
     """
-    baseline_map = {name: (auc, aupr, bedroc_bl) for name, auc, aupr, bedroc_bl in baselines}
+    baseline_map = {
+        name: (auc, aupr, bedroc_bl) for name, auc, aupr, bedroc_bl in baselines
+    }
 
     size_cols = {
         f"onnx_{desc}_{m}_kb": round(onnx_sizes[(desc, m)], 1)
@@ -651,18 +662,42 @@ def _save_run_csv(
         "aupr_baseline": round(aupr_baseline, 4),
         "sensitivity": round(sensitivity, 4),
         "specificity": round(specificity, 4),
-        "auroc_rf": round(baseline_map["RF (n=100)"][0], 4) if "RF (n=100)" in baseline_map else np.nan,
-        "aupr_rf": round(baseline_map["RF (n=100)"][1], 4) if "RF (n=100)" in baseline_map else np.nan,
-        "bedroc_rf": round(baseline_map["RF (n=100)"][2], 4) if "RF (n=100)" in baseline_map else np.nan,
-        "auroc_lr": round(baseline_map["LR (L1)"][0], 4) if "LR (L1)" in baseline_map else np.nan,
-        "aupr_lr": round(baseline_map["LR (L1)"][1], 4) if "LR (L1)" in baseline_map else np.nan,
-        "bedroc_lr": round(baseline_map["LR (L1)"][2], 4) if "LR (L1)" in baseline_map else np.nan,
-        "auroc_xgb": round(baseline_map["XGB (n=100)"][0], 4) if "XGB (n=100)" in baseline_map else np.nan,
-        "aupr_xgb": round(baseline_map["XGB (n=100)"][1], 4) if "XGB (n=100)" in baseline_map else np.nan,
-        "bedroc_xgb": round(baseline_map["XGB (n=100)"][2], 4) if "XGB (n=100)" in baseline_map else np.nan,
-        "auroc_svc": round(baseline_map["SVC (linear)"][0], 4) if "SVC (linear)" in baseline_map else np.nan,
-        "aupr_svc": round(baseline_map["SVC (linear)"][1], 4) if "SVC (linear)" in baseline_map else np.nan,
-        "bedroc_svc": round(baseline_map["SVC (linear)"][2], 4) if "SVC (linear)" in baseline_map else np.nan,
+        "auroc_rf": round(baseline_map["RF (n=100)"][0], 4)
+        if "RF (n=100)" in baseline_map
+        else np.nan,
+        "aupr_rf": round(baseline_map["RF (n=100)"][1], 4)
+        if "RF (n=100)" in baseline_map
+        else np.nan,
+        "bedroc_rf": round(baseline_map["RF (n=100)"][2], 4)
+        if "RF (n=100)" in baseline_map
+        else np.nan,
+        "auroc_lr": round(baseline_map["LR (L1)"][0], 4)
+        if "LR (L1)" in baseline_map
+        else np.nan,
+        "aupr_lr": round(baseline_map["LR (L1)"][1], 4)
+        if "LR (L1)" in baseline_map
+        else np.nan,
+        "bedroc_lr": round(baseline_map["LR (L1)"][2], 4)
+        if "LR (L1)" in baseline_map
+        else np.nan,
+        "auroc_xgb": round(baseline_map["XGB (n=100)"][0], 4)
+        if "XGB (n=100)" in baseline_map
+        else np.nan,
+        "aupr_xgb": round(baseline_map["XGB (n=100)"][1], 4)
+        if "XGB (n=100)" in baseline_map
+        else np.nan,
+        "bedroc_xgb": round(baseline_map["XGB (n=100)"][2], 4)
+        if "XGB (n=100)" in baseline_map
+        else np.nan,
+        "auroc_svc": round(baseline_map["SVC (linear)"][0], 4)
+        if "SVC (linear)" in baseline_map
+        else np.nan,
+        "aupr_svc": round(baseline_map["SVC (linear)"][1], 4)
+        if "SVC (linear)" in baseline_map
+        else np.nan,
+        "bedroc_svc": round(baseline_map["SVC (linear)"][2], 4)
+        if "SVC (linear)" in baseline_map
+        else np.nan,
         **size_cols,
         **diag_cols,
         "time_lazyqsar_fit_s": round(lq_fit_s, 2),
@@ -744,13 +779,19 @@ def train_dataset(
     )
     rf.fit(X_train, y_train)
     _rf_p = rf.predict_proba(X_test)[:, 1]
-    baselines.append((
-        "RF (n=100)",
-        roc_auc_score(y_test, _rf_p),
-        average_precision_score(y_test, _rf_p),
-        bedroc_score(y_test, _rf_p),
-    ))
-    curves["rf"] = (_roc_y(y_test, _rf_p), _pr_y(y_test, _rf_p), _enrichment_y(y_test, _rf_p))
+    baselines.append(
+        (
+            "RF (n=100)",
+            roc_auc_score(y_test, _rf_p),
+            average_precision_score(y_test, _rf_p),
+            bedroc_score(y_test, _rf_p),
+        )
+    )
+    curves["rf"] = (
+        _roc_y(y_test, _rf_p),
+        _pr_y(y_test, _rf_p),
+        _enrichment_y(y_test, _rf_p),
+    )
 
     # --- LR baseline (skipped for large datasets — too slow) ---
     if len(smiles_train) <= 1_000:
@@ -765,13 +806,19 @@ def train_dataset(
         )
         lr.fit(scaler.fit_transform(X_train), y_train)
         _lr_p = lr.predict_proba(scaler.transform(X_test))[:, 1]
-        baselines.append((
-            "LR (L1)",
-            roc_auc_score(y_test, _lr_p),
-            average_precision_score(y_test, _lr_p),
-            bedroc_score(y_test, _lr_p),
-        ))
-        curves["lr"] = (_roc_y(y_test, _lr_p), _pr_y(y_test, _lr_p), _enrichment_y(y_test, _lr_p))
+        baselines.append(
+            (
+                "LR (L1)",
+                roc_auc_score(y_test, _lr_p),
+                average_precision_score(y_test, _lr_p),
+                bedroc_score(y_test, _lr_p),
+            )
+        )
+        curves["lr"] = (
+            _roc_y(y_test, _lr_p),
+            _pr_y(y_test, _lr_p),
+            _enrichment_y(y_test, _lr_p),
+        )
 
     # --- XGB baseline (fast: histogram-based splits) ---
     pos_weight = (y_train == 0).sum() / max((y_train == 1).sum(), 1)
@@ -786,13 +833,19 @@ def train_dataset(
     )
     xgb.fit(X_train, y_train)
     _xgb_p = xgb.predict_proba(X_test)[:, 1]
-    baselines.append((
-        "XGB (n=100)",
-        roc_auc_score(y_test, _xgb_p),
-        average_precision_score(y_test, _xgb_p),
-        bedroc_score(y_test, _xgb_p),
-    ))
-    curves["xgb"] = (_roc_y(y_test, _xgb_p), _pr_y(y_test, _xgb_p), _enrichment_y(y_test, _xgb_p))
+    baselines.append(
+        (
+            "XGB (n=100)",
+            roc_auc_score(y_test, _xgb_p),
+            average_precision_score(y_test, _xgb_p),
+            bedroc_score(y_test, _xgb_p),
+        )
+    )
+    curves["xgb"] = (
+        _roc_y(y_test, _xgb_p),
+        _pr_y(y_test, _xgb_p),
+        _enrichment_y(y_test, _xgb_p),
+    )
 
     # --- SVC baseline (LinearSVC on Morgan; decision_function used for AUROC) ---
     if len(smiles_train) <= 5_000:
@@ -800,13 +853,19 @@ def train_dataset(
         svc = LinearSVC(C=1.0, class_weight="balanced", max_iter=2_000, random_state=42)
         svc.fit(scaler_svc.fit_transform(X_train), y_train)
         _svc_s = svc.decision_function(scaler_svc.transform(X_test))
-        baselines.append((
-            "SVC (linear)",
-            roc_auc_score(y_test, _svc_s),
-            average_precision_score(y_test, _svc_s),
-            bedroc_score(y_test, _svc_s),
-        ))
-        curves["svc"] = (_roc_y(y_test, _svc_s), _pr_y(y_test, _svc_s), _enrichment_y(y_test, _svc_s))
+        baselines.append(
+            (
+                "SVC (linear)",
+                roc_auc_score(y_test, _svc_s),
+                average_precision_score(y_test, _svc_s),
+                bedroc_score(y_test, _svc_s),
+            )
+        )
+        curves["svc"] = (
+            _roc_y(y_test, _svc_s),
+            _pr_y(y_test, _svc_s),
+            _enrichment_y(y_test, _svc_s),
+        )
 
     # --- LazyClassifierQSAR ---
     t0 = time.perf_counter()
@@ -816,7 +875,11 @@ def train_dataset(
 
     lazy_proba = model.predict_proba(smiles_test)
     lazy_auc = roc_auc_score(y_test, lazy_proba[:, 1])
-    curves["lazy"] = (_roc_y(y_test, lazy_proba[:, 1]), _pr_y(y_test, lazy_proba[:, 1]), _enrichment_y(y_test, lazy_proba[:, 1]))
+    curves["lazy"] = (
+        _roc_y(y_test, lazy_proba[:, 1]),
+        _pr_y(y_test, lazy_proba[:, 1]),
+        _enrichment_y(y_test, lazy_proba[:, 1]),
+    )
 
     # Benchmark predict on a fixed 1k-compound batch
     rng = np.random.default_rng(42)
@@ -853,6 +916,7 @@ def train_dataset(
     # Probability distribution by class + model decision cutoff
     p1_active = p1[y_test == 1]
     p1_inactive = p1[y_test == 0]
+
     def _mean_cutoff(attr):
         vals = [
             getattr(m._model, attr)
@@ -1027,7 +1091,9 @@ def _run_batch(
 
         print(f"\n  RUN   {tag} " + "─" * max(1, 76 - len(tag) - 8))
         try:
-            train_dataset(pathogen, dataset, mode, repo_dir, output_dir, models_output_dir)
+            train_dataset(
+                pathogen, dataset, mode, repo_dir, output_dir, models_output_dir
+            )
             done += 1
         except Exception as exc:
             print(f"  FAIL  {tag} — {exc}")

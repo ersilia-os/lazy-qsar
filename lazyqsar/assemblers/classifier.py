@@ -135,13 +135,17 @@ class _BatchLazyClassifier(object):
             for h in self.heads
             if hasattr(getattr(h, "model", None), "decision_cutoff_proba_")
         ]
-        self.decision_cutoff_proba_ = float(np.mean(cutoffs_proba)) if cutoffs_proba else 0.5
+        self.decision_cutoff_proba_ = (
+            float(np.mean(cutoffs_proba)) if cutoffs_proba else 0.5
+        )
         cutoffs_rank = [
             h.model.decision_cutoff_rank_
             for h in self.heads
             if hasattr(getattr(h, "model", None), "decision_cutoff_rank_")
         ]
-        self.decision_cutoff_rank_ = float(np.mean(cutoffs_rank)) if cutoffs_rank else 0.5
+        self.decision_cutoff_rank_ = (
+            float(np.mean(cutoffs_rank)) if cutoffs_rank else 0.5
+        )
         _p = np.clip(self.decision_cutoff_proba_, 1e-7, 1.0 - 1e-7)
         self.decision_cutoff_logit_ = float(np.log(_p / (1.0 - _p)))
 
@@ -202,11 +206,21 @@ class _BatchLazyClassifier(object):
                         steps.append((f"fold {fi + 1}/{len(folds)}", ft, True))
             elif head_name == "svc":
                 if "portfolio_select" in t:
-                    steps.append(("SVC \u2014 portfolio select", t["portfolio_select"], False))
-                steps.append(("SVC \u2014 phase-2 refit", t.get("phase2_refit", 0.0), False))
+                    steps.append(
+                        ("SVC \u2014 portfolio select", t["portfolio_select"], False)
+                    )
+                steps.append(
+                    ("SVC \u2014 phase-2 refit", t.get("phase2_refit", 0.0), False)
+                )
                 if "calibration_total" in t:
                     folds = t.get("calibration_folds", [])
-                    steps.append((f"SVC \u2014 calibration ({len(folds)} folds)", t["calibration_total"], False))
+                    steps.append(
+                        (
+                            f"SVC \u2014 calibration ({len(folds)} folds)",
+                            t["calibration_total"],
+                            False,
+                        )
+                    )
                     for fi, ft in enumerate(folds):
                         steps.append((f"fold {fi + 1}/{len(folds)}", ft, True))
         steps.append(("Pooler \u2014 gating network", t_pooler, False))
@@ -364,7 +378,9 @@ class LazyClassifier(object):
         self.decision_cutoff_logit_ = float(np.log(_p / (1.0 - _p)))
         _prior = self.population_prior_
         self.decision_cutoff_lift_ = (
-            float(self.decision_cutoff_proba_ / _prior) if _prior and _prior > 0 else None
+            float(self.decision_cutoff_proba_ / _prior)
+            if _prior and _prior > 0
+            else None
         )
         self.oof_auc_ = self._compute_oof_auc(X, y, batch_indices)
         self.train_auc_ = self._compute_train_auc(X, y)

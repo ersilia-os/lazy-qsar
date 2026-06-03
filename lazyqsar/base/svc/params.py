@@ -74,14 +74,10 @@ def get_params(profile: DatasetProfile) -> dict:
         sklearn.svm.LinearSVC, plus the meta-key 'use_linear' (bool).
     """
     n = profile.n_samples
-    p = profile.n_features
     n_p = profile.n_p_ratio
 
     # ------------------------------------------------------------------ kernel
-    use_linear = (
-        profile.is_sparse_counts
-        or n > 5_000
-    )
+    use_linear = profile.is_sparse_counts or n > 5_000
 
     # ------------------------------------------------------------------ C
     if use_linear:

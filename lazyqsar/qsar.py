@@ -676,7 +676,9 @@ class LazyClassifierQSAR(object):
                 _p_clip = float(np.clip(_avg_p, 1e-7, 1.0 - 1e-7))
                 meta["decision_cutoff_logit"] = float(np.log(_p_clip / (1.0 - _p_clip)))
                 _prior = meta.get("population_prior") or 0
-                meta["decision_cutoff_lift"] = float(_avg_p / _prior) if _prior > 0 else None
+                meta["decision_cutoff_lift"] = (
+                    float(_avg_p / _prior) if _prior > 0 else None
+                )
             else:
                 meta["decision_cutoff_logit"] = None
                 meta["decision_cutoff_lift"] = None

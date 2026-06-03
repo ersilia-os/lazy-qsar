@@ -4,6 +4,12 @@ from pathlib import Path
 from urllib.request import urlretrieve
 
 from .logging import logger
+from .checkpoints import (
+    CHECKPOINT_DIR,
+    CHEMELEON_MP_FILENAME,
+    CHEMELEON_MP_URL,
+    CDDD_CHECKPOINTS,
+)
 
 
 def _safe_download(url: str, dest: Path) -> None:
@@ -15,24 +21,26 @@ def _safe_download(url: str, dest: Path) -> None:
 
 def download_chemeleon():
     logger.info("Downloading Chemeleon model...")
-    ckpt_dir = Path().home() / ".lazyqsar"
-    mp_path = ckpt_dir / "chemeleon_mp.pt"
+    mp_path = CHECKPOINT_DIR / CHEMELEON_MP_FILENAME
     if not mp_path.exists():
-        _safe_download(
-            "https://zenodo.org/records/15460715/files/chemeleon_mp.pt",
-            mp_path,
-        )
+        _safe_download(CHEMELEON_MP_URL, mp_path)
 
 
 def download_cddd():
-    logger.info("Downloading CDDD encoder...")
-    ckpt_dir = Path().home() / ".lazyqsar"
-    cddd_path = ckpt_dir / "cddd_encoder.onnx"
-    if not cddd_path.exists():
-        _safe_download(
-            "https://zenodo.org/records/14811055/files/encoder.onnx?download=1",
-            cddd_path,
-        )
+    """Download every checkpoint the CDDD descriptor needs at prediction time.
+
+    This includes the ONNX encoder *and* the ChEMBL nearest-neighbour fallback
+    database (fpsim index + SMILES list). All three must be fetched here so they
+    bake into offline/air-gapped environments (e.g. Singularity SIF builds);
+    otherwise the two extra files are fetched lazily on first predict, which
+    hangs on nodes with restricted internet access.
+    """
+    logger.info("Downloading CDDD encoder and ChEMBL nearest-neighbour database...")
+    for url, filename in CDDD_CHECKPOINTS:
+        dest = CHECKPOINT_DIR / filename
+        if not dest.exists():
+            logger.info(f"Downloading {filename}...")
+            _safe_download(url, dest)
 
 
 def install_torch():

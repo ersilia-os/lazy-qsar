@@ -4,8 +4,8 @@ import numpy as np
 from concurrent.futures import ThreadPoolExecutor
 from rdkit import Chem
 from ..utils.logging import logger
+from ..utils.checkpoints import CHECKPOINT_DIR, CHEMELEON_MP_FILENAME, CHEMELEON_MP_URL
 
-from pathlib import Path
 from urllib.request import urlretrieve
 
 try:
@@ -43,14 +43,11 @@ class _CheMeleonFingerprint:
     def __init__(self, device: str | torch.device | None = None):
         self.featurizer = featurizers.SimpleMoleculeMolGraphFeaturizer()
         agg = nn.MeanAggregation()
-        ckpt_dir = Path().home() / ".lazyqsar"
+        ckpt_dir = CHECKPOINT_DIR
         ckpt_dir.mkdir(exist_ok=True)
-        mp_path = ckpt_dir / "chemeleon_mp.pt"
+        mp_path = ckpt_dir / CHEMELEON_MP_FILENAME
         if not mp_path.exists():
-            urlretrieve(
-                r"https://zenodo.org/records/15460715/files/chemeleon_mp.pt",
-                mp_path,
-            )
+            urlretrieve(CHEMELEON_MP_URL, mp_path)
         chemeleon_mp = torch.load(mp_path, weights_only=True)
         mp = nn.BondMessagePassing(**chemeleon_mp["hyper_parameters"])
         mp.load_state_dict(chemeleon_mp["state_dict"])
