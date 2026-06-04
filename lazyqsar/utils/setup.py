@@ -4,6 +4,7 @@ from pathlib import Path
 from urllib.request import urlretrieve
 
 from .logging import logger
+from .checkpoints import CHECKPOINT_DIR, CDDD_CHECKPOINTS
 
 _CLAMP_ONNX_URL = "https://ersilia-models.s3.eu-central-1.amazonaws.com/eos3l5f/model/checkpoints/clamp_clip/compound_encoder.onnx"
 
@@ -27,14 +28,21 @@ def download_chemeleon(target_dir: str | None = None):
 
 
 def download_cddd(target_dir: str | None = None):
-    ckpt_dir = Path(target_dir) if target_dir else Path.home() / ".lazyqsar"
-    cddd_path = ckpt_dir / "cddd_encoder.onnx"
-    if not cddd_path.exists():
-        logger.info("Downloading CDDD encoder...")
-        _safe_download(
-            "https://zenodo.org/records/14811055/files/encoder.onnx?download=1",
-            cddd_path,
-        )
+    """Download every checkpoint the CDDD descriptor needs at prediction time.
+
+    This includes the ONNX encoder *and* the ChEMBL nearest-neighbour fallback
+    database (fpsim index + SMILES list). All three must be fetched here so they
+    bake into offline/air-gapped environments; otherwise the two extra files are
+    fetched lazily on first predict, which hangs on nodes with restricted
+    internet access.
+    """
+    ckpt_dir = Path(target_dir) if target_dir else CHECKPOINT_DIR
+    logger.info("Downloading CDDD encoder and ChEMBL nearest-neighbour database...")
+    for url, filename in CDDD_CHECKPOINTS:
+        dest = ckpt_dir / filename
+        if not dest.exists():
+            logger.info(f"Downloading {filename}...")
+            _safe_download(url, dest)
 
 
 def download_clamp(target_dir: str | None = None):
