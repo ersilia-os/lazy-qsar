@@ -157,12 +157,21 @@ class ArtifactWrapper(object):
         self.rank_error_curves = rank_error_curves  # list[(r_knots, e_knots)|None]
         self.population_prior = population_prior
         self.descriptor_types = descriptor_types  # list[str] or None
-        self._ensemble_cache = {}
+        # Single-entry cache: reuse ensemble for repeated predict_* calls on the
+        # same smiles_list (e.g., predict_proba then predict_rank). Does not
+        # accumulate across distinct batches.
+        self._last_ensemble_key: str | None = None
+        self._last_ensemble_value: tuple | None = None
+
+    def clear_cache(self) -> None:
+        """Release cached ensemble outputs. Call between large batch jobs to reclaim RAM."""
+        self._last_ensemble_key = None
+        self._last_ensemble_value = None
 
     def _compute_ensemble(self, smiles_list):
         cache_key = _smiles_md5(smiles_list)
-        if cache_key in self._ensemble_cache:
-            return self._ensemble_cache[cache_key]
+        if cache_key == self._last_ensemble_key:
+            return self._last_ensemble_value
 
         validate_smiles(smiles_list)
 
@@ -247,7 +256,8 @@ class ArtifactWrapper(object):
             R = np.full((B, D), 0.5, dtype=np.float64)
 
         result = (W, Y, R, S, active_indices)
-        self._ensemble_cache[cache_key] = result
+        self._last_ensemble_key = cache_key
+        self._last_ensemble_value = result
         return result
 
     def predict_proba(self, smiles_list):
@@ -323,21 +333,33 @@ class LazyClassifierQSAR(object):
         self.descriptor_types = DESCRIPTORS_MODE[mode]
         self.descriptors = []  # populated in fit() after applicability check
         self.is_saved = False
-        self._feature_cache = {}
-        self._ensemble_cache = {}
+        # Per-descriptor single-entry feature cache: (last_hash, last_X) per descriptor index.
+        # Avoids recomputing expensive DL descriptors when multiple predict_* methods are
+        # called on the same smiles_list. Does not accumulate across distinct batches.
+        self._feature_cache: dict[int, tuple[str, np.ndarray]] = {}
+        # Single-entry ensemble cache: same rationale as ArtifactWrapper.
+        self._last_ensemble_key: str | None = None
+        self._last_ensemble_value: tuple | None = None
 
     def _smiles_hash(self, smiles_list):
         return _smiles_md5(smiles_list)
 
+    def clear_cache(self) -> None:
+        """Release all cached features and ensemble outputs."""
+        self._feature_cache.clear()
+        self._last_ensemble_key = None
+        self._last_ensemble_value = None
+
     def _transform_cached(self, i, smiles_list):
-        key = (i, self._smiles_hash(smiles_list))
-        if key not in self._feature_cache:
-            self._feature_cache[key] = self.descriptors[i].transform(smiles_list)
-        else:
+        h = self._smiles_hash(smiles_list)
+        if i in self._feature_cache and self._feature_cache[i][0] == h:
             logger.debug(
                 f"Using cached features for descriptor: {self.descriptor_types[i]}"
             )
-        return self._feature_cache[key]
+            return self._feature_cache[i][1]
+        X = self.descriptors[i].transform(smiles_list)
+        self._feature_cache[i] = (h, X)
+        return X
 
     def fit(self, smiles_list, y):
         import time
@@ -346,8 +368,7 @@ class LazyClassifierQSAR(object):
         from .descriptors.portfolio import DescriptorPortfolio
 
         # Clear any cached state from a previous fit.
-        self._feature_cache.clear()
-        self._ensemble_cache.clear()
+        self.clear_cache()
 
         y = np.array(y, dtype=int)
         validate_smiles(smiles_list)
@@ -366,7 +387,7 @@ class LazyClassifierQSAR(object):
         smiles_hash = self._smiles_hash(smiles_list)
         for i, (_, _, X, _) in enumerate(applicable):
             if X is not None:
-                self._feature_cache[(i, smiles_hash)] = X
+                self._feature_cache[i] = (smiles_hash, X)
 
         logger.rule("LazyClassifierQSAR")
         logger.info(
@@ -474,8 +495,8 @@ class LazyClassifierQSAR(object):
     def _compute_ensemble(self, smiles_list):
         """Compute (W, Y, R, S, active_indices) for smiles_list, cached by SMILES hash."""
         cache_key = self._smiles_hash(smiles_list)
-        if cache_key in self._ensemble_cache:
-            return self._ensemble_cache[cache_key]
+        if cache_key == self._last_ensemble_key:
+            return self._last_ensemble_value
 
         validate_smiles(smiles_list)
 
@@ -561,7 +582,8 @@ class LazyClassifierQSAR(object):
             R = np.full((B, D), 0.5, dtype=np.float64)
 
         result = (W, Y, R, S, active_indices)
-        self._ensemble_cache[cache_key] = result
+        self._last_ensemble_key = cache_key
+        self._last_ensemble_value = result
         return result
 
     def predict_proba(self, smiles_list):
@@ -682,7 +704,9 @@ class LazyClassifierQSAR(object):
                 _p_clip = float(np.clip(_avg_p, 1e-7, 1.0 - 1e-7))
                 meta["decision_cutoff_logit"] = float(np.log(_p_clip / (1.0 - _p_clip)))
                 _prior = meta.get("population_prior") or 0
-                meta["decision_cutoff_lift"] = float(_avg_p / _prior) if _prior > 0 else None
+                meta["decision_cutoff_lift"] = (
+                    float(_avg_p / _prior) if _prior > 0 else None
+                )
             else:
                 meta["decision_cutoff_logit"] = None
                 meta["decision_cutoff_lift"] = None

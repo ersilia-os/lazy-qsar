@@ -32,7 +32,7 @@ def _new_progress() -> Progress:
 
 def _get_chunk_size() -> int:
     try:
-        v = int(os.environ.get("LAZYQSAR_PREDICT_CHUNK", "1000"))
+        v = int(os.environ.get("LAZYQSAR_PREDICT_CHUNK", "200"))
         return v if v > 0 else 1000
     except ValueError:
         return 1000
@@ -101,17 +101,20 @@ def _predict_from_persisted(
     del X_mm
     return np.concatenate(parts) if len(parts) > 1 else parts[0]
 
+
 _PREDICT_DISPATCH = {
-    "proba":  lambda model, X: model.predict_proba(X)[:, 1],
-    "rank":   lambda model, X: model.predict_rank(X)[:, 1],
-    "logit":  lambda model, X: model.predict_logit(X)[:, 1],
-    "lift":   lambda model, X: model.predict_lift(X)[:, 1],
-    "score":  lambda model, X: model.predict_score(X)[:, 1],
+    "proba": lambda model, X: model.predict_proba(X)[:, 1],
+    "rank": lambda model, X: model.predict_rank(X)[:, 1],
+    "logit": lambda model, X: model.predict_logit(X)[:, 1],
+    "lift": lambda model, X: model.predict_lift(X)[:, 1],
+    "score": lambda model, X: model.predict_score(X)[:, 1],
     "binary": lambda model, X: model.predict(X),
 }
 
 
-def prepare_files(smiles_list, models: list = None, path: str = None, predict_type: str = "proba"):
+def prepare_files(
+    smiles_list, models: list = None, path: str = None, predict_type: str = "proba"
+):
     if path is None:
         path = tempfile.mkdtemp()
     input_csv = os.path.join(path, "_input.csv")
@@ -220,12 +223,14 @@ def _predict_from_dict(
     if not col_map:
         raise ValueError("No valid models found.")
 
-    all_featurizers = sorted({
-        dn
-        for p in col_map
-        for dn in os.listdir(p)
-        if os.path.isdir(os.path.join(p, dn))
-    })
+    all_featurizers = sorted(
+        {
+            dn
+            for p in col_map
+            for dn in os.listdir(p)
+            if os.path.isdir(os.path.join(p, dn))
+        }
+    )
     logger.info(f"Featurizers found: {all_featurizers}")
 
     _predict_fn = _PREDICT_DISPATCH[predict_type]
@@ -247,7 +252,8 @@ def _predict_from_dict(
                 continue
 
             cols_with_models = [
-                (p, c) for p, c in col_map.items()
+                (p, c)
+                for p, c in col_map.items()
                 if os.path.isdir(os.path.join(p, featurizer_name))
             ]
             if not cols_with_models:
@@ -261,8 +267,12 @@ def _predict_from_dict(
                     f"[{featurizer_name}] descriptors", total=n_chunks
                 )
                 _persist_descriptors(
-                    featurizer, smiles_list, x_path, chunk_size,
-                    progress=progress, task_id=desc_task,
+                    featurizer,
+                    smiles_list,
+                    x_path,
+                    chunk_size,
+                    progress=progress,
+                    task_id=desc_task,
                 )
                 del featurizer
                 gc.collect()
@@ -310,7 +320,9 @@ def predict(
     smiles: list = None,
 ) -> tuple[np.ndarray, list[str]]:
     if isinstance(model_dir, dict):
-        return _predict_from_dict(model_dir, input_csv, output_csv, models_txt, predict_type, smiles)
+        return _predict_from_dict(
+            model_dir, input_csv, output_csv, models_txt, predict_type, smiles
+        )
 
     if predict_type not in _PREDICT_DISPATCH:
         raise ValueError(
@@ -357,7 +369,8 @@ def predict(
     try:
         for featurizer_name in featurizers:
             tasks_with_models = [
-                t for t in tasks
+                t
+                for t in tasks
                 if os.path.isdir(os.path.join(model_dir, t, featurizer_name))
             ]
             if not tasks_with_models:
@@ -372,8 +385,12 @@ def predict(
                     f"[{featurizer_name}] descriptors", total=n_chunks
                 )
                 _persist_descriptors(
-                    featurizer, smiles_list, x_path, chunk_size,
-                    progress=progress, task_id=desc_task,
+                    featurizer,
+                    smiles_list,
+                    x_path,
+                    chunk_size,
+                    progress=progress,
+                    task_id=desc_task,
                 )
                 del featurizer
                 gc.collect()
