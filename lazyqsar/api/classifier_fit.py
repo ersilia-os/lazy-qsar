@@ -154,8 +154,12 @@ def fit(data_dir: str, model_dir: str, models_txt: str = None, mode: str = "defa
         population_prior = float(np.mean(y == 1))
 
         avg_raw = float(np.mean([m["decision_cutoff_raw"] for m in desc_meta.values()]))
-        avg_proba = float(np.mean([m["decision_cutoff_proba"] for m in desc_meta.values()]))
-        avg_rank = float(np.mean([m["decision_cutoff_rank"] for m in desc_meta.values()]))
+        avg_proba = float(
+            np.mean([m["decision_cutoff_proba"] for m in desc_meta.values()])
+        )
+        avg_rank = float(
+            np.mean([m["decision_cutoff_rank"] for m in desc_meta.values()])
+        )
         _p_clip = float(np.clip(avg_proba, 1e-7, 1.0 - 1e-7))
 
         meta = {
@@ -171,7 +175,9 @@ def fit(data_dir: str, model_dir: str, models_txt: str = None, mode: str = "defa
             "decision_cutoff_proba": avg_proba,
             "decision_cutoff_rank": avg_rank,
             "decision_cutoff_logit": float(np.log(_p_clip / (1.0 - _p_clip))),
-            "decision_cutoff_lift": float(avg_proba / population_prior) if population_prior > 0 else None,
+            "decision_cutoff_lift": float(avg_proba / population_prior)
+            if population_prior > 0
+            else None,
             "oof_aucs": {d: m["oof_auc"] for d, m in desc_meta.items()},
             "train_aucs": {d: m["train_auc"] for d, m in desc_meta.items()},
         }

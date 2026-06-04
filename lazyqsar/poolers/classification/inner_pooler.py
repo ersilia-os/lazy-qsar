@@ -5,6 +5,7 @@ import numpy as np
 
 try:
     from sklearn.linear_model import Ridge
+
     _FIT_DEPS_AVAILABLE = True
 except ImportError:
     Ridge = None  # type: ignore[assignment,misc]

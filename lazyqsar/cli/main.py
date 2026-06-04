@@ -90,11 +90,7 @@ def _setup_descriptors(args):
         download_clamp,
     )
 
-    only = (
-        {d.strip() for d in args.only.split(",")}
-        if args.only
-        else _ALL_DESCRIPTORS
-    )
+    only = {d.strip() for d in args.only.split(",")} if args.only else _ALL_DESCRIPTORS
     unknown = only - _ALL_DESCRIPTORS
     if unknown:
         print(

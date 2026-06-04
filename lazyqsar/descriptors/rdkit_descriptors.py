@@ -6,6 +6,7 @@ from rdkit.ML.Descriptors import MoleculeDescriptors
 from rdkit.Chem import Descriptors
 from rdkit import RDLogger
 from ..utils.logging import logger
+
 RDLogger.DisableLog("rdApp.*")
 
 

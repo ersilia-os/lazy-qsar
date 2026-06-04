@@ -11,6 +11,7 @@ from rdkit.Chem.rdmolops import FastFindRings
 from rdkit import RDLogger
 
 from ..utils.logging import logger
+
 RDLogger.DisableLog("rdApp.*")
 
 _CLAMP_ONNX_URL = "https://ersilia-models.s3.eu-central-1.amazonaws.com/eos3l5f/model/checkpoints/clamp_clip/compound_encoder.onnx"

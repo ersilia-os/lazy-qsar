@@ -126,7 +126,9 @@ class LazyClassifierArtifact:
                 for b in self._batches
                 for h in b.heads
             ]
-            self._decision_cutoff_raw = float(np.mean(all_cutoffs)) if all_cutoffs else 0.5
+            self._decision_cutoff_raw = (
+                float(np.mean(all_cutoffs)) if all_cutoffs else 0.5
+            )
         self._decision_cutoff_proba = float(metadata.get("decision_cutoff_proba", 0.5))
         self._decision_cutoff_rank = float(metadata.get("decision_cutoff_rank", 0.5))
         self._decision_cutoff_logit = float(metadata.get("decision_cutoff_logit", 0.0))

@@ -101,7 +101,7 @@ def svc_balanced_rbf_params(profile: DatasetProfile) -> dict:
     n = profile.n_samples
     imbalance = max(1.0, profile.imbalance_ratio)
     n_minority = max(1, int(n / (1.0 + imbalance)))
-    C = min(50.0, max(0.1, n_minority ** 0.5))
+    C = min(50.0, max(0.1, n_minority**0.5))
     max_iter = max(1_000, min(10_000, n * 5))
     return {
         "C": round(C, 4),

@@ -5,6 +5,7 @@ from rdkit import Chem
 from rdkit.Chem import rdFingerprintGenerator
 from rdkit import RDLogger
 from ..utils.logging import logger
+
 RDLogger.DisableLog("rdApp.*")
 
 

@@ -6,6 +6,7 @@ import time as _time
 from contextlib import contextmanager
 
 import numpy as np
+
 # ---------------------------------------------------------------------------
 # Fit-time dependencies — NOT required for ONNX inference.
 # Guarded so lean [descriptors]-only installs can import this module to reach
@@ -18,10 +19,13 @@ try:
     from sklearn.linear_model import LogisticRegression
     from sklearn.metrics import balanced_accuracy_score, roc_auc_score
     from sklearn.utils.validation import check_array, check_is_fitted
+
     _FIT_DEPS_AVAILABLE = True
 except ImportError:
+
     class BaseEstimator:  # type: ignore[no-redef]
         pass
+
     RandomForestClassifier = None  # type: ignore[assignment,misc]
     IsotonicRegression = LogisticRegression = None  # type: ignore[assignment,misc]
     balanced_accuracy_score = roc_auc_score = None  # type: ignore[assignment]
@@ -488,12 +492,18 @@ class BaseRFClassifier(BaseEstimator):
             _learn_balanced_accuracy_cutoff(y, oof_raw)
         )
         if self.calibrator_method_ == "isotonic":
-            self.decision_cutoff_proba_ = float(np.clip(
-                self.calibrator_.predict(np.array([self.decision_cutoff_raw_]))[0], 0.0, 1.0
-            ))
+            self.decision_cutoff_proba_ = float(
+                np.clip(
+                    self.calibrator_.predict(np.array([self.decision_cutoff_raw_]))[0],
+                    0.0,
+                    1.0,
+                )
+            )
         else:
             self.decision_cutoff_proba_ = float(
-                self.calibrator_.predict_proba(np.array([[self.decision_cutoff_raw_]]))[:, 1][0]
+                self.calibrator_.predict_proba(np.array([[self.decision_cutoff_raw_]]))[
+                    :, 1
+                ][0]
             )
         self.oof_y_ = y.copy()
         sorted_scores = np.sort(oof_raw)
@@ -504,9 +514,13 @@ class BaseRFClassifier(BaseEstimator):
         else:
             self._ranker_knots = sorted_scores
         n_k = len(self._ranker_knots)
-        self.decision_cutoff_rank_ = float(np.interp(
-            self.decision_cutoff_raw_, self._ranker_knots, np.linspace(0.0, 1.0, n_k)
-        ))
+        self.decision_cutoff_rank_ = float(
+            np.interp(
+                self.decision_cutoff_raw_,
+                self._ranker_knots,
+                np.linspace(0.0, 1.0, n_k),
+            )
+        )
         _p = np.clip(self.decision_cutoff_proba_, 1e-7, 1.0 - 1e-7)
         self.decision_cutoff_logit_ = float(np.log(_p / (1.0 - _p)))
         logger.success(

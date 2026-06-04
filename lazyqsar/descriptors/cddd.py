@@ -17,6 +17,7 @@ from pathlib import Path
 from urllib.request import urlretrieve
 
 from ..utils.logging import logger
+
 RDLogger.DisableLog("rdApp.*")
 
 root = os.path.dirname(os.path.abspath(__file__))

@@ -35,6 +35,7 @@ except ImportError:
         )
 from rdkit.Chem import MolFromSmiles, Mol
 from rdkit import RDLogger
+
 RDLogger.DisableLog("rdApp.*")
 
 
@@ -75,7 +76,9 @@ class _CheMeleonFingerprint:
         bmg = BatchMolGraph(mol_graphs)
         bmg.to(device=self.model.device)
         embeddings = self.model.fingerprint(bmg).numpy(force=True)
-        result = np.full((len(molecules), embeddings.shape[1]), np.nan, dtype=np.float32)
+        result = np.full(
+            (len(molecules), embeddings.shape[1]), np.nan, dtype=np.float32
+        )
         for out_i, src_i in enumerate(valid_idx):
             result[src_i] = embeddings[out_i]
         return result
