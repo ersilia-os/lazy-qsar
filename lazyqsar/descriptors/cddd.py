@@ -13,10 +13,16 @@ from rdkit.Chem import Descriptors
 from rdkit import RDLogger
 from rdkit import __version__ as rdkit_version
 
-from pathlib import Path
 from urllib.request import urlretrieve
 
 from ..utils.logging import logger
+from ..utils.checkpoints import (
+    CHECKPOINT_DIR,
+    CDDD_CHECKPOINTS,
+    CDDD_ENCODER_FILENAME,
+    CDDD_FPSIM_FILENAME,
+    CDDD_SMILES_FILENAME,
+)
 
 RDLogger.DisableLog("rdApp.*")
 
@@ -42,9 +48,9 @@ class ChemblNearestNeighbour(object):
         from FPSim2 import FPSim2Engine
 
         self.similarity_threshold = similarity_threshold
-        ckpt_dir = Path().home() / ".lazyqsar"
+        ckpt_dir = CHECKPOINT_DIR
         ckpt_dir.mkdir(exist_ok=True)
-        cddd_fpsim_path = ckpt_dir / "cddd_encoder_fpsim.h5"
+        cddd_fpsim_path = ckpt_dir / CDDD_FPSIM_FILENAME
         self.fp_database = cddd_fpsim_path
         self.fpe = FPSim2Engine(self.fp_database)
 
@@ -57,8 +63,8 @@ class ChemblNearestNeighbour(object):
 
 
 def load_smiles_indexed():
-    ckpt_dir = Path().home() / ".lazyqsar"
-    cddd_encoder_smiles = ckpt_dir / "cddd_encoder_smiles.csv"
+    ckpt_dir = CHECKPOINT_DIR
+    cddd_encoder_smiles = ckpt_dir / CDDD_SMILES_FILENAME
     smiles_indexed = []
     with open(cddd_encoder_smiles, "r") as f:
         reader = csv.reader(f)
@@ -343,38 +349,20 @@ class InferenceModel:
         """Initialize the inference model."""
         self.hparams = HParams()
 
-        ckpt_dir = Path().home() / ".lazyqsar"
+        ckpt_dir = CHECKPOINT_DIR
         ckpt_dir.mkdir(exist_ok=True)
-        cddd_path = ckpt_dir / "cddd_encoder.onnx"
-        if not cddd_path.exists():
-            logger.info(
-                "Downloading CDDD encoder model into ~/.lazyqsar/cddd_encoder.onnx"
-            )
-            urlretrieve(
-                r"https://zenodo.org/records/14811055/files/encoder.onnx?download=1",
-                cddd_path,
-            )
 
-        cddd_fpsim_path = ckpt_dir / "cddd_encoder_fpsim.h5"
-        if not cddd_fpsim_path.exists():
-            logger.info(
-                "Downloading CDDD encoder fpsim file into ~/.lazyqsar/cddd_encoder_fpsim.h5"
-            )
-            urlretrieve(
-                r"https://ersilia-models.s3.eu-central-1.amazonaws.com/eos4rw4/model/checkpoints/fpsim2_database_chembl.h5",
-                cddd_fpsim_path,
-            )
+        # Lazy fallback: fetch any CDDD checkpoint still missing. Normally these
+        # are pre-downloaded by ``lazyqsar setup --descriptors`` so nothing is
+        # fetched here — which is what keeps prediction working on air-gapped
+        # nodes. The URLs/filenames are centralized in utils/checkpoints.py.
+        for url, filename in CDDD_CHECKPOINTS:
+            dest = ckpt_dir / filename
+            if not dest.exists():
+                logger.info(f"Downloading CDDD checkpoint into ~/.lazyqsar/{filename}")
+                urlretrieve(url, dest)
 
-        cddd_smiles_path = ckpt_dir / "cddd_encoder_smiles.csv"
-        if not cddd_smiles_path.exists():
-            logger.info(
-                "Downloading CDDD encoder smiles file into ~/.lazyqsar/cddd_encoder_smiles.csv"
-            )
-            urlretrieve(
-                r"https://ersilia-models.s3.eu-central-1.amazonaws.com/eos4rw4/model/checkpoints/fpsim2_database_chembl_smiles.csv",
-                cddd_smiles_path,
-            )
-
+        cddd_path = ckpt_dir / CDDD_ENCODER_FILENAME
         encoder_path = str(cddd_path)
         if not os.path.exists(encoder_path):
             raise FileNotFoundError(
