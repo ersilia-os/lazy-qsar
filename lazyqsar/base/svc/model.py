@@ -711,6 +711,9 @@ class BaseSVCClassifier(BaseEstimator, ClassifierMixin):
                 ][0]
             )
         self.oof_y_ = y.copy()
+        # Uncalibrated [0,1] out-of-fold scores (sigmoid of the SVC decision score = the calibrator's
+        # input), kept alongside the calibrated oof_probas_ so downstream can report the raw score too.
+        self.oof_raw_ = oof_sigmoid.copy()
 
         # Ranker knots (ECDF for predict_rank)
         sorted_scores = np.sort(oof_sigmoid)

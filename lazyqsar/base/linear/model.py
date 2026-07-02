@@ -647,6 +647,9 @@ class BaseLinearClassifier(BaseEstimator):
                 ][0]
             )
         self.oof_y_ = y.copy()
+        # Uncalibrated [0,1] out-of-fold probabilities (the calibrator's input), kept alongside the
+        # calibrated oof_probas_ so downstream can report the raw score too.
+        self.oof_raw_ = oof_raw.copy()
         sorted_scores = np.sort(oof_raw)
         n_r = len(sorted_scores)
         if n_r > _RANKER_MAX_KNOTS:
