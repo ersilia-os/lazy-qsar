@@ -11,6 +11,8 @@ import os
 
 import numpy as np
 
+from lazyqsar.utils.ranking import binarize
+
 
 def _correct_prior(p1, train_prior, population_prior):
     """Adjust P(y=1) trained at train_prior to reflect population_prior."""
@@ -173,7 +175,7 @@ class LazyClassifierArtifact:
     def predict(self, X, cutoff: float = None) -> np.ndarray:
         """Return binary predictions (0 or 1)."""
         threshold = self._decision_cutoff_raw if cutoff is None else cutoff
-        return (self.predict_score(X)[:, 1] >= threshold).astype(int)
+        return binarize(self.predict_score(X)[:, 1], threshold)
 
     def predict_lift(self, X) -> np.ndarray:
         """Return lift over population prior, shape (n_samples, 2)."""

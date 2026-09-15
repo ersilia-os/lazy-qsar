@@ -73,6 +73,7 @@ except ImportError:
     _FIT_DEPS_AVAILABLE = False
 
 from lazyqsar.utils.logging import logger
+from lazyqsar.utils.ranking import binarize, prepare_knots, rank_from_knots
 from lazyqsar.utils.splits import (
     auto_stratified_oof_n_splits,
     make_stratified_oof_splits,
@@ -462,15 +463,17 @@ class BaseLinearClassifier(BaseEstimator):
         check_is_fitted(self, attributes=["_estimator"])
         threshold = self.decision_cutoff_raw_ if cutoff is None else float(cutoff)
         proba = self.predict_score(X)[:, 1]
-        y_enc = (proba >= threshold).astype(int)
+        y_enc = binarize(proba, threshold)
         return self._label_encoder.inverse_transform(y_enc)
 
     def predict_rank(self, X) -> np.ndarray:
         """Map raw scores to [0, 1] ranks via OOF ECDF, shape (n_samples, 2)."""
         check_is_fitted(self, attributes=["_ranker_knots"])
         scores = self.predict_score(X)[:, 1]
-        n_k = len(self._ranker_knots)
-        rank_1 = np.interp(scores, self._ranker_knots, np.linspace(0.0, 1.0, n_k))
+        prepared = getattr(self, "_ranker_prepared_", None)
+        if prepared is None:
+            prepared = self._ranker_prepared_ = prepare_knots(self._ranker_knots)
+        rank_1 = rank_from_knots(scores, prepared=prepared)
         return np.column_stack([1 - rank_1, rank_1])
 
     def predict_proba(self, X) -> np.ndarray:
@@ -657,13 +660,9 @@ class BaseLinearClassifier(BaseEstimator):
             self._ranker_knots = sorted_scores[idx]
         else:
             self._ranker_knots = sorted_scores
-        n_k = len(self._ranker_knots)
+        self._ranker_prepared_ = prepare_knots(self._ranker_knots)
         self.decision_cutoff_rank_ = float(
-            np.interp(
-                self.decision_cutoff_raw_,
-                self._ranker_knots,
-                np.linspace(0.0, 1.0, n_k),
-            )
+            rank_from_knots(self.decision_cutoff_raw_, prepared=self._ranker_prepared_)
         )
         _p = np.clip(self.decision_cutoff_proba_, 1e-7, 1.0 - 1e-7)
         self.decision_cutoff_logit_ = float(np.log(_p / (1.0 - _p)))
@@ -1419,6 +1418,10 @@ class BaseLinearArtifact:
             raise RuntimeError(
                 "predict() is only available for classification artifacts."
             )
-        threshold = self.decision_cutoff_raw if cutoff is None else float(cutoff)
+        threshold = self.decision_cutoff_proba if cutoff is None else float(cutoff)
+        # This artifact only exposes calibrated probabilities, so compare against the
+        # calibrated cutoff. decision_cutoff_proba is the calibrator's image of
+        # decision_cutoff_raw, and calibration is monotone, so this matches the
+        # fit-time estimator's raw-vs-raw decision.
         classes = np.asarray(self.metadata.get("classes", [0, 1]))
-        return classes[(self.run(X)[:, 1] >= threshold).astype(int)]
+        return classes[binarize(self.run(X)[:, 1], threshold)]

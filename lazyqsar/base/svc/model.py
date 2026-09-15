@@ -86,6 +86,7 @@ from .presets import (
     svc_balanced_rbf_params,
 )
 from lazyqsar.utils.logging import logger
+from lazyqsar.utils.ranking import binarize, prepare_knots, rank_from_knots
 from lazyqsar.utils.splits import make_stratified_oof_splits
 
 
@@ -110,6 +111,11 @@ _ONNX_MAX_RETRIES = 3
 
 _CALIBRATION_ISOTONIC_MIN_MINORITY = 500
 _DEFAULT_DECISION_CUTOFF = 0.5
+# Deterministic probe used to record the true sign of decision_function at save time,
+# so the artifact can identify which ONNX score column to read. See
+# BaseSVCArtifact._resolve_score_column.
+_SCORE_CANARY_SEED = 20240917
+_SCORE_CANARY_ROWS = 8
 _RANKER_MAX_KNOTS = 10_000
 _RANDOM_STATE = 42
 
@@ -723,13 +729,9 @@ class BaseSVCClassifier(BaseEstimator, ClassifierMixin):
             self._ranker_knots = sorted_scores[idx]
         else:
             self._ranker_knots = sorted_scores
-        n_k = len(self._ranker_knots)
+        self._ranker_prepared_ = prepare_knots(self._ranker_knots)
         self.decision_cutoff_rank_ = float(
-            np.interp(
-                self.decision_cutoff_raw_,
-                self._ranker_knots,
-                np.linspace(0.0, 1.0, n_k),
-            )
+            rank_from_knots(self.decision_cutoff_raw_, prepared=self._ranker_prepared_)
         )
         _p = np.clip(self.decision_cutoff_proba_, 1e-7, 1.0 - 1e-7)
         self.decision_cutoff_logit_ = float(np.log(_p / (1.0 - _p)))
@@ -783,14 +785,16 @@ class BaseSVCClassifier(BaseEstimator, ClassifierMixin):
         """Map sigmoid scores to [0,1] ranks via OOF ECDF, shape (n_samples, 2)."""
         check_is_fitted(self, "_ranker_knots")
         scores = self.predict_score(X)[:, 1]
-        n_k = len(self._ranker_knots)
-        rank_1 = np.interp(scores, self._ranker_knots, np.linspace(0.0, 1.0, n_k))
+        prepared = getattr(self, "_ranker_prepared_", None)
+        if prepared is None:
+            prepared = self._ranker_prepared_ = prepare_knots(self._ranker_knots)
+        rank_1 = rank_from_knots(scores, prepared=prepared)
         return np.column_stack([1 - rank_1, rank_1])
 
     def predict(self, X, cutoff: float | None = None) -> np.ndarray:
         """Return binary 0/1 predictions."""
         threshold = self.decision_cutoff_raw_ if cutoff is None else float(cutoff)
-        return (self.predict_score(X)[:, 1] >= threshold).astype(int)
+        return binarize(self.predict_score(X)[:, 1], threshold)
 
     # ------------------------------------------------------------------
     # Export
@@ -872,6 +876,19 @@ class BaseSVCClassifier(BaseEstimator, ClassifierMixin):
         if hasattr(self, "_ranker_knots"):
             metadata["ranker"] = {"knots": self._ranker_knots.tolist()}
 
+        # skl2onnx emits the binary-SVC score output as two mutually-negated columns and
+        # their order is not contractual across versions. Reading the wrong one silently
+        # inverts every prediction this head makes, so record decision_function on a
+        # deterministic probe and let the artifact match against it.
+        probe = np.random.default_rng(_SCORE_CANARY_SEED).standard_normal(
+            (_SCORE_CANARY_ROWS, int(self.profile_.n_features))
+        )
+        metadata["score_canary"] = {
+            "seed": _SCORE_CANARY_SEED,
+            "n_rows": _SCORE_CANARY_ROWS,
+            "decision": _decision_scores(self.svc_, probe).tolist(),
+        }
+
         with open(os.path.join(directory, "svc.json"), "w") as f:
             json.dump(metadata, f, indent=2)
 
@@ -895,6 +912,7 @@ class BaseSVCArtifact:
     def __init__(self):
         self._session = None
         self._input_name = ""
+        self._score_col = 0
         self.metadata: dict = {}
         self._cal = None
         self._ranker = None
@@ -940,19 +958,57 @@ class BaseSVCArtifact:
             onnx_path, providers=["CPUExecutionProvider"]
         )
         self._input_name = self._session.get_inputs()[0].name
+        self._score_col = self._resolve_score_column()
         return self
+
+    def _raw_outputs(self, X: np.ndarray) -> np.ndarray:
+        """Return the ONNX score output as a float64 array, shape unchanged."""
+        X_f32 = np.asarray(X, dtype=np.float32)
+        outputs = self._session.run(None, {self._input_name: X_f32})
+        return np.asarray(outputs[1], dtype=np.float64)
+
+    def _resolve_score_column(self) -> int:
+        """Return which ONNX score column carries sklearn's ``decision_function``.
+
+        skl2onnx emits the binary-SVC score output as two mutually-negated columns,
+        ``[decision, -decision]``, and which one comes first is not contractual across
+        versions. Picking by position silently inverts the head when the convention
+        differs, so resolve it against the canary recorded by
+        :meth:`BaseSVCClassifier.save`.
+        """
+        canary = self.metadata.get("score_canary")
+        if canary is None:
+            logger.warning(
+                "SVC artifact has no score_canary (saved by lazyqsar < 3.4.3); assuming "
+                "column 0 carries decision_function. Re-save the model to remove this "
+                "ambiguity."
+            )
+            return 0
+        probe = np.random.default_rng(int(canary["seed"])).standard_normal(
+            (int(canary["n_rows"]), int(self.metadata["n_features_in"]))
+        )
+        raw = self._raw_outputs(probe)
+        if raw.ndim != 2 or raw.shape[1] != 2:
+            return 0
+        expected = np.asarray(canary["decision"], dtype=np.float64)
+        errors = [np.abs(raw[:, c] - expected).max() for c in (0, 1)]
+        best = int(np.argmin(errors))
+        if errors[best] > 1e-3:
+            logger.warning(
+                f"SVC score canary did not match either ONNX column "
+                f"(best residual {errors[best]:.3g}); falling back to column {best}."
+            )
+        return best
 
     def _raw_scores(self, X: np.ndarray) -> np.ndarray:
         """Return shape-(n,) raw decision function scores from ONNX."""
-        X_f32 = np.asarray(X, dtype=np.float32)
-        outputs = self._session.run(None, {self._input_name: X_f32})
-        raw = np.asarray(outputs[1], dtype=np.float64)
+        raw = self._raw_outputs(X)
         if raw.ndim == 1:
             return raw
         if raw.ndim == 2 and raw.shape[1] == 1:
             return raw.ravel()
         if raw.ndim == 2:
-            return raw[:, 1]
+            return raw[:, self._score_col]
         return raw.ravel()
 
     def run(self, X) -> np.ndarray:
@@ -986,15 +1042,17 @@ class BaseSVCArtifact:
         """Map pre-calibration scores to [0,1] ranks via ECDF, shape (n_samples, 2)."""
         if self._ranker is None:
             raise RuntimeError("No ranker stored in this artifact.")
-        knots = np.asarray(self._ranker["knots"])
-        rank_1 = np.interp(
-            self.predict_score(X)[:, 1],
-            knots,
-            np.linspace(0.0, 1.0, len(knots)),
+        if getattr(self, "_ranker_prepared", None) is None:
+            self._ranker_prepared = prepare_knots(self._ranker["knots"])
+        rank_1 = rank_from_knots(
+            self.predict_score(X)[:, 1], prepared=self._ranker_prepared
         )
         return np.column_stack([1 - rank_1, rank_1])
 
     def predict(self, X, cutoff: float | None = None) -> np.ndarray:
         """Return binary 0/1 predictions."""
         threshold = self.decision_cutoff_raw if cutoff is None else float(cutoff)
-        return (self.run(X)[:, 1] >= threshold).astype(int)
+        # Threshold the same quantity the fit-time estimator does: raw score against
+        # the raw cutoff. Comparing run() (calibrated) against decision_cutoff_raw
+        # mixes two different scales.
+        return binarize(self.predict_score(X)[:, 1], threshold)
