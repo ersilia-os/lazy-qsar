@@ -11,6 +11,8 @@ import os
 import numpy as np
 import onnxruntime as rt
 
+from lazyqsar.utils.ranking import prepare_knots, rank_from_knots
+
 
 class LinearArtifact:
     """Load and run a saved linear model ONNX pipeline."""
@@ -106,8 +108,9 @@ class LinearArtifact:
         """Map calibrated scores to [0, 1] ranks via OOF ECDF, shape (n_samples, 2)."""
         if self._ranker is None:
             raise RuntimeError("No ranker stored in this artifact.")
-        knots = np.asarray(self._ranker["knots"])
-        rank_1 = np.interp(
-            self.predict_score(X)[:, 1], knots, np.linspace(0.0, 1.0, len(knots))
+        if getattr(self, "_ranker_prepared", None) is None:
+            self._ranker_prepared = prepare_knots(self._ranker["knots"])
+        rank_1 = rank_from_knots(
+            self.predict_score(X)[:, 1], prepared=self._ranker_prepared
         )
         return np.column_stack([1 - rank_1, rank_1])

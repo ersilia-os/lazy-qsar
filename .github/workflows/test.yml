@@ -1,0 +1,36 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install package and test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[fit]"
+          pip install pytest ruff
+
+      # `ruff format` is the standard this repo actually maintains (see commit 2dcc4ea).
+      # `ruff check` with ruff's default rule set currently reports ~200 pre-existing
+      # findings across the package, so gating on it here would block every PR; clearing
+      # those is worth doing, but as its own change rather than silently inside a bugfix.
+      - name: Format check
+        run: ruff format --check lazyqsar dev
+
+      - name: Lint (new code only, non-blocking)
+        run: ruff check dev
+
+      # dev/tests contains numpy-only unit tests plus ONNX round-trip tests that
+      # skip themselves when the `fit` extra is unavailable.
+      - name: Tests
+        run: pytest dev/tests -q

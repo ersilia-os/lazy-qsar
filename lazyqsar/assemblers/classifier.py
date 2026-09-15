@@ -3,6 +3,8 @@ import os
 import time as _time
 import numpy as np
 
+from lazyqsar.utils.ranking import binarize
+
 from ..portfolios.classification import Portfolio
 from ..preprocessors.classification.prep import Preprocessor
 from ..heads.classification.lr import Head as LRHead
@@ -253,7 +255,7 @@ class _BatchLazyClassifier(object):
     def predict(self, X, cutoff=None):
         """Return binary labels using the OOF-learned decision cutoff."""
         threshold = self.decision_cutoff_raw_ if cutoff is None else cutoff
-        return (self.predict_score(X)[:, 1] >= threshold).astype(int)
+        return binarize(self.predict_score(X)[:, 1], threshold)
 
     def save(self, directory, batch_num):
         """Save this batch to ``{directory}/batch_{batch_num}/``."""
@@ -464,7 +466,7 @@ class LazyClassifier(object):
     def predict(self, X, cutoff=None):
         """Return binary labels using the OOF-learned decision cutoff."""
         threshold = self.decision_cutoff_raw_ if cutoff is None else cutoff
-        return (self.predict_score(X)[:, 1] >= threshold).astype(int)
+        return binarize(self.predict_score(X)[:, 1], threshold)
 
     def save(self, directory):
         """Save all batch models and metadata.json to *directory*."""

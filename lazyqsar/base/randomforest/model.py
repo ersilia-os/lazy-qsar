@@ -33,6 +33,7 @@ except ImportError:
     _FIT_DEPS_AVAILABLE = False
 
 from lazyqsar.utils.logging import logger
+from lazyqsar.utils.ranking import binarize, prepare_knots, rank_from_knots
 from lazyqsar.utils.splits import make_stratified_oof_splits
 from .params import (
     _HEURISTIC,
@@ -425,7 +426,7 @@ class BaseRFClassifier(BaseEstimator):
 
     def predict(self, X, cutoff: float | None = None):
         threshold = self.decision_cutoff_raw_ if cutoff is None else float(cutoff)
-        return (self.predict_score(X)[:, 1] >= threshold).astype(int)
+        return binarize(self.predict_score(X)[:, 1], threshold)
 
     def predict_logit(self, X) -> np.ndarray:
         p = np.clip(self.predict_proba(X)[:, 1], 1e-7, 1.0 - 1e-7)
@@ -435,8 +436,10 @@ class BaseRFClassifier(BaseEstimator):
     def predict_rank(self, X) -> np.ndarray:
         check_is_fitted(self, attributes=["_ranker_knots"])
         scores = self.predict_score(X)[:, 1]
-        n_k = len(self._ranker_knots)
-        rank_1 = np.interp(scores, self._ranker_knots, np.linspace(0.0, 1.0, n_k))
+        prepared = getattr(self, "_ranker_prepared_", None)
+        if prepared is None:
+            prepared = self._ranker_prepared_ = prepare_knots(self._ranker_knots)
+        rank_1 = rank_from_knots(scores, prepared=prepared)
         return np.column_stack([1 - rank_1, rank_1])
 
     def score(self, X, y) -> float:
@@ -516,13 +519,9 @@ class BaseRFClassifier(BaseEstimator):
             self._ranker_knots = sorted_scores[idx]
         else:
             self._ranker_knots = sorted_scores
-        n_k = len(self._ranker_knots)
+        self._ranker_prepared_ = prepare_knots(self._ranker_knots)
         self.decision_cutoff_rank_ = float(
-            np.interp(
-                self.decision_cutoff_raw_,
-                self._ranker_knots,
-                np.linspace(0.0, 1.0, n_k),
-            )
+            rank_from_knots(self.decision_cutoff_raw_, prepared=self._ranker_prepared_)
         )
         _p = np.clip(self.decision_cutoff_proba_, 1e-7, 1.0 - 1e-7)
         self.decision_cutoff_logit_ = float(np.log(_p / (1.0 - _p)))
@@ -717,7 +716,10 @@ class BaseRFArtifact:
     def predict(self, X, cutoff: float | None = None) -> np.ndarray:
         """Return binary labels using the stored decision cutoff by default."""
         threshold = self.decision_cutoff_raw if cutoff is None else float(cutoff)
-        return (self.run(X)[:, 1] >= threshold).astype(int)
+        # Threshold the same quantity the fit-time estimator does: raw score against
+        # the raw cutoff. Comparing run() (calibrated) against decision_cutoff_raw
+        # mixes two different scales.
+        return binarize(self.predict_score(X)[:, 1], threshold)
 
     def predict_score(self, X) -> np.ndarray:
         """Return raw (pre-calibration) probabilities, shape (n_samples, 2)."""
@@ -744,8 +746,9 @@ class BaseRFArtifact:
         """Map raw scores to [0, 1] ranks via OOF ECDF, shape (n_samples, 2)."""
         if "ranker" not in self.metadata:
             raise RuntimeError("No ranker stored in this artifact.")
-        knots = np.asarray(self.metadata["ranker"]["knots"])
-        rank_1 = np.interp(
-            self.predict_score(X)[:, 1], knots, np.linspace(0.0, 1.0, len(knots))
+        if getattr(self, "_ranker_prepared", None) is None:
+            self._ranker_prepared = prepare_knots(self.metadata["ranker"]["knots"])
+        rank_1 = rank_from_knots(
+            self.predict_score(X)[:, 1], prepared=self._ranker_prepared
         )
         return np.column_stack([1 - rank_1, rank_1])

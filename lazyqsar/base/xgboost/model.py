@@ -76,6 +76,7 @@ from .presets import (
     MAXIMIZE_METRICS,
 )
 from lazyqsar.utils.logging import logger
+from lazyqsar.utils.ranking import binarize, prepare_knots, rank_from_knots
 from lazyqsar.utils.splits import (
     auto_stratified_oof_n_splits,
     make_stratified_oof_splits,
@@ -425,14 +426,16 @@ class BaseXGBClassifier(BaseEstimator, ClassifierMixin):
     def predict(self, X, cutoff: float | None = None):
         """Return binary predictions (0 or 1)."""
         threshold = self.decision_cutoff_raw_ if cutoff is None else float(cutoff)
-        return (self.predict_score(X)[:, 1] >= threshold).astype(int)
+        return binarize(self.predict_score(X)[:, 1], threshold)
 
     def predict_rank(self, X) -> np.ndarray:
         """Map raw scores to [0, 1] ranks via OOF ECDF, shape (n_samples, 2)."""
         check_is_fitted(self, "_ranker_knots")
         scores = self.predict_score(X)[:, 1]
-        n_k = len(self._ranker_knots)
-        rank_1 = np.interp(scores, self._ranker_knots, np.linspace(0.0, 1.0, n_k))
+        prepared = getattr(self, "_ranker_prepared_", None)
+        if prepared is None:
+            prepared = self._ranker_prepared_ = prepare_knots(self._ranker_knots)
+        rank_1 = rank_from_knots(scores, prepared=prepared)
         return np.column_stack([1 - rank_1, rank_1])
 
     def calibrate(
@@ -557,13 +560,9 @@ class BaseXGBClassifier(BaseEstimator, ClassifierMixin):
             self._ranker_knots = sorted_scores[idx]
         else:
             self._ranker_knots = sorted_scores
-        n_k = len(self._ranker_knots)
+        self._ranker_prepared_ = prepare_knots(self._ranker_knots)
         self.decision_cutoff_rank_ = float(
-            np.interp(
-                self.decision_cutoff_raw_,
-                self._ranker_knots,
-                np.linspace(0.0, 1.0, n_k),
-            )
+            rank_from_knots(self.decision_cutoff_raw_, prepared=self._ranker_prepared_)
         )
         _p = np.clip(self.decision_cutoff_proba_, 1e-7, 1.0 - 1e-7)
         self.decision_cutoff_logit_ = float(np.log(_p / (1.0 - _p)))
@@ -1617,5 +1616,9 @@ class BaseXGBArtifact:
             raise RuntimeError(
                 "predict() is only available for classification artifacts."
             )
-        threshold = self.decision_cutoff_raw if cutoff is None else float(cutoff)
-        return (self.run(X)[:, 1] >= threshold).astype(int)
+        threshold = self.decision_cutoff_proba if cutoff is None else float(cutoff)
+        # This artifact only exposes calibrated probabilities, so compare against the
+        # calibrated cutoff. decision_cutoff_proba is the calibrator's image of
+        # decision_cutoff_raw, and calibration is monotone, so this matches the
+        # fit-time estimator's raw-vs-raw decision.
+        return binarize(self.run(X)[:, 1], threshold)
