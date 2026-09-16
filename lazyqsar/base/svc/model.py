@@ -425,13 +425,21 @@ def _to_onnx(svc, path: str, n_features: int) -> None:
     At inference, sigmoid is applied in the artifact to obtain [0,1] scores,
     then the stored calibrator converts these to calibrated probabilities.
 
-    Output layout (opset 15):
+    Output layout (opset 15), the same for both estimator types:
       output[0]: int64 labels, shape (n,)
-      output[1]: float32 scores — column 1 (or the only column) = class-1 score
+      output[1]: float32 scores, shape (n, 2) — two mutually-negated columns,
+                 [decision_function, -decision_function] in SOME order
+
+    The two converters do not agree on that order: decision_function is column 1
+    for LinearSVC and column 0 for kernel SVC. Never index this output by position.
+    BaseSVCArtifact._resolve_score_column works out which column it is by checking
+    which one's sign reproduces output[0], since a binary SVC predicts class 1
+    exactly when decision_function > 0.
 
     Options differ by estimator type:
-      SVC (kernel)  — zipmap=False: suppresses dict output, returns float array
-      LinearSVC     — raw_scores=True: returns decision function scores (not labels)
+      SVC (kernel)  — zipmap=False: suppresses the dict output, returns a float array
+      LinearSVC     — raw_scores=True: output[1] carries decision scores rather than
+                      probabilities (output[0] is still the int64 label)
     """
     from skl2onnx import convert_sklearn
     from skl2onnx.common.data_types import FloatTensorType
@@ -804,12 +812,14 @@ class BaseSVCClassifier(BaseEstimator, ClassifierMixin):
         """
         Export the trained model to ONNX.
 
-        Output layout (binary classification, zipmap=False):
+        Output layout (binary classification):
           output[0]: int64 labels, shape (n,)
-          output[1]: float32 scores, shape (n, 2) — col 1 = class-1 decision score
+          output[1]: float32 scores, shape (n, 2) — [decision, -decision], in an
+                     order that depends on the estimator type (see _to_onnx)
 
-        At inference, BaseSVCArtifact applies sigmoid to output[1][:, 1] to
-        obtain [0,1] pre-calibration scores, then applies the stored calibrator.
+        At inference, BaseSVCArtifact resolves which column is the decision
+        function, applies sigmoid to it to obtain [0,1] pre-calibration scores,
+        then applies the stored calibrator.
         """
         check_is_fitted(self, "svc_")
         _to_onnx(self.svc_, path, self.profile_.n_features)
@@ -970,35 +980,71 @@ class BaseSVCArtifact:
     def _resolve_score_column(self) -> int:
         """Return which ONNX score column carries sklearn's ``decision_function``.
 
-        skl2onnx emits the binary-SVC score output as two mutually-negated columns,
-        ``[decision, -decision]``, and which one comes first is not contractual across
-        versions. Picking by position silently inverts the head when the convention
-        differs, so resolve it against the canary recorded by
-        :meth:`BaseSVCClassifier.save`.
+        ``_to_onnx`` exports the two SVC flavours through two different skl2onnx
+        converters -- ``raw_scores=True`` for LinearSVC, ``zipmap=False`` for kernel SVC --
+        and they do not order the two mutually-negated score columns the same way. A
+        hardcoded column is therefore correct for one flavour and inverts the other,
+        silently, for every prediction the head makes.
+
+        Resolution is primarily against the graph's OWN label output: sklearn's binary SVC
+        predicts class 1 exactly when ``decision_function > 0``, so the score column whose
+        sign reproduces ``output[0]`` is the decision function. That needs nothing from the
+        metadata, which is what makes it work for models saved before the canary existed.
+        The canary, when present, is used as a cross-check.
         """
+        n_features = int(self.metadata["n_features_in"])
         canary = self.metadata.get("score_canary")
-        if canary is None:
-            logger.warning(
-                "SVC artifact has no score_canary (saved by lazyqsar < 3.4.3); assuming "
-                "column 0 carries decision_function. Re-save the model to remove this "
-                "ambiguity."
-            )
-            return 0
-        probe = np.random.default_rng(int(canary["seed"])).standard_normal(
-            (int(canary["n_rows"]), int(self.metadata["n_features_in"]))
+        seed = int(canary["seed"]) if canary else _SCORE_CANARY_SEED
+        n_rows = int(canary["n_rows"]) if canary else _SCORE_CANARY_ROWS
+        probe = np.random.default_rng(seed).standard_normal((n_rows, n_features))
+
+        outputs = self._session.run(
+            None, {self._input_name: np.asarray(probe, dtype=np.float32)}
         )
-        raw = self._raw_outputs(probe)
+        raw = np.asarray(outputs[1], dtype=np.float64)
         if raw.ndim != 2 or raw.shape[1] != 2:
             return 0
-        expected = np.asarray(canary["decision"], dtype=np.float64)
-        errors = [np.abs(raw[:, c] - expected).max() for c in (0, 1)]
-        best = int(np.argmin(errors))
-        if errors[best] > 1e-3:
+
+        # Primary: agreement between each column's sign and the exported labels.
+        labels = np.asarray(outputs[0]).ravel().astype(int)
+        agree = [float((labels == (raw[:, c] > 0).astype(int)).mean()) for c in (0, 1)]
+        by_label = int(np.argmax(agree))
+        # The columns are exact negations, so a usable probe separates them completely.
+        # Anything less means every probe row sat on the decision boundary.
+        label_decisive = abs(agree[0] - agree[1]) > 0.5
+
+        if canary is not None:
+            expected = np.asarray(canary["decision"], dtype=np.float64)
+            # Relative tolerance: decision values reach O(100) on LinearSVC heads, where a
+            # float32 round-trip costs far more than a fixed 1e-3 would allow.
+            scale = max(1.0, float(np.abs(expected).max()))
+            errors = [np.abs(raw[:, c] - expected).max() / scale for c in (0, 1)]
+            by_canary = int(np.argmin(errors))
+            if label_decisive and by_canary != by_label:
+                logger.warning(
+                    f"SVC score canary picks column {by_canary} but the exported labels "
+                    f"pick column {by_label}; trusting the labels."
+                )
+                return by_label
+            if errors[by_canary] > 1e-3:
+                logger.warning(
+                    f"SVC score canary did not match either ONNX column "
+                    f"(best relative residual {errors[by_canary]:.3g})."
+                )
+            return by_canary
+
+        if label_decisive:
+            return by_label
+
+        # Degenerate probe. Fall back to the estimator type, recorded in every svc.json.
+        use_linear = self.metadata.get("use_linear")
+        if use_linear is None:
             logger.warning(
-                f"SVC score canary did not match either ONNX column "
-                f"(best residual {errors[best]:.3g}); falling back to column {best}."
+                "SVC artifact: could not resolve the score column from the exported "
+                "labels and no use_linear flag is present; assuming column 0."
             )
-        return best
+            return 0
+        return 1 if use_linear else 0
 
     def _raw_scores(self, X: np.ndarray) -> np.ndarray:
         """Return shape-(n,) raw decision function scores from ONNX."""
