@@ -534,7 +534,7 @@ class BaseLinearClassifier(BaseEstimator):
         # Extract best hyperparameter from the full-data fit
         regime = self.regime_
         if regime in ("standard", "high_dim"):
-            best_C = float(self._estimator.C_[0])
+            best_C = float(np.ravel(self._estimator.C_)[0])
             logger.info(f"calibrate: regime={regime}  best_C={best_C:.4g}")
         else:  # large
             best_alpha = float(self._estimator.alpha)
