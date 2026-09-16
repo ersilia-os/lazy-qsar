@@ -60,12 +60,6 @@ all = [
 [project.urls]
 "Source Code" = "https://github.com/ersilia-os/lazy-qsar"
 
-[tool.setuptools]
-include-package-data = true
-
-[tool.setuptools.packages.find]
-exclude = ["utilities"]
-
 [project.scripts]
 lazyqsar = "lazyqsar.cli.main:main"
 
