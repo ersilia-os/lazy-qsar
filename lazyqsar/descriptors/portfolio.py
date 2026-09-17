@@ -35,7 +35,7 @@ class DescriptorPortfolio:
     # Public API
     # ------------------------------------------------------------------
 
-    def select(self, smiles_list: list, y=None) -> list:
+    def select(self, smiles_list: list, y=None, precomputed: dict = None) -> list:
         """Return applicable descriptors, optionally screened by proxy CV AUC.
 
         Step 1 — unsupervised gate: ``is_applicable(smiles_list)``
@@ -43,12 +43,25 @@ class DescriptorPortfolio:
                   passes step 1): reference-anchored greedy forward selection
                   using OOF predictions from a 3-fold Random Forest CV.
 
+        Parameters
+        ----------
+        smiles_list : list
+            Compounds to profile.
+        y : array-like, optional
+            Labels. Screening is skipped without them.
+        precomputed : dict, optional
+            ``{descriptor_name: feature_matrix}`` aligned with *smiles_list*. Supplied by
+            callers that have already featurized — the multi-task CLI fit computes each
+            descriptor once over the union of every task, and would otherwise pay for it
+            again per task, turning one featurization pass into one per task.
+
         Returns
         -------
         list of ``(name, descriptor_instance, X_full, proxy_auc)`` tuples where
         ``X_full`` is the raw feature matrix computed during screening (or None),
         and ``proxy_auc`` is the solo OOF AUC (or None when screening was skipped).
         """
+        precomputed = precomputed or {}
         from ..registry import get_descriptor_type
 
         logger.info(
@@ -93,15 +106,27 @@ class DescriptorPortfolio:
                 for name, _ in applicable
             ]
             logger.proxy_screen_table(screen_rows)
-            return [(name, desc, None, None) for name, desc in applicable]
+            # Pass any precomputed matrix straight back so the caller's cache is
+            # still primed when screening is skipped.
+            return [
+                (name, desc, precomputed.get(name), None) for name, desc in applicable
+            ]
 
-        return self._proxy_screen(smiles_list, np.asarray(y, dtype=int), applicable)
+        return self._proxy_screen(
+            smiles_list, np.asarray(y, dtype=int), applicable, precomputed
+        )
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _proxy_screen(self, smiles_list: list, y: np.ndarray, applicable: list) -> list:
+    def _proxy_screen(
+        self,
+        smiles_list: list,
+        y: np.ndarray,
+        applicable: list,
+        precomputed: dict = None,
+    ) -> list:
         from ..preprocessors.classification.prep import Preprocessor
         from sklearn.model_selection import cross_val_predict, StratifiedKFold
         from sklearn.metrics import roc_auc_score
@@ -152,10 +177,14 @@ class DescriptorPortfolio:
         feature_map = {}  # name → X_full (raw, full dataset)
 
         for name, desc in applicable:
-            logger.info(
-                f"  [{name}] Computing features for {len(smiles_list):,} SMILES..."
-            )
-            X_full = desc.transform(smiles_list)
+            X_full = (precomputed or {}).get(name)
+            if X_full is None:
+                logger.info(
+                    f"  [{name}] Computing features for {len(smiles_list):,} SMILES..."
+                )
+                X_full = desc.transform(smiles_list)
+            else:
+                logger.debug(f"  [{name}] Using precomputed features")
             feature_map[name] = X_full
             logger.info(
                 f"  [{name}] Feature matrix: {X_full.shape[0]:,} × {X_full.shape[1]:,}"

@@ -306,7 +306,25 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
             )
         return self._feature_cache[key]
 
-    def fit(self, smiles_list, y):
+    def fit(self, smiles_list, y, precomputed=None, validate=True):
+        """Fit one classifier per applicable descriptor.
+
+        Parameters
+        ----------
+        smiles_list : list of str
+            Training compounds.
+        y : array-like
+            Binary labels.
+        precomputed : dict, optional
+            ``{descriptor_name: feature_matrix}`` aligned with *smiles_list*. Lets a
+            caller that has already featurized skip doing it again — the multi-task CLI
+            fit computes each descriptor once over the union of every task and passes the
+            per-task slice here, which is what keeps that one pass from becoming one per
+            task.
+        validate : bool
+            Parse-check the SMILES. Callers that have already validated a superset can
+            skip the repeat work.
+        """
         import time
         from .agnostic import LazyClassifier
         from .applicability import ApplicabilityDomain
@@ -317,14 +335,17 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
         self._ensemble_cache.clear()
 
         y = np.array(y, dtype=int)
-        validate_smiles(smiles_list)
+        if validate:
+            validate_smiles(smiles_list)
         n = len(smiles_list)
         pos_rate = float(y.mean())
         self.population_prior_ = pos_rate
         self.n_compounds_ = n
         self.n_actives_ = int((y == 1).sum())
 
-        applicable = DescriptorPortfolio(self.mode).select(smiles_list, y=y)
+        applicable = DescriptorPortfolio(self.mode).select(
+            smiles_list, y=y, precomputed=precomputed
+        )
         self.descriptor_types = [name for name, _, _, _ in applicable]
         self.descriptors = [desc for _, desc, _, _ in applicable]
         self.proxy_aucs_ = [pauc for _, _, _, pauc in applicable]
