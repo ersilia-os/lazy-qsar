@@ -96,7 +96,13 @@ def stub_descriptors(monkeypatch):
     mod.StubFeaturizer = StubFeaturizer
     sys.modules[STUB_MODULE] = mod
 
+    # A stubbed descriptor means the pipeline never hands these strings to RDKit, so the
+    # RDKit-backed SMILES check is neither available on a base install nor meaningful here.
+    # The strings are still valid SMILES, so this only removes the dependency, not the check.
+    import lazyqsar.qsar as _qsar
     from lazyqsar import registry
+
+    monkeypatch.setattr(_qsar, "validate_smiles", lambda smiles_list: None)
 
     def register(*names):
         for name in names:

@@ -17,9 +17,8 @@ import tempfile
 
 import numpy as np
 
-from ..descriptors._validate import validate_smiles
 from ..ensemble.runner import get_chunk_size, persist_descriptors
-from ..qsar import LazyClassifierQSAR
+from ..qsar import LazyClassifierQSAR, validate_smiles
 from ..registry import DESCRIPTOR_TYPES, DESCRIPTORS_MODE, get_descriptor_type
 from ..utils.logging import logger
 

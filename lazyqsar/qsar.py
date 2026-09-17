@@ -4,7 +4,6 @@ import os
 import shutil
 import numpy as np
 
-from .descriptors._validate import validate_smiles
 from .ensemble import OUTPUT_NAMES, EnsembleSpec, combine
 from .ensemble.channels import score_smiles_chunkwise
 from .ensemble.runner import get_chunk_size
@@ -32,6 +31,18 @@ def _has_onnx(descriptor_dir):
         if any(f.endswith(".onnx") for f in files):
             return True
     return False
+
+
+def validate_smiles(smiles_list):
+    """Parse-check SMILES, importing RDKit only when actually called.
+
+    Kept out of the module imports so that ``LazyClassifierQSAR`` and ``ArtifactWrapper``
+    can be imported on a base install. RDKit is still required to featurize anything, so
+    a real prediction needs it either way — but importing the class must not.
+    """
+    from .descriptors._validate import validate_smiles as _validate
+
+    return _validate(smiles_list)
 
 
 def _optional(fn, X):

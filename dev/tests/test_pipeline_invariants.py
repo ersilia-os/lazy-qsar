@@ -16,9 +16,9 @@ Three groups:
 * **numerics** — golden values for every ``predict_type``, so any change to the
   aggregation rule shows up as an explicit fixture update in review.
 
-The fit-side tests need RDKit because ``api.classifier_fit`` validates SMILES at module
-import; they skip on the CI install and run locally. The predict-side tests run
-everywhere, which is where the refactor risk is concentrated.
+Everything here runs on the CI install: the stub featurizer replaces the descriptors, and
+SMILES validation is neutralised with it, so neither RDKit nor the deep-learning
+descriptors are needed.
 """
 
 import json
@@ -260,7 +260,6 @@ def test_fit_featurizes_the_union_once(tmp_path, stub_descriptors, monkeypatch):
     unique compounds. For a 50-task run in slow mode that is the difference between one
     featurization pass and fifty.
     """
-    pytest.importorskip("rdkit")
     from lazyqsar.api.classifier_fit import fit
 
     register = stub_descriptors
@@ -335,7 +334,6 @@ def test_cli_fit_writes_ensemble_checkpoints(tmp_path, stub_descriptors):
     portfolio, no applicability domain and none of the weighting fields, so a CLI
     checkpoint and a Python checkpoint were different kinds of object.
     """
-    pytest.importorskip("rdkit")
     from lazyqsar.api.classifier_fit import fit
 
     register = stub_descriptors
@@ -372,7 +370,6 @@ def test_cli_fit_writes_ensemble_checkpoints(tmp_path, stub_descriptors):
 
 def test_cli_fit_rejects_an_unknown_mode(tmp_path):
     """fit(mode=...) used to default to "default", which is not a valid mode."""
-    pytest.importorskip("rdkit")
     from lazyqsar.api.classifier_fit import fit
 
     with pytest.raises(ValueError, match="Unknown mode"):
@@ -380,7 +377,6 @@ def test_cli_fit_rejects_an_unknown_mode(tmp_path):
 
 
 def test_cli_fit_leaves_no_scratch_in_the_model_dir(tmp_path, stub_descriptors):
-    pytest.importorskip("rdkit")
     from lazyqsar.api.classifier_fit import fit
 
     register = stub_descriptors
