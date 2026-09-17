@@ -68,10 +68,12 @@ from lazyqsar.qsar import LazyClassifierQSAR
 model = LazyClassifierQSAR(mode="slow") # default is "slow"
 model.fit(smiles_list=smiles_train, y=y_train)
 
-ranks = model.predict_rank(smiles_list=smiles_test)[:, 1]  # percentile rank vs training set
+ranks = model.predict_rank(smiles_list=smiles_test)[:, 1]  # percentile within the model's own training distribution
 ```
 
-Other prediction methods include `predict_proba`, `predict`, `predict_lift`, and more — see [docs/internals.md](docs/internals.md#part-8-prediction-methods) for the full list.
+Other prediction methods are `predict_proba`, `predict_logit`, `predict_score`, `predict_lift` and `predict` (binary labels). All six share one implementation with the CLI, so a checkpoint gives the same answer through either entry point.
+
+> `predict_rank` is a percentile against the *training* distribution of that model, so ranks are not comparable between models and compress on chemistry unlike the training set. Use `predict_proba` when you need a calibrated value.
 
 ### LazyClassifier (custom descriptors)
 
@@ -135,7 +137,16 @@ Pass `--models_txt` to train a subset of tasks (one CSV stem per line); without 
 lazyqsar predict --input $INPUT_CSV --model $MODEL_DIR --output $OUTPUT_CSV [--models_txt FILE] [--predict_type TYPE]
 ```
 
-The output CSV contains one column per task, ordered alphabetically by task name, or filtered and ordered by `--models_txt` at predict time. `--predict_type` controls the output format: `proba` (default), `rank`, `logit`, `lift`, `score`, or `binary`.
+The output CSV contains one column per task, ordered alphabetically by task name, or filtered and ordered by `--models_txt` at predict time. `--predict_type` controls the output format:
+
+| type | meaning |
+|------|---------|
+| `proba` (default) | calibrated probability of the positive class |
+| `rank` | percentile within the model's own training distribution |
+| `logit` | log-odds of the calibrated probability |
+| `lift` | probability divided by the training-set positive rate |
+| `score` | raw, pre-calibration score |
+| `binary` | 0/1 label, thresholded at probability 0.5 |
 
 ## How it works
 
@@ -199,9 +210,9 @@ outputs, header = predict(model_dir=checkpoints_dir, smiles=smiles_list, predict
 write_out(outputs, header, output_file, np.float32)
 ```
 
-This function computes descriptors once per descriptor type and reuses them across all tasks, making it suitable for scoring large compound libraries. `predict_type` controls the output format and is available in both the Python API and the CLI (`--predict_type`).
+Descriptors are computed once per descriptor type and shared across every task, and the whole input is streamed in chunks rather than held in memory, so this scales to large compound libraries. Set `LAZYQSAR_PREDICT_CHUNK` to change the batch size (default 1000).
 
-`model_dir` also accepts a `dict[str, str]` mapping **column names to model directories**, for scoring multiple targets stored under separate paths — see [docs/internals.md](docs/internals.md) for details.
+`model_dir` also accepts a `dict[str, str]` mapping **column names to model directories**, for scoring multiple targets stored under separate paths. Column names and their order are preserved exactly as given.
 
 ## Disclaimer
 
