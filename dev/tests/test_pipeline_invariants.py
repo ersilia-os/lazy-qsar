@@ -168,13 +168,13 @@ def test_dict_and_parent_forms_agree(multitask_checkpoint):
     assert np.array_equal(R_parent, R_dict)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="classifier_predict.py:200 inverts {column: path} into {path: column}, so two "
-    "columns pointing at one directory collapse and a column is dropped with no error. "
-    "Fixed when the dict form is normalised to a list of (column, dir) pairs.",
-)
 def test_dict_api_allows_two_columns_on_one_directory(multitask_checkpoint):
+    """Two columns may name one directory.
+
+    The dict used to be inverted to {path: column}, so the second entry overwrote the
+    first and a column vanished from the output with no error. Sources are now a list of
+    pairs.
+    """
     root, _, smiles, _ = multitask_checkpoint
     col_map = {
         "primary": os.path.join(root, "taskA"),
@@ -214,12 +214,12 @@ def test_predict_type_output_is_stable(multitask_checkpoint, predict_type):
         assert R.min() >= 0.0
 
 
-def test_binary_is_currently_a_fraction_not_a_label(tmp_path, stub_descriptors):
-    """Today the CLI averages per-descriptor 0/1 labels, so `binary` is not binary.
+def test_binary_is_a_label(tmp_path, stub_descriptors):
+    """`binary` is a 0/1 label.
 
-    With three descriptors the emitted values are {0, 1/3, 2/3, 1}. Pinned here because
-    the unification turns this into a true 0/1 label, and that is a behaviour change the
-    changelog has to call out rather than something that should slip through.
+    It used to be a mean of per-descriptor labels, so a three-descriptor model emitted
+    {0, 1/3, 2/3, 1}. The label is now taken once from the pooled probability, which is
+    what the Python API has always done.
     """
     register = stub_descriptors
     counter = register("morgan", "rdkit", "cddd")
@@ -234,11 +234,9 @@ def test_binary_is_currently_a_fraction_not_a_label(tmp_path, stub_descriptors):
 
     R, _ = predict(root, smiles=smiles[:40], predict_type="binary")
 
-    observed = set(np.unique(R).round(6).tolist())
-    assert not observed <= {0.0, 1.0}, (
-        "binary already emits only 0/1 — the aggregation has changed, update the changelog"
+    assert set(np.unique(R).tolist()) <= {0.0, 1.0}, (
+        f"binary emitted non-label values: {np.unique(R)}"
     )
-    assert observed <= {0.0, round(1 / 3, 6), round(2 / 3, 6), 1.0}
 
 
 def test_task_metadata_keys_present(multitask_checkpoint):
