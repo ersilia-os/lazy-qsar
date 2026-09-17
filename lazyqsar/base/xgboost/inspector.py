@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from typing import Optional
 
 import numpy as np
-from scipy import stats
 
 
 @dataclass
@@ -154,6 +153,12 @@ def inspect(X, y, task: Optional[str] = None) -> DatasetProfile:
             imbalance_ratio=imbalance_ratio,
         )
     else:
+        # Imported here, not at module scope. SciPy is a fit-time dependency, but this
+        # module is reached from lazyqsar.artifacts via base.svc, so a module-level
+        # import makes the whole inference path unimportable on a base install — where
+        # Ersilia Model Hub models actually run.
+        from scipy import stats
+
         y_skewness = float(stats.skew(y))
         y_all_positive = bool((y > 0).all())
         return DatasetProfile(

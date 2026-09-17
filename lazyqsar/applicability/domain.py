@@ -46,6 +46,10 @@ import numpy as np
 from sklearn.decomposition import PCA
 from sklearn.impute import SimpleImputer
 
+from .artifact import (  # noqa: F401  (re-exported; moved to keep it sklearn-free)
+    ApplicabilityDomainArtifact,
+)
+
 
 _N_CAL_KNOTS = 200
 
@@ -272,57 +276,3 @@ class ApplicabilityDomain:
         }
         with open(os.path.join(directory, "applicability_domain.json"), "w") as fh:
             json.dump(meta, fh, indent=2)
-
-
-# ---------------------------------------------------------------------------
-# Inference-only artifact (onnxruntime only)
-# ---------------------------------------------------------------------------
-
-
-class ApplicabilityDomainArtifact:
-    """
-    Inference-only applicability domain loaded from a saved ONNX model.
-
-    Requires only onnxruntime and numpy — no sklearn, no scipy.
-    """
-
-    def __init__(self) -> None:
-        self._session = None
-        self.metadata: dict = {}
-
-    @classmethod
-    def load(cls, directory: str) -> "ApplicabilityDomainArtifact":
-        inst = cls()
-        json_path = os.path.join(directory, "applicability_domain.json")
-        if not os.path.isfile(json_path):
-            raise FileNotFoundError(f"No AD metadata found at {json_path!r}")
-        with open(json_path) as fh:
-            inst.metadata = json.load(fh)
-
-        import onnxruntime as rt
-
-        onnx_path = os.path.join(directory, "applicability_domain.onnx")
-        inst._session = rt.InferenceSession(
-            onnx_path, providers=["CPUExecutionProvider"]
-        )
-        return inst
-
-    def score(self, X) -> np.ndarray:
-        """
-        Return AD scores in [0, 1] for each row of X.
-
-        Parameters
-        ----------
-        X : array-like of shape (n_samples, n_features)
-            Feature matrix — same featurizer as used during fit.
-
-        Returns
-        -------
-        scores : np.ndarray of shape (n_samples,), dtype float32
-            1.0 = fully in-domain, 0.0 = fully out-of-domain.
-        """
-        if hasattr(X, "toarray"):
-            X = X.toarray()
-        X_f32 = np.asarray(X, dtype=np.float32)
-        input_name = self._session.get_inputs()[0].name
-        return self._session.run(None, {input_name: X_f32})[0]

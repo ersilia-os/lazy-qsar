@@ -1,14 +1,25 @@
-import json
-import os
+"""Fit one LazyQSAR model per task from a directory of labelled CSVs.
+
+The CLI training entry point. Each task becomes a :class:`~lazyqsar.qsar.LazyClassifierQSAR`
+— the same object the Python API fits — so a checkpoint means the same thing whichever
+way it was produced.
+
+Descriptors are computed once over the union of every task's compounds and sliced per
+task. That is the reason this module exists rather than simply looping over
+``LazyClassifierQSAR.fit``: for a fifty-task run in slow mode it is the difference
+between one featurization pass and fifty, and featurization is roughly 93% of the work.
+"""
+
 import csv
+import os
 import shutil
 import tempfile
 
 import numpy as np
 
-from ..agnostic import LazyClassifier
-from ..descriptors._validate import validate_smiles
-from ..qsar import DESCRIPTOR_TYPES, DESCRIPTORS_MODE, get_descriptor_type
+from ..ensemble.runner import get_chunk_size, persist_descriptors
+from ..qsar import LazyClassifierQSAR, validate_smiles
+from ..registry import DESCRIPTOR_TYPES, DESCRIPTORS_MODE, get_descriptor_type
 from ..utils.logging import logger
 
 
@@ -62,10 +73,29 @@ def get_task_data(data_dir, task_name):
     return smiles_list, np.array(y, dtype=int)
 
 
-def fit(data_dir: str, model_dir: str, models_txt: str = None, mode: str = "default"):
+def fit(data_dir: str, model_dir: str, models_txt: str = None, mode: str = "slow"):
+    """Fit and save one model per CSV in *data_dir*.
 
+    Parameters
+    ----------
+    data_dir : str
+        One CSV per task: SMILES in the first column, a binary label in the second, with
+        a header row. The file stem becomes the task name.
+    model_dir : str
+        Output directory, one subdirectory per task. Must not already exist.
+    models_txt : str, optional
+        One task name per line, to fit a subset.
+    mode : str
+        ``"fast"`` (Morgan only) or ``"slow"`` (all five descriptors, pruned by the
+        portfolio).
+    """
     data_dir = os.path.abspath(data_dir)
     model_dir = os.path.abspath(model_dir)
+
+    if mode not in DESCRIPTORS_MODE:
+        raise ValueError(
+            f"Unknown mode {mode!r}. Choose from: {sorted(DESCRIPTORS_MODE)}"
+        )
 
     logger.info(
         f"Fitting models in mode '{mode}' | data: {data_dir} | output: {model_dir}"
@@ -86,103 +116,52 @@ def fit(data_dir: str, model_dir: str, models_txt: str = None, mode: str = "defa
     logger.info(f"Tasks to fit: {task_names}")
 
     descriptor_types = DESCRIPTORS_MODE[mode]
-
-    all_smiles = read_all_smiles(data_dir)
-    validate_smiles(all_smiles)
-    all_smiles2idx = {s: i for i, s in enumerate(all_smiles)}
-    logger.info(f"Found {len(all_smiles)} unique SMILES across all tasks")
-
     for descriptor_type in descriptor_types:
         if descriptor_type not in DESCRIPTOR_TYPES:
             raise Exception(f"Descriptor type {descriptor_type} is not supported.")
-        logger.info(f"Computing descriptors: {descriptor_type}")
-        descriptor = get_descriptor_type(descriptor_type)()
-        X = descriptor.transform(all_smiles)
+
+    all_smiles = read_all_smiles(data_dir)
+    validate_smiles(all_smiles)
+    row_of = {s: i for i, s in enumerate(all_smiles)}
+    logger.info(f"Found {len(all_smiles)} unique SMILES across all tasks")
+
+    data = {t: get_task_data(data_dir, t) for t in task_names}
+
+    # Scratch lives outside model_dir: a crash must not strew .npy files among the
+    # checkpoints, which is what the previous in-place staging did.
+    scratch = os.environ.get("LAZYQSAR_FIT_SCRATCH") or tempfile.mkdtemp(
+        prefix="lazyqsar-fit-"
+    )
+    os.makedirs(scratch, exist_ok=True)
+    chunk_size = get_chunk_size()
+    try:
+        # Phase 1 -- featurize the union once per descriptor.
+        for descriptor_type in descriptor_types:
+            logger.info(f"Computing descriptors: {descriptor_type}")
+            descriptor = get_descriptor_type(descriptor_type)()
+            persist_descriptors(
+                descriptor,
+                all_smiles,
+                os.path.join(scratch, f"{descriptor_type}.npy"),
+                chunk_size,
+            )
+            del descriptor
+
+        # Phase 2 -- one model per task, reading its rows out of the staged matrices.
+        # The loop is per task rather than per descriptor because the portfolio and the
+        # active-descriptor mask are joint decisions across all descriptors of one task.
         for task_name in task_names:
-            model_subdir = os.path.join(model_dir, task_name, descriptor_type)
-            if not os.path.exists(model_subdir):
-                os.makedirs(model_subdir)
-            descriptor.save(model_subdir)
-            shutil.copy(
-                os.path.join(model_subdir, "featurizer.json"),
-                os.path.join(model_dir, f"{descriptor_type}.json"),
-            )
-        np.save(os.path.join(model_dir, f"{descriptor_type}.npy"), X)
-
-    data = {}
-    for task_name in task_names:
-        smiles_list, y = get_task_data(data_dir, task_name)
-        data[task_name] = (smiles_list, y)
-
-    # Collect per-(task, descriptor) metadata to build the task-level metadata.json
-    task_descriptor_meta = {task: {} for task in task_names}
-
-    for descriptor_type in descriptor_types:
-        X = np.load(os.path.join(model_dir, f"{descriptor_type}.npy"))
-        for task_name in task_names:
-            logger.info(
-                f"Fitting task '{task_name}' with descriptor '{descriptor_type}'"
-            )
-            idxs = [all_smiles2idx[s] for s in data[task_name][0]]
-            y = data[task_name][1]
-            X_task = X[idxs]
-            model = LazyClassifier()
-            model.fit(X=X_task, y=y)
-            model_subdir = os.path.join(model_dir, task_name, descriptor_type)
-            model.save(model_subdir)
-            shutil.copy(
-                os.path.join(model_dir, f"{descriptor_type}.json"),
-                os.path.join(model_subdir, "featurizer.json"),
-            )
-            inner = model._model
-            task_descriptor_meta[task_name][descriptor_type] = {
-                "oof_auc": model.oof_auc_,
-                "train_auc": model.train_auc_,
-                "decision_cutoff_raw": inner.decision_cutoff_raw_,
-                "decision_cutoff_proba": inner.decision_cutoff_proba_,
-                "decision_cutoff_rank": inner.decision_cutoff_rank_,
-                "portfolio": inner.portfolio,
-                "num_batches": len(inner.models),
+            smiles_list, y = data[task_name]
+            rows = [row_of[s] for s in smiles_list]
+            precomputed = {
+                d: np.load(os.path.join(scratch, f"{d}.npy"), mmap_mode="r")[rows]
+                for d in descriptor_types
             }
-        os.remove(os.path.join(model_dir, f"{descriptor_type}.json"))
-        os.remove(os.path.join(model_dir, f"{descriptor_type}.npy"))
-
-    # Write task-level metadata.json (aggregated across descriptors)
-    for task_name in task_names:
-        _, y = data[task_name]
-        desc_meta = task_descriptor_meta[task_name]
-        population_prior = float(np.mean(y == 1))
-
-        avg_raw = float(np.mean([m["decision_cutoff_raw"] for m in desc_meta.values()]))
-        avg_proba = float(
-            np.mean([m["decision_cutoff_proba"] for m in desc_meta.values()])
-        )
-        avg_rank = float(
-            np.mean([m["decision_cutoff_rank"] for m in desc_meta.values()])
-        )
-        _p_clip = float(np.clip(avg_proba, 1e-7, 1.0 - 1e-7))
-
-        meta = {
-            "mode": mode,
-            "descriptor_types": descriptor_types,
-            "n_compounds": int(len(y)),
-            "n_actives": int((y == 1).sum()),
-            "ratio_actives": population_prior,
-            "population_prior": population_prior,
-            "portfolio": desc_meta[descriptor_types[0]]["portfolio"],
-            "num_batches": {d: m["num_batches"] for d, m in desc_meta.items()},
-            "decision_cutoff_raw": avg_raw,
-            "decision_cutoff_proba": avg_proba,
-            "decision_cutoff_rank": avg_rank,
-            "decision_cutoff_logit": float(np.log(_p_clip / (1.0 - _p_clip))),
-            "decision_cutoff_lift": float(avg_proba / population_prior)
-            if population_prior > 0
-            else None,
-            "oof_aucs": {d: m["oof_auc"] for d, m in desc_meta.items()},
-            "train_aucs": {d: m["train_auc"] for d, m in desc_meta.items()},
-        }
-        task_dir = os.path.join(model_dir, task_name)
-        with open(os.path.join(task_dir, "metadata.json"), "w") as f:
-            json.dump(meta, f, indent=4)
+            model = LazyClassifierQSAR(mode=mode)
+            model.fit(smiles_list, y, precomputed=precomputed, validate=False)
+            model.save_raw(os.path.join(model_dir, task_name))
+            del precomputed, model
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
 
     logger.success(f"All models saved to {model_dir}")
