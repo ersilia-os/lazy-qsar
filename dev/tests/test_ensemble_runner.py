@@ -308,3 +308,59 @@ def test_inactive_descriptors_are_skipped_entirely(tmp_path, stub_descriptors):
         f"expected only the active descriptor to be featurized, got {counter.calls}"
     )
     assert results[0].weights.shape[1] == 1
+
+
+def test_artifact_wrapper_never_featurizes_the_whole_list(
+    multitask_checkpoint, monkeypatch
+):
+    """The Python API must stream too, not transform everything up front.
+
+    ``ArtifactWrapper`` used to call ``transform(smiles_list)`` on the full input, so
+    scoring a large library from Python needed the entire descriptor matrix in memory --
+    roughly 8 GB for a million compounds against a 2048-dimensional descriptor. The CLI
+    path had always chunked; this is the Python path catching up.
+    """
+    from lazyqsar.qsar import LazyClassifierQSAR
+
+    root, tasks, smiles, counter = multitask_checkpoint
+    query = smiles[:40]
+    monkeypatch.setenv("LAZYQSAR_PREDICT_CHUNK", "9")
+
+    counter.reset()
+    LazyClassifierQSAR.load(os.path.join(root, tasks[0])).predict_proba(query)
+
+    assert counter.calls, "no featurization happened at all"
+    assert max(counter.calls) <= 9, (
+        f"largest transform call was {max(counter.calls)} rows for chunk size 9 — "
+        "the whole list is still being featurized at once"
+    )
+    assert sum(counter.calls) == len(query)
+
+
+def test_artifact_wrapper_chunking_is_inert_at_realistic_sizes(
+    multitask_checkpoint, monkeypatch
+):
+    """Chunk size must not change results for chunk sizes anyone would actually use.
+
+    Not asserted for pathologically small chunks. onnxruntime selects different kernels
+    and accumulation orders by batch size, moving raw head outputs by ~1e-7, and the
+    applicability-domain weighting amplifies that: it feeds ranks through a 20-knot
+    interpolation whose local slope can be steep, then mixes in logit space. With a chunk
+    of 7 the end-to-end drift reaches ~1e-4. At the default of 1000, and at 500, measured
+    output on real checkpoints is bit-identical to scoring in one pass.
+    """
+    from lazyqsar.qsar import LazyClassifierQSAR
+
+    root, tasks, smiles, _ = multitask_checkpoint
+    query = smiles[:60]
+    task_dir = os.path.join(root, tasks[0])
+
+    monkeypatch.setenv("LAZYQSAR_PREDICT_CHUNK", "1000000")
+    reference = LazyClassifierQSAR.load(task_dir).predict_proba(query)
+
+    for chunk in ("1000", "500", "60"):
+        monkeypatch.setenv("LAZYQSAR_PREDICT_CHUNK", chunk)
+        got = LazyClassifierQSAR.load(task_dir).predict_proba(query)
+        assert np.array_equal(reference, got), (
+            f"chunk={chunk} changed the result by {np.abs(reference - got).max():.2e}"
+        )

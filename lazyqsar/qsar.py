@@ -6,6 +6,8 @@ import numpy as np
 
 from .descriptors._validate import validate_smiles
 from .ensemble import OUTPUT_NAMES, EnsembleSpec, combine
+from .ensemble.channels import score_smiles_chunkwise
+from .ensemble.runner import get_chunk_size
 from .registry import (  # noqa: F401  (re-exported for backwards compatibility)
     DESCRIPTOR_TYPES,
     DESCRIPTORS_MODE,
@@ -228,14 +230,31 @@ class ArtifactWrapper(_EnsemblePredictMixin):
         if not active_indices:
             active_indices = list(range(len(self.descriptors)))
 
+        # Featurize and score in chunks rather than transforming the whole list first.
+        # A million compounds against a 2048-dimensional descriptor is ~8 GB of float32,
+        # and this is the entry point used to score large libraries from Python.
+        chunk_size = get_chunk_size()
         y_hats, score_preds, rank_preds, ad_scores = [], [], [], []
         for i in active_indices:
-            X = self.descriptors[i].transform(smiles_list)
-            y_hats.append(np.array(self.artifacts[i].predict_proba(X))[:, 1])
-            score_preds.append(_optional(self.artifacts[i].predict_score, X))
-            rank_preds.append(_optional(self.artifacts[i].predict_rank, X))
-            if self.ad_artifacts is not None and self.ad_artifacts[i] is not None:
-                ad_scores.append(self.ad_artifacts[i].score(X))
+            ad = (
+                self.ad_artifacts[i]
+                if self.ad_artifacts is not None and self.ad_artifacts[i] is not None
+                else None
+            )
+            channels = score_smiles_chunkwise(
+                self.descriptors[i],
+                self.artifacts[i],
+                ad,
+                smiles_list,
+                chunk_size,
+                want={"y", "r", "s", "a"},
+                logger=logger,
+            )
+            y_hats.append(channels.y)
+            score_preds.append(channels.s)
+            rank_preds.append(channels.r)
+            if ad is not None:
+                ad_scores.append(channels.a)
 
         names = self.descriptor_types or [str(i) for i in range(len(self.descriptors))]
         spec = _spec_from_attributes(

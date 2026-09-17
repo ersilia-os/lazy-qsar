@@ -73,6 +73,59 @@ def _positive_column(fn, X, label, logger=None):
         return None
 
 
+def _score_chunks(chunks, artifact, ad_artifact, want, logger=None):
+    """Run every requested channel over an iterable of descriptor-matrix chunks.
+
+    Shared by both channel sources: one reads a persisted matrix off disk, the other
+    featurizes on the fly. Neither ever holds more than one chunk.
+    """
+    parts = {k: [] for k in ("y", "r", "s", "a")}
+    unavailable = set()
+
+    for X_chunk in chunks:
+        parts["y"].append(np.asarray(artifact.predict_proba(X_chunk))[:, 1])
+        if "r" in want:
+            r = _positive_column(artifact.predict_rank, X_chunk, "predict_rank", logger)
+            if r is None:
+                unavailable.add("r")
+            else:
+                parts["r"].append(r)
+        if "s" in want:
+            s = _positive_column(
+                artifact.predict_score, X_chunk, "predict_score", logger
+            )
+            if s is None:
+                unavailable.add("s")
+            else:
+                parts["s"].append(s)
+        if "a" in want and ad_artifact is not None:
+            parts["a"].append(ad_artifact.score(X_chunk))
+        del X_chunk
+
+    def joined(key):
+        if key in unavailable or not parts[key]:
+            return None
+        return np.concatenate(parts[key]).astype(np.float32, copy=False)
+
+    return Channels(y=joined("y"), r=joined("r"), s=joined("s"), a=joined("a"))
+
+
+def _memmap_chunks(x_path, chunk_size):
+    X_mm = np.load(x_path, mmap_mode="r")
+    try:
+        for start in range(0, X_mm.shape[0], chunk_size):
+            # ascontiguousarray materialises just this slice; handing the memmap itself
+            # to onnxruntime or the AD artifact would pull the whole matrix into memory.
+            yield np.ascontiguousarray(X_mm[start : start + chunk_size])
+    finally:
+        del X_mm
+
+
+def _featurized_chunks(featurizer, smiles_list, chunk_size):
+    for start in range(0, len(smiles_list), chunk_size):
+        yield featurizer.transform(smiles_list[start : start + chunk_size])
+
+
 def score_chunkwise(artifact, ad_artifact, x_path, chunk_size, want, logger=None):
     """Score a persisted descriptor matrix, returning the requested channels.
 
@@ -98,43 +151,26 @@ def score_chunkwise(artifact, ad_artifact, x_path, chunk_size, want, logger=None
         memory a multi-task run holds; :func:`combine` upcasts before any arithmetic, so
         the result is unaffected.
     """
-    X_mm = np.load(x_path, mmap_mode="r")
-    n_total = X_mm.shape[0]
+    return _score_chunks(
+        _memmap_chunks(x_path, chunk_size), artifact, ad_artifact, want, logger
+    )
 
-    parts = {k: [] for k in ("y", "r", "s", "a")}
-    unavailable = set()
 
-    for start in range(0, n_total, chunk_size):
-        end = min(start + chunk_size, n_total)
-        # ascontiguousarray materialises just this slice; handing the memmap itself to
-        # onnxruntime or the AD artifact would pull the whole matrix into memory.
-        X_chunk = np.ascontiguousarray(X_mm[start:end])
+def score_smiles_chunkwise(
+    featurizer, artifact, ad_artifact, smiles_list, chunk_size, want, logger=None
+):
+    """Featurize and score in one pass, never holding the whole descriptor matrix.
 
-        parts["y"].append(np.asarray(artifact.predict_proba(X_chunk))[:, 1])
-        if "r" in want:
-            r = _positive_column(artifact.predict_rank, X_chunk, "predict_rank", logger)
-            if r is None:
-                unavailable.add("r")
-            else:
-                parts["r"].append(r)
-        if "s" in want:
-            s = _positive_column(
-                artifact.predict_score, X_chunk, "predict_score", logger
-            )
-            if s is None:
-                unavailable.add("s")
-            else:
-                parts["s"].append(s)
-        if "a" in want and ad_artifact is not None:
-            parts["a"].append(ad_artifact.score(X_chunk))
-
-        del X_chunk
-
-    del X_mm
-
-    def joined(key):
-        if key in unavailable or not parts[key]:
-            return None
-        return np.concatenate(parts[key]).astype(np.float32, copy=False)
-
-    return Channels(y=joined("y"), r=joined("r"), s=joined("s"), a=joined("a"))
+    For a caller that already has the featurizer and the artifact in memory and is
+    scoring one model, so there is nothing to gain from staging the matrix on disk. The
+    previous behaviour — featurize everything, then score — needed roughly
+    ``n_samples x n_features x 4`` bytes, which is about 8 GB for a million compounds
+    against a 2048-dimensional descriptor.
+    """
+    return _score_chunks(
+        _featurized_chunks(featurizer, smiles_list, chunk_size),
+        artifact,
+        ad_artifact,
+        want,
+        logger,
+    )
