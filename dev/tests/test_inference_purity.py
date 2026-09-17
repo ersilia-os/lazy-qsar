@@ -39,6 +39,7 @@ _ARTIFACTS = textwrap.dedent(
     import lazyqsar.registry               # noqa: F401
     import lazyqsar.applicability          # noqa: F401
     import lazyqsar.ensemble               # noqa: F401
+    import lazyqsar.ensemble.runner        # noqa: F401
 
     assert rank_from_knots(0.5, np.array([0.0, 0.5, 1.0])) > 0
     print("OK")
