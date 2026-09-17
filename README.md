@@ -39,9 +39,9 @@ You can install optional extras depending on your use case:
 
 | Extra | Command | Adds |
 |-------|---------|------|
-| `fit` | `pip install -e .[fit]` | Training dependencies (scikit-learn, XGBoost, scipy, ONNX conversion tools) |
-| `descriptors` | `pip install -e .[descriptors]` | Built-in molecular descriptors (RDKit, FPSim2, deep-learning models) |
-| `all` | `pip install -e .[all]` | Everything above |
+| `fit` | `pip install -e ".[fit]"` | Training dependencies (scikit-learn, XGBoost, scipy, ONNX conversion tools) |
+| `descriptors` | `pip install -e ".[descriptors]"` | Built-in molecular descriptors (RDKit, FPSim2, deep-learning models) |
+| `all` | `pip install -e ".[all]"` | Everything above |
 
 > CPU-only deployments where pip would otherwise pull the CUDA torch wheel (~3 GB) can pass `--cpu-torch` to force-reinstall torch from PyTorch's CPU index: `lazyqsar setup --descriptors --cpu-torch`.
 
