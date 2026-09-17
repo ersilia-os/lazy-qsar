@@ -15,7 +15,7 @@ from rich.progress import (
 )
 
 from ..agnostic import LazyClassifier
-from ..qsar import get_descriptor_type
+from ..registry import get_descriptor_type
 from ..utils.logging import logger
 
 

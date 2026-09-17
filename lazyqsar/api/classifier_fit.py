@@ -8,7 +8,7 @@ import numpy as np
 
 from ..agnostic import LazyClassifier
 from ..descriptors._validate import validate_smiles
-from ..qsar import DESCRIPTOR_TYPES, DESCRIPTORS_MODE, get_descriptor_type
+from ..registry import DESCRIPTOR_TYPES, DESCRIPTORS_MODE, get_descriptor_type
 from ..utils.logging import logger
 
 

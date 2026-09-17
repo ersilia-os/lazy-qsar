@@ -5,29 +5,12 @@ import shutil
 import numpy as np
 
 from .descriptors._validate import validate_smiles
+from .registry import (  # noqa: F401  (re-exported for backwards compatibility)
+    DESCRIPTOR_TYPES,
+    DESCRIPTORS_MODE,
+    get_descriptor_type,
+)
 from .utils.logging import logger
-
-
-DESCRIPTOR_TYPES = {
-    "chemeleon": ("lazyqsar.descriptors.chemeleon", "ChemeleonDescriptor"),
-    "morgan": ("lazyqsar.descriptors.morgan", "MorganFingerprint"),
-    "rdkit": ("lazyqsar.descriptors.rdkit_descriptors", "RDKitDescriptor"),
-    "cddd": ("lazyqsar.descriptors.cddd", "ContinuousDataDrivenDescriptor"),
-    "clamp": ("lazyqsar.descriptors.clamp", "ClampDescriptor"),
-}
-
-DESCRIPTORS_MODE = {
-    "fast": ["morgan"],
-    "slow": ["chemeleon", "morgan", "rdkit", "cddd", "clamp"],
-}
-
-DESCRIPTORS_MODE = {k: sorted(v) for k, v in DESCRIPTORS_MODE.items()}
-
-
-def get_descriptor_type(descriptor_name):
-    module_name, class_name = DESCRIPTOR_TYPES[descriptor_name]
-    module = __import__(module_name, fromlist=[class_name])
-    return getattr(module, class_name)
 
 
 def _build_weight_matrix(

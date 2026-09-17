@@ -23,7 +23,7 @@ class DescriptorPortfolio:
     """
 
     def __init__(self, mode: str):
-        from ..qsar import DESCRIPTORS_MODE
+        from ..registry import DESCRIPTORS_MODE
 
         assert mode in ("fast", "slow"), (
             f"Mode '{mode}' not recognized. Choose from 'fast' or 'slow'."
@@ -49,7 +49,7 @@ class DescriptorPortfolio:
         ``X_full`` is the raw feature matrix computed during screening (or None),
         and ``proxy_auc`` is the solo OOF AUC (or None when screening was skipped).
         """
-        from ..qsar import get_descriptor_type
+        from ..registry import get_descriptor_type
 
         logger.info(
             f"Descriptor portfolio — mode='{self.mode}', "
