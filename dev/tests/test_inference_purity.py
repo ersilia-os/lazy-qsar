@@ -16,7 +16,7 @@ import textwrap
 _BLOCKER = """
     import sys
 
-    BANNED = {"sklearn", "xgboost", "rdkit", "torch", "chemprop"}
+    BANNED = {"sklearn", "xgboost", "rdkit", "torch", "chemprop", "scipy", "joblib"}
 
     class Blocker:
         # find_spec, not find_module: the latter is not an import hook on 3.12+.
