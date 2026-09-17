@@ -117,7 +117,11 @@ class EnsembleSpec:
             )
 
         prior = metadata.get("population_prior", 0.5)
-        cutoff = metadata.get("decision_cutoff_proba")
+        # decision_cutoff is deliberately NOT read from metadata["decision_cutoff_proba"].
+        # That learned, balanced-accuracy-optimal threshold exists in every checkpoint but
+        # has never been used by either prediction path, and adopting it would move the
+        # binary output on every deployed model. Whether to switch is its own change, with
+        # its own held-out evaluation; until then binary means proba >= 0.5 as it always has.
 
         return (
             cls(
@@ -133,9 +137,6 @@ class EnsembleSpec:
                     else None
                 ),
                 population_prior=float(prior if prior is not None else 0.5),
-                decision_cutoff=float(
-                    cutoff if cutoff is not None else _DEFAULT_CUTOFF
-                ),
             ),
             active_names,
         )
