@@ -288,3 +288,43 @@ def test_fit_featurizes_the_union_once(tmp_path, stub_descriptors, monkeypatch):
         f"featurized {counter.total_rows()} rows for a union of {union} — "
         "descriptor reuse across tasks at fit time has been lost"
     )
+
+
+# ---------------------------------------------------------------------------
+# Loader dispatch
+# ---------------------------------------------------------------------------
+
+
+def test_load_returns_the_onnx_wrapper(multitask_checkpoint):
+    """A checkpoint containing ONNX graphs must load through the ONNX path.
+
+    The graphs live under ``<descriptor>/batch_0/``, not directly in the descriptor
+    directory, so a non-recursive check never matched and every checkpoint — including
+    every deployed one — silently fell through to the raw loader instead.
+    """
+    from lazyqsar.qsar import ArtifactWrapper, LazyClassifierQSAR
+
+    root, tasks, _, _ = multitask_checkpoint
+    loaded = LazyClassifierQSAR.load(os.path.join(root, tasks[0]))
+    assert isinstance(loaded, ArtifactWrapper)
+
+
+def test_both_loaders_agree_on_the_weighting_aucs(multitask_checkpoint):
+    """load_raw and load_onnx must read the same skill statistic.
+
+    They disagreed: load_onnx used quality_aucs, load_raw used plain oof_aucs, so the
+    same checkpoint was weighted differently depending on which loader ran.
+    """
+    from lazyqsar.qsar import LazyClassifierQSAR
+
+    root, tasks, smiles, _ = multitask_checkpoint
+    task_dir = os.path.join(root, tasks[0])
+
+    wrapper = LazyClassifierQSAR.load_onnx(task_dir)
+    raw = LazyClassifierQSAR.load_raw(task_dir)
+    assert list(wrapper.oof_aucs) == list(raw.oof_aucs_)
+
+    query = smiles[:20]
+    assert np.allclose(
+        wrapper.predict_proba(query), raw.predict_proba(query), rtol=0, atol=1e-6
+    )

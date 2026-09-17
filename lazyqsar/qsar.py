@@ -18,6 +18,20 @@ def _smiles_md5(smiles_list):
     return hashlib.md5("\x00".join(smiles_list).encode()).hexdigest()
 
 
+def _has_onnx(descriptor_dir):
+    """Whether a saved descriptor directory contains any ONNX graph.
+
+    The search is recursive because the graphs live one level down, under ``batch_0/``
+    and its siblings — a descriptor directory itself holds only ``featurizer.json``,
+    ``metadata.json`` and those batch folders. A non-recursive check therefore never
+    matched, and every checkpoint silently loaded through the raw path.
+    """
+    for _, _, files in os.walk(descriptor_dir):
+        if any(f.endswith(".onnx") for f in files):
+            return True
+    return False
+
+
 def _optional(fn, X):
     """Call *fn(X)* and take the positive column, or return None if it is unavailable.
 
@@ -623,7 +637,12 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
             cutoff_map = meta.get("ad_hard_cutoffs", {})
             curve_map = meta.get("rank_error_curves", {})
             obj.population_prior_ = float(meta.get("population_prior", 0.5))
-            obj.oof_aucs_ = [oof_map.get(d, 1.0) for d in descriptor_types]
+            # Weighting uses quality (= 2*oof - train), which penalises descriptors
+            # that overfit. load_onnx has always done this; load_raw used plain oof,
+            # so the same checkpoint scored differently depending on which loader ran.
+            obj.oof_aucs_ = [
+                quality_map.get(d, oof_map.get(d, 1.0)) for d in descriptor_types
+            ]
             obj.proxy_aucs_ = [proxy_map.get(d) for d in descriptor_types]
             obj.train_aucs_ = [train_map.get(d, 0.0) for d in descriptor_types]
             obj.quality_aucs_ = [
@@ -773,11 +792,11 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
             if fn in DESCRIPTOR_TYPES.keys():
                 descriptor_types += [fn]
         descriptor_types = sorted(descriptor_types)
-        for descriptor_type in descriptor_types:
-            model_subdir = os.path.join(model_dir, descriptor_type)
-            for fn in os.listdir(model_subdir):
-                if fn.endswith(".onnx"):
-                    return cls.load_onnx(model_dir=model_dir)
+        if any(
+            _has_onnx(os.path.join(model_dir, descriptor_type))
+            for descriptor_type in descriptor_types
+        ):
+            return cls.load_onnx(model_dir=model_dir)
         obj = cls.load_raw(model_dir=model_dir)
         if zip:
             shutil.rmtree(base_dir)
