@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from lazyqsar.utils.ranking import prepare_knots, rank_from_knots
+from lazyqsar.utils.ranking import rank_from_reference, prepare_knots, rank_from_knots
 
 
 def _plateau_knots():
@@ -69,3 +69,33 @@ def test_self_ranking_is_approximately_uniform():
     assert ranks.mean() == pytest.approx(0.5, abs=0.01)
     counts = np.histogram(ranks, bins=10, range=(0, 1))[0]
     assert counts.min() > 0.08 * len(sample)
+
+
+def test_reference_ranks_accept_a_scalar():
+    """`decision_cutoff_rank` is one number, not an array.
+
+    `np.interp` of a scalar returns a numpy scalar, which has no item assignment, so a tail
+    written with boolean indexing raised `TypeError` at save time -- on a real fit only,
+    which is why the unit tests missed it.
+    """
+    knots = np.linspace(0.065, 0.334, 1000)
+    assert 0.0 <= float(rank_from_reference(0.9, knots=knots)) <= 1.0
+    assert 0.0 <= float(rank_from_reference(0.01, knots=knots)) <= 1.0
+
+
+def test_reference_ranks_extrapolate_past_the_library_ceiling():
+    """A selective model scores generic chemistry low, so the reference stops well short
+    of 1 -- measured 0.065 to 0.334. Clamping there would tie every active at exactly 1.0
+    and stop `rank` ordering molecules at the only end anyone looks at."""
+    knots = np.linspace(0.065, 0.334, 1000)
+    above = rank_from_reference(np.array([0.4, 0.6, 0.9, 0.99]), knots=knots)
+    assert np.all(np.diff(above) > 0)
+    assert above.max() < 1.0
+
+
+def test_reference_ranks_stay_monotone_across_the_joins():
+    knots = np.linspace(0.2, 0.8, 500)
+    scores = np.linspace(0.001, 0.999, 400)
+    ranks = rank_from_reference(scores, knots=knots)
+    assert np.all(np.diff(ranks) >= 0)
+    assert ranks.min() >= 0.0 and ranks.max() <= 1.0

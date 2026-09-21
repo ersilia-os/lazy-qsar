@@ -12,7 +12,7 @@ from pathlib import Path
 import numpy as np
 
 from .identity import (
-    DEFAULT_N,
+    default_n,
     REFERENCE_ID,
     descriptor_filename,
     descriptor_url,
@@ -29,7 +29,8 @@ class ReferenceIntegrityError(RuntimeError):
     """The bundle is present but does not describe what it claims to."""
 
 
-def descriptor_path(descriptor: str, n: int = DEFAULT_N) -> Path:
+def descriptor_path(descriptor: str, n: int | None = None) -> Path:
+    n = n or default_n()
     path = reference_dir() / descriptor_filename(descriptor, n)
     if not path.is_file():
         raise ReferenceUnavailable(
@@ -41,12 +42,13 @@ def descriptor_path(descriptor: str, n: int = DEFAULT_N) -> Path:
     return path
 
 
-def reference_smiles(n: int = DEFAULT_N) -> list[str]:
+def reference_smiles(n: int | None = None) -> list[str]:
     """The molecule list, in the row order every matrix uses.
 
     This is all a bring-your-own-descriptor caller needs: featurize these, in this order,
     and hand the matrix back to ``LazyClassifier.fit(reference_X=...)``.
     """
+    n = n or default_n()
     path = reference_dir() / smiles_filename(n)
     if not path.is_file():
         raise ReferenceUnavailable(f"No reference molecule list at {path}.")
@@ -76,7 +78,7 @@ def _check(dset, descriptor: str, n: int, expected_dim: int | None) -> None:
 
 def iter_chunks(
     descriptor: str,
-    n: int = DEFAULT_N,
+    n: int | None = None,
     chunk_size: int = 4096,
     expected_dim: int | None = None,
 ):
@@ -90,6 +92,7 @@ def iter_chunks(
     """
     import h5py
 
+    n = n or default_n()
     with h5py.File(descriptor_path(descriptor, n), "r") as f:
         dset = f["X"]
         _check(dset, descriptor, n, expected_dim)
@@ -102,11 +105,12 @@ def iter_chunks(
 
 
 def load(
-    descriptor: str, n: int = DEFAULT_N, expected_dim: int | None = None
+    descriptor: str, n: int | None = None, expected_dim: int | None = None
 ) -> np.ndarray:
     """The whole matrix as float32, allocated once."""
     import h5py
 
+    n = n or default_n()
     with h5py.File(descriptor_path(descriptor, n), "r") as f:
         dset = f["X"]
         _check(dset, descriptor, n, expected_dim)
@@ -118,12 +122,13 @@ def load(
     return out
 
 
-def is_available(descriptor: str, n: int = DEFAULT_N) -> bool:
+def is_available(descriptor: str, n: int | None = None) -> bool:
     return (reference_dir() / descriptor_filename(descriptor, n)).is_file()
 
 
-def status(n: int = DEFAULT_N) -> dict:
+def status(n: int | None = None) -> dict:
     """What is cached locally, for ``lazyqsar reference status``."""
+    n = n or default_n()
     root = reference_dir()
     out: dict = {"reference_id": REFERENCE_ID, "dir": str(root), "n": n, "files": {}}
     if root.is_dir():

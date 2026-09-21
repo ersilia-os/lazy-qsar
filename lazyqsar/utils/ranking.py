@@ -176,25 +176,24 @@ def rank_from_reference(scores, knots=None, prepared=None):
     lo, hi = vals[0], vals[-1]
     r_lo, r_hi = midranks[0], midranks[-1]
 
-    above = scores > hi
-    if above.any() and r_hi < 1.0:
+    # `np.where` rather than boolean assignment: `np.interp` of a scalar returns a numpy
+    # scalar, which has no item assignment, and this is called with a single value when the
+    # decision cutoff is expressed as a rank.
+    x = _logit(np.clip(scores, _TAIL_EPS, 1.0 - _TAIL_EPS))
+
+    if r_hi < 1.0:
         # Straight line in log-odds from the top knot to (1 - _TAIL_EPS, 1.0). Monotone,
         # continuous at the join, and bounded above by 1.
         x0, x1 = _logit(hi), _logit(1.0 - _TAIL_EPS)
         if x1 > x0:
-            t = (_logit(np.clip(scores[above], _TAIL_EPS, 1.0 - _TAIL_EPS)) - x0) / (
-                x1 - x0
-            )
-            ranks[above] = r_hi + np.clip(t, 0.0, 1.0) * (1.0 - r_hi)
+            t = np.clip((x - x0) / (x1 - x0), 0.0, 1.0)
+            ranks = np.where(scores > hi, r_hi + t * (1.0 - r_hi), ranks)
 
-    below = scores < lo
-    if below.any() and r_lo > 0.0:
+    if r_lo > 0.0:
         x0, x1 = _logit(lo), _logit(_TAIL_EPS)
         if x1 < x0:
-            t = (_logit(np.clip(scores[below], _TAIL_EPS, 1.0 - _TAIL_EPS)) - x0) / (
-                x1 - x0
-            )
-            ranks[below] = r_lo * (1.0 - np.clip(t, 0.0, 1.0))
+            t = np.clip((x - x0) / (x1 - x0), 0.0, 1.0)
+            ranks = np.where(scores < lo, r_lo * (1.0 - t), ranks)
 
     return np.clip(ranks, 0.0, 1.0)
 

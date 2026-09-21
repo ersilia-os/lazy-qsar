@@ -17,7 +17,22 @@ from pathlib import Path
 # Bumped whenever the molecule set or any published matrix changes. Published bundles are
 # immutable: clients cache by filename and cannot notice an object edited in place.
 REFERENCE_ID = "lazyqsar_reference_v1"
-DEFAULT_N = 50_000
+_DEFAULT_N = 50_000
+
+
+def default_n() -> int:
+    """How many reference molecules this install ranks against.
+
+    ``LAZYQSAR_REFERENCE_N`` selects a *tier*, not a behaviour. Tiers nest -- a larger one
+    begins with the smaller one's molecules -- so raising it sharpens the tail without
+    changing what a rank means. The suite uses a small tier so it can build a reference
+    from committed fixtures instead of downloading 267 MB.
+    """
+    raw = os.environ.get("LAZYQSAR_REFERENCE_N")
+    return int(raw) if raw else _DEFAULT_N
+
+
+DEFAULT_N = _DEFAULT_N
 
 PUBLIC_BASE_URL = "https://eosvc-public.s3.amazonaws.com/lazy-qsar/reference/"
 
@@ -44,23 +59,23 @@ def reference_dir() -> Path:
     return lazyqsar_home() / "reference" / REFERENCE_ID
 
 
-def descriptor_filename(descriptor: str, n: int = DEFAULT_N) -> str:
+def descriptor_filename(descriptor: str, n: int | None = None) -> str:
     """Published name of one descriptor matrix.
 
     The tier is in the filename rather than a parent directory so tiers can nest: a later
     ``*_n100000.h5`` sits beside this one, and a cached file is never ambiguous about how
     many rows it holds.
     """
-    return f"{descriptor}_n{n}.h5"
+    return f"{descriptor}_n{n or default_n()}.h5"
 
 
-def smiles_filename(n: int = DEFAULT_N) -> str:
-    return f"reference_smiles_n{n}.csv"
+def smiles_filename(n: int | None = None) -> str:
+    return f"reference_smiles_n{n or default_n()}.csv"
 
 
-def descriptor_url(descriptor: str, n: int = DEFAULT_N) -> str:
+def descriptor_url(descriptor: str, n: int | None = None) -> str:
     return f"{PUBLIC_BASE_URL}{REFERENCE_ID}/{descriptor_filename(descriptor, n)}"
 
 
-def smiles_url(n: int = DEFAULT_N) -> str:
+def smiles_url(n: int | None = None) -> str:
     return f"{PUBLIC_BASE_URL}{REFERENCE_ID}/{smiles_filename(n)}"

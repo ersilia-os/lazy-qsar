@@ -5,7 +5,7 @@ scoring molecules never needs anything here -- which is what keeps inference on 
 onnxruntime alone.
 """
 
-from .identity import DEFAULT_N, REFERENCE_ID, reference_dir
+from .identity import DEFAULT_N, REFERENCE_ID, default_n, reference_dir
 from .store import (
     ReferenceIntegrityError,
     ReferenceUnavailable,
@@ -18,6 +18,7 @@ from .store import (
 
 __all__ = [
     "DEFAULT_N",
+    "default_n",
     "REFERENCE_ID",
     "ReferenceIntegrityError",
     "ReferenceUnavailable",

@@ -65,6 +65,18 @@ def build_checkpoint(root, task, descriptors, smiles, y, seed=0):
         ),
         "oof_aucs": {d: m["oof_auc"] for d, m in per_descriptor.items()},
         "train_aucs": {d: m["train_auc"] for d, m in per_descriptor.items()},
+        # A synthetic reference, because this helper assembles a checkpoint by hand rather
+        # than through `LazyClassifierQSAR.fit`, which is what normally builds one. Without
+        # it every `rank` request raises and these structural tests -- chunking, channel
+        # selection, featurizing once -- would be testing the refusal instead of the thing
+        # they are about. The knots span the probability range so nothing extrapolates.
+        "pooled_ranker": {
+            "knots": np.linspace(0.01, 0.99, 512).tolist(),
+            "n_train": 512,
+            "source": "reference_library",
+            "library": {"id": "test_reference", "n": 512},
+            "descriptors": list(descriptors),
+        },
     }
     with open(os.path.join(task_dir, "metadata.json"), "w") as f:
         json.dump(meta, f, indent=2)

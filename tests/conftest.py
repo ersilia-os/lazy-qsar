@@ -31,6 +31,21 @@ from lazyqsar.registry import DESCRIPTOR_TYPES as _LIVE_DESCRIPTOR_TYPES  # noqa
 
 PRISTINE_DESCRIPTOR_TYPES = dict(_LIVE_DESCRIPTOR_TYPES)
 
+# Reference bundles built during the session, keyed by descriptor shape. Module level
+# because both the autouse fixture and `stubbed_registry` -- a context manager, which has
+# no fixture to draw from -- have to reach the same cache.
+_REFERENCE_CACHE: dict = {}
+_REFERENCE_ROOT: list = []
+
+
+def _reference_root():
+    if not _REFERENCE_ROOT:
+        import tempfile
+
+        _REFERENCE_ROOT.append(pathlib.Path(tempfile.mkdtemp(prefix="lazyqsar-ref-")))
+    return _REFERENCE_ROOT[0]
+
+
 from _helpers.tiers import TIER_DIRS, TIER_MODULES, missing_for_tier  # noqa: F401
 
 
@@ -62,6 +77,49 @@ def shipped_descriptor_types():
     return PRISTINE_DESCRIPTOR_TYPES
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _session_reference():
+    """Install a reference library before any session-scoped fixture fits a model.
+
+    Scope is the whole point. pytest sets higher-scoped fixtures up first, so the
+    session-scoped checkpoint builders run *before* any function-scoped fixture -- and a
+    function-scoped env var would arrive too late for them. Function-scoped overrides still
+    apply on top, which is what lets the stub tiers swap in a differently-shaped reference.
+    """
+    mp = pytest.MonkeyPatch()
+    mp.setenv("LAZYQSAR_REFERENCE_OFFLINE", "1")
+    try:
+        _install_reference_for_live_registry(mp, _REFERENCE_CACHE, _reference_root())
+        yield
+    finally:
+        mp.undo()
+
+
+def _install_reference_for_live_registry(monkeypatch, cache, root):
+    """Build (or reuse) a reference matching whatever descriptors are registered now.
+
+    Keyed by the live registry's shapes, because the stubs mutate ``DESCRIPTOR_TYPES``
+    globally and a `morgan` producing 24 features in one test produces 2048 in another.
+    The loader checks that a reference matrix matches the descriptor it will be scored
+    with, and that check is load-bearing -- so the reference has to follow the stubbing,
+    not precede it.
+    """
+    from _helpers.reference import build_reference
+
+    from lazyqsar.registry import DESCRIPTOR_TYPES, get_descriptor_type
+
+    names = sorted(DESCRIPTOR_TYPES)
+    signature = tuple(
+        (name, getattr(get_descriptor_type(name)(), "n_dim", None)) for name in names
+    )
+    if signature not in cache:
+        directory = root / f"sig{len(cache)}"
+        cache[signature] = (directory, build_reference(directory, names))
+    directory, n = cache[signature]
+    monkeypatch.setenv("LAZYQSAR_REFERENCE_DIR", str(directory))
+    monkeypatch.setenv("LAZYQSAR_REFERENCE_N", str(n))
+
+
 @contextlib.contextmanager
 def stubbed_registry():
     """Install the stub descriptors for the duration of the block, then restore.
@@ -77,18 +135,48 @@ def stubbed_registry():
 
     mp = pytest.MonkeyPatch()
     try:
-        yield install_stub_registry(mp)
+        register = install_stub_registry(mp)
+
+        def register_and_refresh(*args, **kwargs):
+            # After the stubs are in, not before. `install_stub_registry` only hands back
+            # a callable; nothing is registered until it is invoked, so refreshing any
+            # earlier builds a reference for the descriptors being replaced.
+            out = register(*args, **kwargs)
+            _install_reference_for_live_registry(
+                mp, _REFERENCE_CACHE, _reference_root()
+            )
+            return out
+
+        _install_reference_for_live_registry(mp, _REFERENCE_CACHE, _reference_root())
+        yield register_and_refresh
     finally:
         mp.undo()
 
 
 @pytest.fixture
 def stub_descriptors(monkeypatch):
-    """Function-scoped stub registry, for tests that register their own descriptor names."""
+    """Function-scoped stub registry, for tests that register their own descriptor names.
+
+    Yields a ``register`` callable. Each call installs a descriptor *and* refreshes the
+    reference library to match it, because a test that registers a 24-feature `morgan`
+    then fits against a 2048-feature reference is rejected by the loader -- correctly, and
+    that rejection is the whole point of the shape check.
+    """
     from _helpers.stubs import install_stub_registry
 
     register = install_stub_registry(monkeypatch)
-    yield register
+
+    def register_and_refresh(*args, **kwargs):
+        out = register(*args, **kwargs)
+        _install_reference_for_live_registry(
+            monkeypatch, _REFERENCE_CACHE, _reference_root()
+        )
+        return out
+
+    _install_reference_for_live_registry(
+        monkeypatch, _REFERENCE_CACHE, _reference_root()
+    )
+    yield register_and_refresh
     CountingStub.reset()
 
 
@@ -223,6 +311,50 @@ def _clean_env(monkeypatch):
     """A leaked env var from one test must not change another test's numbers."""
     for var in ("LAZYQSAR_PREDICT_CHUNK", "LAZYQSAR_FIT_SCRATCH"):
         monkeypatch.delenv(var, raising=False)
+
+
+@pytest.fixture(scope="session")
+def _reference_cache(tmp_path_factory):
+    """Reference bundles, one per distinct descriptor signature.
+
+    Not a single session-scoped bundle: the stub fixtures replace the registry per test, so
+    a `morgan` producing 24 features in one test produces 2048 in another. A reference
+    matrix has to match the descriptor the model was fitted with -- the loader checks, and
+    that check is load-bearing -- so bundles are keyed by what the live registry emits.
+    Built at most once per shape, so the cost lands once rather than per test.
+    """
+    return {}, tmp_path_factory.mktemp("references")
+
+
+@pytest.fixture(autouse=True)
+def _offline_reference(monkeypatch, request):
+    """Point every fit at a local reference, and never at the network.
+
+    Fitting requires a reference library. The published bundle is 267 MB behind a network
+    fetch, and a test that reached for it would be a flake; one that silently fitted
+    without a reference would exercise a code path that no longer exists.
+    """
+    monkeypatch.setenv("LAZYQSAR_REFERENCE_OFFLINE", "1")
+    if not (
+        request.node.get_closest_marker("fit")
+        or request.node.get_closest_marker("chem")
+    ):
+        return
+
+    from _helpers.reference import build_reference
+    from lazyqsar.registry import DESCRIPTOR_TYPES, get_descriptor_type
+
+    names = sorted(DESCRIPTOR_TYPES)
+    signature = tuple(
+        (name, getattr(get_descriptor_type(name)(), "n_dim", None)) for name in names
+    )
+    cache, root = _REFERENCE_CACHE, _reference_root()
+    if signature not in cache:
+        directory = root / f"sig{len(cache)}"
+        cache[signature] = (directory, build_reference(directory, names))
+    directory, n = cache[signature]
+    monkeypatch.setenv("LAZYQSAR_REFERENCE_DIR", str(directory))
+    monkeypatch.setenv("LAZYQSAR_REFERENCE_N", str(n))
 
 
 @pytest.fixture(autouse=True)
