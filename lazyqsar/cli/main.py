@@ -53,28 +53,46 @@ def _cmd_setup(args):
         _setup_descriptors(args)
 
 
+def _extra_requirements(extra: str) -> list:
+    """The requirements of one optional-dependency group, read from package metadata.
+
+    Read rather than restated. This list used to be a hand-maintained copy of the ``fit``
+    extra, and it had already drifted: ``xgboost`` and ``onnxmltools`` were unpinned here
+    while ``pyproject.toml`` pinned them exactly, so ``lazyqsar setup --fit`` could install
+    a different set of versions from ``pip install "lazyqsar[fit]"``. Deriving both from
+    the same metadata removes the class of bug rather than re-syncing the copy.
+    """
+    from importlib.metadata import requires
+
+    marker = f'extra == "{extra}"'
+    specs = []
+    for req in requires("lazyqsar") or []:
+        if marker not in req:
+            continue
+        spec = req.split(";", 1)[0]
+        # Metadata spells these "scikit-learn (==1.6.1)"; pip wants "scikit-learn==1.6.1".
+        spec = spec.replace("(", "").replace(")", "").replace(" ", "")
+        # `all` is expressed as a self-reference; installing it here would recurse.
+        if spec.lower().startswith("lazyqsar"):
+            continue
+        specs.append(spec)
+    return specs
+
+
 def _setup_fit():
     import subprocess
 
-    print(
-        "Installing fit dependencies (sklearn, xgboost, scipy, skl2onnx, onnxmltools, joblib)..."
-    )
-    subprocess.check_call(
-        [
-            sys.executable,
-            "-m",
-            "pip",
-            "install",
-            "--quiet",
-            "scikit-learn==1.6.1",
-            "xgboost",
-            "scipy",
-            "onnxmltools",
-            "onnxconverter-common==1.16.0",
-            "skl2onnx==1.19.1",
-            "joblib==1.5.1",
-        ]
-    )
+    specs = _extra_requirements("fit")
+    if not specs:
+        print(
+            "Could not read the 'fit' extra from package metadata; "
+            'install it directly with: pip install "lazyqsar[fit]"',
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    print(f"Installing fit dependencies: {', '.join(specs)}")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "--quiet", *specs])
     print("Fit dependencies installed.")
 
 
