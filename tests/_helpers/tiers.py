@@ -4,6 +4,11 @@ The suite is tiered by directory: ``tests/unit`` and ``tests/packaging`` must ru
 install, ``tests/fit`` and ``tests/pipeline`` need the ``fit`` extra, ``tests/chem`` needs
 RDKit. This module is the single place that mapping lives, so the root conftest (which
 applies the markers) and the per-directory conftests (which gate collection) cannot drift.
+
+Every tier here has a directory and a CI job that runs it. There was a ``deep`` tier for
+torch, chemprop and chemeleon; it had neither, so it asserted a boundary around coverage
+that did not exist. If the torch-backed descriptors get tests, add the tier back together
+with the job that runs them -- not before.
 """
 
 import importlib.util
@@ -11,11 +16,10 @@ import importlib.util
 TIER_MODULES = {
     "fit": ("sklearn", "xgboost", "skl2onnx", "onnxmltools", "scipy", "joblib"),
     "chem": ("rdkit",),
-    "deep": ("torch", "chemprop", "chemeleon"),
 }
 
 # Which directories carry which tier. Anything not listed is base tier.
-TIER_DIRS = {"fit": ("fit", "pipeline"), "chem": ("chem",), "deep": ("deep",)}
+TIER_DIRS = {"fit": ("fit", "pipeline"), "chem": ("chem",)}
 
 
 def missing_for_tier(tier):

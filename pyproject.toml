@@ -79,7 +79,6 @@ addopts = "-q --strict-markers --strict-config --durations=15"
 markers = [
   "fit: requires the [fit] extra (scikit-learn, xgboost, skl2onnx, scipy, joblib)",
   "chem: requires RDKit (the [descriptors] extra)",
-  "deep: requires torch / chemprop / chemeleon",
 ]
 # No `-m` default: a default deselect is how a whole tier stays broken for a month unnoticed.
 

@@ -112,7 +112,7 @@ jobs:
           print('the inference path imports on a template install')"
 
       - name: Tests (base tier)
-        run: pytest -m "not fit and not chem and not deep"
+        run: pytest -m "not fit and not chem"
 
   full:
     # Everything the PR path covers: fitting, ONNX export, the pipeline and real RDKit.
@@ -140,8 +140,8 @@ jobs:
       # The package pins OMP_NUM_THREADS=1, so each fit is single-threaded and the other
       # vCPUs are idle. loadfile (not load) keeps a module's session checkpoint on one
       # worker instead of rebuilding it per worker.
-      - name: Tests (everything but the deep tier)
-        run: pytest -m "not deep" -n auto --dist loadfile
+      - name: Tests (the whole suite)
+        run: pytest -n auto --dist loadfile
 
   ci-ok:
     # One required status check, so branch protection needs a single entry and adding a

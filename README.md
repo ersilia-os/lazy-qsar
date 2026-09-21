@@ -188,20 +188,32 @@ naming the absent module, never an error.
 
 | Selection | Needs | Covers |
 |---|---|---|
-| `pytest -m "not fit and not chem and not deep"` | the base install | the inference path, the ensemble arithmetic, the registry and the CLI surface |
-| `pytest -m "not deep"` | `.[fit]` plus `rdkit` | everything CI runs: the above, plus fitting, ONNX export, the pipeline and the real descriptors |
-| `pytest` | `.[all]` | also the torch-backed descriptors, which CI does not run |
+| `pytest -m "not fit and not chem"` | the base install | the inference path, the ensemble arithmetic, the registry and the CLI surface |
+| `pytest` | `.[fit]` plus `rdkit` | the above, plus fitting, ONNX export, the pipeline, and Morgan and RDKit descriptors |
+
+Those are the only two selections, and CI runs both as parallel jobs on Python 3.12, so a
+pull request finishes in a few minutes. There is no third, larger one: `pip install
+".[all]"` pulls in torch, chemprop and chemeleon but adds no tests, because nothing in the
+suite executes them.
 
 The base selection is the contract Ersilia Model Hub templates depend on: it must pass on
 the core dependencies alone — `numpy`, `onnxruntime`, `pandas`, `h5py`, `psutil`, `rich`
 and `loguru` — with no `scikit-learn`, `xgboost` or RDKit anywhere on the path. Add
-`-n auto --dist loadfile` for the heavier tiers, and `--durations=15` to see where the
-time goes.
+`-n auto --dist loadfile` for the heavier tier, and `--durations=15` to see where the time
+goes.
 
-CI runs the first two selections as two parallel jobs on Python 3.12, so a pull request
-finishes in a few minutes. The `deep` tier — torch, chemprop, chemeleon — is not run
-anywhere automatically; exercise it locally with `pip install ".[all,test]"` before
-changing a descriptor.
+### What is not covered
+
+Worth stating plainly, because a green suite does not mean these are exercised:
+
+- **Three of the five descriptors have no execution coverage.** Only `morgan` and `rdkit`
+  are ever actually run. `cddd`, `clamp` and `chemeleon` appear in tests only as names —
+  in stubbed registries, CLI argument validation and import-purity checks — so a change to
+  any of them can break `slow` mode without reddening anything. Test them by hand against
+  real molecules before changing them.
+- **The SVC ONNX export.** The score-column sign and the per-head export-versus-fit
+  comparison are not checked. A converter regression there is silent.
+- **Python 3.11 and 3.13.** Supported per `requires-python`, exercised by nothing.
 
 Install the `fit` extra from the pins rather than whatever is already in your environment:
 `scikit-learn` in particular is pinned to `1.9.1`, and descriptor selection differs enough
