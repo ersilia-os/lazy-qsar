@@ -17,9 +17,11 @@ from .combine import (
     combine,
     mask_rows,
 )
+from .reference import build_pooled_rank_knots
 
 __all__ = [
     "OUTPUT_NAMES",
+    "build_pooled_rank_knots",
     "CombineResult",
     "EnsembleSpec",
     "build_weight_matrix",

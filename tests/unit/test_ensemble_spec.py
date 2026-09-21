@@ -49,6 +49,32 @@ def test_from_metadata_empty_metadata_gives_working_defaults():
     assert spec.ad_hard_cutoffs is None
     assert spec.population_prior == 0.5
     assert spec.decision_cutoff == 0.5
+    assert spec.pooled_rank_knots is None
+
+
+def test_from_metadata_reads_the_pooled_rank_reference():
+    meta = {"pooled_ranker": {"knots": [0.1, 0.4, 0.9], "n_train": 3, "source": "oof"}}
+    spec, _ = EnsembleSpec.from_metadata(meta, ["a"])
+    assert isinstance(spec.pooled_rank_knots, np.ndarray)
+    assert spec.pooled_rank_knots.tolist() == [0.1, 0.4, 0.9]
+
+
+def test_from_metadata_treats_an_empty_pooled_reference_as_absent():
+    """Empty knots must reach `combine` as None, not as something `prepare_knots` raises on."""
+    for block in ({"knots": []}, {}, None):
+        spec, _ = EnsembleSpec.from_metadata({"pooled_ranker": block}, ["a"])
+        assert spec.pooled_rank_knots is None
+
+
+def test_the_pooled_rank_reference_is_not_sliced_to_active_descriptors():
+    """It describes the pooled probability of the active set as a whole, not one column."""
+    meta = {
+        "active_descriptors": {"a": True, "b": False},
+        "pooled_ranker": {"knots": [0.2, 0.5, 0.8]},
+    }
+    spec, active = EnsembleSpec.from_metadata(meta, ["a", "b"])
+    assert active == ["a"]
+    assert spec.pooled_rank_knots.tolist() == [0.2, 0.5, 0.8]
 
 
 def test_from_metadata_slices_curves_and_cutoffs_to_active():

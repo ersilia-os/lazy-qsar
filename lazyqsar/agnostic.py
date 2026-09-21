@@ -117,6 +117,18 @@ class LazyClassifier:
             X = _load_h5(h5_file, h5_idxs)
         return self._model.predict_rank(X)
 
+    def oof_channels(self, X=None, h5_file=None, h5_idxs=None):
+        """Out-of-fold ``(proba, rank, score)`` on the training rows, or None.
+
+        Fit-time only, and only on the object that did the fitting -- a loaded checkpoint
+        has no out-of-fold predictions. Used to build the pooled rank reference; see
+        :meth:`lazyqsar.assemblers.classifier.LazyClassifier.oof_channels`.
+        """
+        if X is None:
+            X = _load_h5(h5_file, h5_idxs)
+        getter = getattr(self._model, "oof_channels", None)
+        return getter(X) if getter is not None else None
+
     # ------------------------------------------------------------------
     # Save / load
     # ------------------------------------------------------------------

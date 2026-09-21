@@ -4,7 +4,13 @@ import os
 import shutil
 import numpy as np
 
-from .ensemble import OUTPUT_NAMES, EnsembleSpec, combine, mask_rows
+from .ensemble import (
+    OUTPUT_NAMES,
+    EnsembleSpec,
+    build_pooled_rank_knots,
+    combine,
+    mask_rows,
+)
 from .ensemble.channels import score_smiles_chunkwise
 from .ensemble.runner import get_chunk_size
 from .registry import (  # noqa: F401  (re-exported for backwards compatibility)
@@ -12,7 +18,9 @@ from .registry import (  # noqa: F401  (re-exported for backwards compatibility)
     DESCRIPTORS_MODE,
     get_descriptor_type,
 )
+from .ensemble.combine import read_pooled_rank_knots
 from .utils.logging import logger
+from .utils.ranking import prepare_knots, rank_from_knots
 
 
 def _smiles_md5(smiles_list):
@@ -187,12 +195,21 @@ class _EnsemblePredictMixin:
 
 
 def _spec_from_attributes(
-    names, active_indices, oof_aucs, proxy_aucs, curves, cutoffs, prior
+    names,
+    active_indices,
+    oof_aucs,
+    proxy_aucs,
+    curves,
+    cutoffs,
+    prior,
+    pooled_knots=None,
 ):
     """Build an :class:`EnsembleSpec` from the per-descriptor attribute lists.
 
     The lists are indexed by *full* descriptor position; the spec is sliced down to the
-    active ones so the weighting code never has to re-index.
+    active ones so the weighting code never has to re-index. *pooled_knots* is the one
+    argument that is not per-descriptor: it describes the pooled probability of the
+    active set as a whole, and is passed through unsliced.
     """
 
     def sliced(seq):
@@ -205,6 +222,7 @@ def _spec_from_attributes(
         rank_error_curves=sliced(curves),
         ad_hard_cutoffs=sliced(cutoffs),
         population_prior=prior,
+        pooled_rank_knots=pooled_knots,
     )
 
 
@@ -252,6 +270,7 @@ class ArtifactWrapper(_EnsemblePredictMixin):
         rank_error_curves=None,
         population_prior=0.5,
         descriptor_types=None,
+        pooled_rank_knots=None,
     ):
         self.descriptors = descriptors
         self.artifacts = artifacts
@@ -263,6 +282,7 @@ class ArtifactWrapper(_EnsemblePredictMixin):
         self.rank_error_curves = rank_error_curves  # list[(r_knots, e_knots)|None]
         self.population_prior = population_prior
         self.descriptor_types = descriptor_types  # list[str] or None
+        self.pooled_rank_knots = pooled_rank_knots  # ndarray or None
         self._ensemble_cache = {}
 
     def _channels(self, smiles_list):
@@ -307,6 +327,7 @@ class ArtifactWrapper(_EnsemblePredictMixin):
             self.rank_error_curves,
             self.ad_hard_cutoffs,
             self.population_prior,
+            getattr(self, "pooled_rank_knots", None),
         )
         return _stack_channels(y_hats, rank_preds, score_preds, ad_scores) + (spec,)
 
@@ -430,6 +451,8 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
         self.quality_aucs_ = []
         self._rank_error_curves_ = []
         _ad_hard_cutoffs_raw = []
+        _oof_channels = []
+        _train_ad = []
         desc_rows = []
 
         for i, desc_name in enumerate(self.descriptor_types):
@@ -476,10 +499,13 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
             self.train_aucs_.append(train_auc)
             self.quality_aucs_.append(quality)
 
+            _oof_channels.append(self.models[i].oof_channels(X=X))
+
             ad = ApplicabilityDomain()
             ad.fit(X)
             self.ad_models.append(ad)
             train_ad = ad.score(X)
+            _train_ad.append(train_ad)
             _ad_hard_cutoffs_raw.append(float(np.percentile(train_ad, 5)))
 
             logger.info(
@@ -514,11 +540,57 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
         self.active_descriptors_ = active_mask
         self.ad_hard_cutoffs_ = _ad_hard_cutoffs_raw
 
+        self.pooled_rank_knots_ = self._build_pooled_rank_reference(
+            _oof_channels, _train_ad
+        )
+
         for row, active in zip(desc_rows, active_mask):
             row["active"] = active
 
         logger.rule()
         logger.descriptor_table(desc_rows)
+
+    def _build_pooled_rank_reference(self, oof_channels, train_ad):
+        """Learn the pooled out-of-fold distribution the ensemble's ``rank`` reports against.
+
+        Must run after the active set is settled: the reference describes the pooled
+        probability of exactly the descriptors that will be scored, and a reference built
+        over three descriptors does not describe the pooled probability of two.
+
+        Returns ``None`` -- and ``rank`` keeps its pre-v3.5.0 behaviour -- unless every
+        active descriptor supplied out-of-fold channels. A reference assembled from a
+        subset would still be monotone and still lie in [0, 1], so nothing downstream
+        could tell it was calibrated against the wrong distribution.
+        """
+        active_indices = [i for i, a in enumerate(self.active_descriptors_) if a]
+        if not active_indices:
+            return None
+        cols = [oof_channels[i] for i in active_indices]
+        if any(c is None for c in cols):
+            logger.debug(
+                "No pooled rank reference: at least one active descriptor has no "
+                "out-of-fold predictions."
+            )
+            return None
+
+        Y = np.column_stack([c[0] for c in cols])
+        R = np.column_stack([c[1] for c in cols])
+        S = np.column_stack([c[2] for c in cols])
+        A = (
+            np.column_stack([train_ad[i] for i in active_indices])
+            if len(train_ad) == len(self.active_descriptors_)
+            else None
+        )
+        spec = _spec_from_attributes(
+            self.descriptor_types,
+            active_indices,
+            self.quality_aucs_,
+            self.proxy_aucs_,
+            self._rank_error_curves_,
+            self.ad_hard_cutoffs_,
+            self.population_prior_,
+        )
+        return build_pooled_rank_knots(Y, R, S, A, spec)
 
     def _channels(self, smiles_list):
 
@@ -538,14 +610,21 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
                 ad_scores.append(self.ad_models[i].score(X))
             rank_preds.append(_optional(self.models[i].predict_rank, X))
 
+        # Weight by quality (= 2*oof - train), not plain OOF AUC. Both loaders and
+        # `EnsembleSpec.from_metadata` have always used quality, so passing `oof_aucs_`
+        # here made the fitted model in memory weight its descriptors differently from
+        # the checkpoint it writes -- the same model predicted one thing before `save()`
+        # and another after `load()`.
+        skill = getattr(self, "quality_aucs_", None) or getattr(self, "oof_aucs_", None)
         spec = _spec_from_attributes(
             self.descriptor_types,
             active_indices,
-            getattr(self, "oof_aucs_", None),
+            skill,
             getattr(self, "proxy_aucs_", None),
             getattr(self, "_rank_error_curves_", None),
             getattr(self, "ad_hard_cutoffs_", None),
             getattr(self, "population_prior_", 0.5),
+            getattr(self, "pooled_rank_knots_", None),
         )
         return _stack_channels(y_hats, rank_preds, score_preds, ad_scores) + (spec,)
 
@@ -644,6 +723,25 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
         else:
             meta["decision_cutoff_logit"] = None
             meta["decision_cutoff_lift"] = None
+
+        _knots = getattr(self, "pooled_rank_knots_", None)
+        if _knots is not None and len(_knots):
+            meta["pooled_ranker"] = {
+                "knots": np.asarray(_knots, dtype=np.float64).tolist(),
+                "n_train": int(len(_knots)),
+                "source": "oof",
+            }
+            # decision_cutoff_raw/proba/logit/lift are one learned threshold in four
+            # units. Its rank image used to be a mean of the per-descriptor rank cutoffs,
+            # which after the pooled reference lands on a scale nothing emits. Nothing in
+            # the package thresholds on it -- binary is proba >= 0.5 -- but it is reported
+            # to users, so it should mean what its name says.
+            _cut_p = meta.get("decision_cutoff_proba")
+            if _cut_p is not None:
+                meta["decision_cutoff_rank"] = float(
+                    rank_from_knots(float(_cut_p), prepared=prepare_knots(_knots))
+                )
+
         with open(os.path.join(model_dir, "metadata.json"), "w") as f:
             json.dump(meta, f, indent=2)
 
@@ -743,6 +841,7 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
                 else None
                 for d in descriptor_types
             ]
+            obj.pooled_rank_knots_ = read_pooled_rank_knots(meta)
         else:
             obj.population_prior_ = 0.5
             obj.oof_aucs_ = [1.0] * len(descriptor_types)
@@ -752,6 +851,7 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
             obj.active_descriptors_ = [True] * len(descriptor_types)
             obj.ad_hard_cutoffs_ = None
             obj._rank_error_curves_ = [None] * len(descriptor_types)
+            obj.pooled_rank_knots_ = None
         return obj
 
     def save_onnx(self, model_dir: str, clean: bool = True):
@@ -794,6 +894,7 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
         ad_hard_cutoffs = None
         rank_error_curves = None
         population_prior = 0.5
+        pooled_rank_knots = None
         if os.path.isfile(meta_path):
             with open(meta_path) as f:
                 meta = json.load(f)
@@ -828,6 +929,7 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
                 if curve_map
                 else None
             )
+            pooled_rank_knots = read_pooled_rank_knots(meta)
         return ArtifactWrapper(
             descriptors=descriptors,
             artifacts=artifacts,
@@ -839,6 +941,7 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
             rank_error_curves=rank_error_curves,
             population_prior=population_prior,
             descriptor_types=descriptor_types,
+            pooled_rank_knots=pooled_rank_knots,
         )
 
     def save(self, model_dir: str):

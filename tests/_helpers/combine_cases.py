@@ -23,6 +23,20 @@ def _curves(rng, D, how_many_none=0):
     return out
 
 
+def _pooled_knots(rng, kind):
+    """An ECDF reference for the pooled probability, or None for the legacy branch.
+
+    ``wide`` spans the whole probability range, so nothing clamps and `rank` is the
+    interpolated interior. ``degenerate`` is one distinct value, the case where the
+    reference carries no resolution and `rank` collapses to a step.
+    """
+    if kind is None:
+        return None
+    if kind == "degenerate":
+        return np.full(16, 0.4)
+    return np.sort(rng.uniform(0.01, 0.99, size=250))
+
+
 def _case(rng, B, D, *, with_ad, with_rank, with_score, curves, veto, no_skill):
     Y = rng.uniform(0.01, 0.99, size=(B, D))
     R = rng.uniform(0.0, 1.0, size=(B, D)) if with_rank else None
@@ -73,6 +87,7 @@ def _spec(D, spec_kwargs, cutoff=0.5):
         ),
         population_prior=spec_kwargs["population_prior"],
         decision_cutoff=cutoff,
+        pooled_rank_knots=spec_kwargs.get("pooled_knots"),
     )
 
 
@@ -210,6 +225,46 @@ SCENARIOS += [
     ),
 ]
 
+# The pooled rank reference: `rank` stops being a weighted mean of per-descriptor
+# percentiles and becomes the percentile of the pooled probability. A new branch of the
+# output computation, so one case per distinct path through it -- not a cross-product with
+# everything above, which the docstring already rules out.
+SCENARIOS += [
+    (
+        "pooled__ad_rank_curves",
+        {
+            **_BRANCH_OPTS["ad_rank_curves"],
+            "D": 3,
+            "B": 7,
+            "curve_mode": "all",
+            "no_skill": False,
+            "pooled_mode": "wide",
+        },
+    ),
+    (
+        "pooled__no_ad_uniform",
+        {
+            **_BRANCH_OPTS["no_ad_uniform"],
+            "D": 3,
+            "B": 7,
+            "curve_mode": "all",
+            "no_skill": False,
+            "pooled_mode": "wide",
+        },
+    ),
+    (
+        "pooled__degenerate_single_knot",
+        {
+            **_BRANCH_OPTS["ad_rank_curves"],
+            "D": 3,
+            "B": 7,
+            "curve_mode": "all",
+            "no_skill": False,
+            "pooled_mode": "degenerate",
+        },
+    ),
+]
+
 SCENARIO_IDS = [case_id for case_id, _ in SCENARIOS]
 _SCENARIOS_BY_ID = dict(SCENARIOS)
 
@@ -225,6 +280,7 @@ def build_case(case_id):
     B = opts.pop("B")
     curve_mode = opts.pop("curve_mode")
     no_skill = opts.pop("no_skill")
+    pooled_mode = opts.pop("pooled_mode", None)
 
     rng = np.random.default_rng(
         int.from_bytes(case_id.encode(), "little", signed=False) % 2**32
@@ -237,4 +293,5 @@ def build_case(case_id):
         curves = _curves(rng, D, how_many_none=1)
 
     Y, R, S, A, spec_kwargs = _case(rng, B, D, curves=curves, no_skill=no_skill, **opts)
+    spec_kwargs["pooled_knots"] = _pooled_knots(rng, pooled_mode)
     return Y, R, S, A, _spec(D, spec_kwargs)

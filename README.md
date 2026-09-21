@@ -74,7 +74,7 @@ ranks = model.predict_rank(smiles_list=smiles_test)[:, 1]  # percentile within t
 
 Other prediction methods are `predict_proba`, `predict_logit`, `predict_score`, `predict_lift` and `predict` (binary labels). All six share one implementation with the CLI, so a checkpoint gives the same answer through either entry point.
 
-> `predict_rank` is a percentile against the *training* distribution of that model, so ranks are not comparable between models and compress on chemistry unlike the training set. Use `predict_proba` when you need a calibrated value.
+> `predict_rank` is a percentile against the *training* distribution of that model, so ranks are not comparable between models and compress on chemistry unlike the training set. Use `predict_proba` when you need a calibrated value. Within one model `rank` is a monotone view of `proba`: they order molecules identically, so any ordering-only metric (AUROC, AUPRC, BEDROC) gives the same answer from either.
 
 ### LazyClassifier (custom descriptors)
 

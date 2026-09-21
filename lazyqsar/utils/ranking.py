@@ -28,6 +28,33 @@ def binarize(scores, threshold):
     )
 
 
+def subsample_knots(sorted_scores, max_knots=10_000):
+    """Thin an ascending score array to at most *max_knots* points, keeping its shape.
+
+    Evenly spaced positions, so the retained points are quantiles of the original and the
+    ECDF they describe is unchanged to within the spacing. Identical to the private copy
+    each base estimator uses for its own ranker knots; those predate this helper and are
+    left alone so no checkpoint's knots shift under a refactor.
+
+    Parameters
+    ----------
+    sorted_scores : ndarray
+        Scores in ascending order.
+    max_knots : int, default 10000
+        Cap on the number of retained points.
+
+    Returns
+    -------
+    ndarray
+        *sorted_scores* unchanged when it is already short enough, else the subsample.
+    """
+    n = len(sorted_scores)
+    if n <= max_knots:
+        return sorted_scores
+    idx = np.round(np.linspace(0, n - 1, max_knots)).astype(int)
+    return sorted_scores[idx]
+
+
 def prepare_knots(knots):
     """Collapse sorted ECDF knots to distinct values carrying mid-rank quantiles.
 

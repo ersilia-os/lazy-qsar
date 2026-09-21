@@ -20,9 +20,23 @@ This release removes an inconsistency, it does not claim a better model.
   in logit space rather than by averaging probabilities. Measured on a checkpoint without
   an applicability domain: `proba` moves up to 0.05, Spearman 0.9989. With one: up to
   0.13, Spearman 0.9929.
-- **`rank` and `score` are unchanged on checkpoints without an applicability domain**
-  (2e-08). With uniform weights a weighted mean is the arithmetic mean, so these were
-  already correct.
+- **`rank` is now the training-set percentile of the pooled probability.** It was a
+  weighted mean of per-descriptor percentiles, which is not a monotone transform of the
+  pooled probability — so the same model could order two molecules one way by `proba` and
+  the other way by `rank`. It also made `rank` the output least able to survive the ONNX
+  export: an ECDF is steep wherever the training scores bunch up, so it amplified a
+  difference `proba` barely registered. Measured on the ChEMBL fixtures, `proba` agreed
+  with its export to 9e-08 while `rank` moved by up to 0.09 on 500 of 665 molecules
+  (Spearman 0.9926). `rank` is now that pooled probability read off a single pooled
+  out-of-fold reference stored in the checkpoint, which makes it a monotone view of
+  `proba`: Spearman 1.0000000 against the export, and zero churn in the top 1%, 5% and
+  10%. Two consequences worth planning for — rank-based AUROC, AUPRC and BEDROC now equal
+  the probability-based ones, and the values spread over a wider range than the averaging
+  produced, so an absolute cutoff such as `rank > 0.8` selects a different set than
+  before. Checkpoints fitted by earlier versions carry no reference and keep their
+  previous behaviour exactly; refit to get the new one.
+- **`score` is unchanged on checkpoints without an applicability domain** (2e-08). With
+  uniform weights a weighted mean is the arithmetic mean, so it was already correct.
 - **New CLI checkpoints differ from old ones.** `lazyqsar fit` now applies the descriptor
   portfolio and fits an applicability domain, so it keeps 2–3 descriptors instead of all
   5 and writes `applicability_domain/` per descriptor. Predictions differ from checkpoints
@@ -35,6 +49,19 @@ This release removes an inconsistency, it does not claim a better model.
 
 ### Fixed
 
+- **The exported ONNX checkpoint now matches the model it was exported from.** It did not:
+  the exported preprocessor ran in float32 while scikit-learn ran it in float64, and
+  although the two agreed to about one float32 ULP, the tree heads downstream are
+  piecewise constant — a value landing a hair either side of a learned split fell into a
+  different leaf and moved the score by ~0.1. The fitted preprocessor now runs its own
+  exported graph, so the heads are fitted on bit-identical values to the ones they are
+  later served. Measured on the non-separable fixture that pinned the defect, agreement
+  went from ~1e-01 to 5.7e-08 in `score`; out-of-fold AUC is unchanged to four decimal
+  places on both ChEMBL fixtures and on that fixture, so this costs no accuracy. The
+  `xfail(strict=True)` on `test_exported_model_matches_the_model_it_came_from` is gone.
+- The fitted model in memory weighted its descriptors by OOF AUC while every loader
+  weighted them by `quality_aucs` (`2 * oof - train`), so the same model predicted
+  slightly differently before and after `save()` / `load()`. All paths now use quality.
 - The inference path could not be imported on a base install: it reached `scipy` through
   a chain into fit-time code, and `scipy` is in the `fit` extra. Any environment installed
   as documented for inference failed at import.
@@ -53,6 +80,10 @@ This release removes an inconsistency, it does not claim a better model.
 
 ### Changed
 
+- The task-level `decision_cutoff_rank` is now the learned probability cutoff expressed
+  against the pooled reference, rather than a mean of the per-descriptor rank cutoffs,
+  which after the change sat on a scale nothing emits. It is reported only — nothing in
+  the package thresholds on it, and `binary` is still `proba >= 0.5`.
 - `ArtifactWrapper` streams inference in chunks instead of featurizing the whole input at
   once. Scoring a million compounds against a 2048-dimensional descriptor no longer needs
   ~8 GB before inference starts. `LAZYQSAR_PREDICT_CHUNK` sets the batch size (default 1000).

@@ -3,9 +3,18 @@
 This is the guarantee the whole deployment story rests on: a model is validated in Python and
 shipped as ONNX, and the two are supposed to be the same model.
 
-``test_head_onnx_roundtrip.py`` checks each head against its own export, feeding both the
-*same* preprocessed matrix. That is the right test for the converters, but it cannot see the
-failure below, because the failure is about the heads receiving slightly *different* input.
+They did not used to be. The exported preprocessor ran in float32 while scikit-learn ran it
+in float64, a difference of about one float32 ULP -- and the heads downstream are piecewise
+constant, so a value landing a hair either side of a learned split fell into a different
+leaf and moved the score by ~0.1. Checking each head against its own export could never see
+it, because that feeds both sides the *same* matrix; the failure was about the heads
+receiving slightly *different* input.
+
+The fix was to stop the two paths differing rather than to widen a tolerance: the fitted
+preprocessor now runs its own exported graph (``BasePreprocessor._bind_onnx_runtime``), so
+the heads are fitted on bit-identical values to the ones they are later served. Several
+tests here therefore assert exact equality where they used to assert a tolerance, and one
+has to synthesise the perturbation it documents, because the pipeline no longer produces it.
 """
 
 import contextlib
@@ -47,11 +56,17 @@ def fitted(tmp_path_factory):
 
 
 def test_the_preprocessor_round_trips(fitted):
-    """It does -- to about 4e-7, which is ordinary float32 rounding and looks harmless."""
+    """Bit-identically, now that the fitted preprocessor runs its own exported graph.
+
+    Exactness is the point, not a tighter tolerance: anything above zero here is a value
+    that could sit on the wrong side of a split threshold. If this starts merely *nearly*
+    passing, the fit-time path has been reverted to scikit-learn's and the whole
+    fit-versus-export gap is back.
+    """
     model, loaded, X = fitted
     mem = np.asarray(model._model.models[0].prep.transform(X))
     onnx = np.asarray(loaded._batches[0].preprocessor.run(X))
-    assert np.abs(mem - onnx).max() < 1e-5
+    np.testing.assert_array_equal(mem, onnx)
 
 
 def test_labels_still_agree(fitted):
@@ -60,47 +75,105 @@ def test_labels_still_agree(fitted):
     assert np.array_equal(model.predict(X=X), loaded.predict(X))
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Known defect: the exported ONNX model disagrees with the model it came from by up "
-        "to ~0.1 in score on non-separable data. Root cause is in "
-        "test_tree_heads_amplify_preprocessor_rounding below. Remove this marker when fixed."
-    ),
-)
 def test_exported_model_matches_the_model_it_came_from(fitted):
+    """The headline guarantee. Was `xfail(strict=True)` until the preprocessor was bound.
+
+    Deliberately on non-separable data: when classes separate cleanly every tree sits far
+    from its thresholds and the defect this pins cannot appear.
+    """
     model, loaded, X = fitted
     np.testing.assert_allclose(
         loaded.predict_score(X)[:, 1], model.predict_score(X=X)[:, 1], atol=1e-5
     )
 
 
-def test_tree_heads_amplify_preprocessor_rounding(fitted):
-    """The mechanism, pinned so the diagnosis is not lost.
+def _pairs_that_flip(a, b):
+    """Boolean matrix of pairs (i, j) that *a* and *b* strictly disagree about ordering."""
+    sign_a = np.sign(np.subtract.outer(a, a))
+    sign_b = np.sign(np.subtract.outer(b, b))
+    return (sign_a * sign_b) < 0
 
-    One ONNX head, two preprocessor outputs that differ only by float32 rounding (~4e-7).
-    A linear or kernel head barely notices. A gradient-boosted tree is piecewise constant, so
-    an input that lands a hair either side of a split threshold falls into a different leaf
-    and the score jumps discontinuously -- here by around 0.4, six orders of magnitude more
-    than the perturbation that caused it.
 
-    That is why the exported model and the fitted model disagree: not because any converter
-    is wrong, but because the ONNX preprocessor hands the tree heads float32 where sklearn
-    handed them float64. This test documents the amplification; it does not assert that the
-    amplification is acceptable.
+def test_the_export_ranks_the_same_compounds_at_the_top(fitted):
+    """The ordering counterpart to `test_labels_still_agree`, for the default output.
+
+    `rank` used to be a mean of the batches' percentiles, which is not a monotone
+    transform of the pooled probability -- so on top of inheriting the score gap above, it
+    could order two compounds the other way round, and an ECDF amplified what it did
+    inherit. It is now the percentile of the pooled probability, which makes it exactly as
+    reproducible as `predict_proba` is and no less.
+    """
+    from scipy.stats import spearmanr
+
+    model, loaded, X = fitted
+    fit_rank = model.predict_rank(X=X)[:, 1]
+    onnx_rank = loaded.predict_rank(X)[:, 1]
+    fit_proba = model.predict_proba(X=X)[:, 1]
+    onnx_proba = loaded.predict_proba(X)[:, 1]
+
+    # Within each runtime, rank must say the same thing about order as proba does.
+    for tag, proba, rank in (
+        ("fit", fit_proba, fit_rank),
+        ("onnx", onnx_proba, onnx_rank),
+    ):
+        order = np.argsort(proba, kind="stable")
+        assert np.all(np.diff(rank[order]) >= -1e-12), (
+            f"{tag}: rank disagrees with proba"
+        )
+
+    # And across the boundary, rank must not disagree about any pair that proba agrees
+    # about. That follows from the monotonicity above and is exact: if rank strictly
+    # orders i above j, so does proba, in whichever runtime. What rank may add is *ties* --
+    # two molecules whose probabilities differ by less than the local knot spacing land on
+    # one percentile -- so the rank correlation can sit a shade below the proba one
+    # without any molecule having been reordered. Hence the pair test rather than a
+    # Spearman comparison.
+    new_flips = _pairs_that_flip(fit_rank, onnx_rank) & ~_pairs_that_flip(
+        fit_proba, onnx_proba
+    )
+    s_rank = spearmanr(fit_rank, onnx_rank).statistic
+    s_proba = spearmanr(fit_proba, onnx_proba).statistic
+    assert not new_flips.any(), (
+        f"rank reorders {new_flips.sum() // 2} pair(s) that proba agrees about "
+        f"(spearman rank {s_rank:.9f}, proba {s_proba:.9f})"
+    )
+
+
+def test_tree_heads_amplify_a_rounding_difference(fitted):
+    """Why the fix had to remove the difference rather than tolerate it.
+
+    The pipeline no longer produces two differing preprocessor outputs, so the
+    perturbation is synthesised: one ULP of float32, the scale the two paths used to
+    disagree by. A linear or kernel head barely notices -- it moves by about the ULP. A
+    gradient-boosted tree is piecewise constant, so an input landing a hair the other side
+    of a learned split falls into a different leaf and the score jumps discontinuously,
+    here by ~0.5, around a millionfold more than the nudge that caused it.
+
+    The nudge is *downward* on purpose, and that asymmetry is the finding. XGBoost's split
+    thresholds coincide with observed feature values, and its rule is ``x < threshold``, so
+    a value sitting exactly on its threshold is unmoved by a nudge up and crosses on a
+    nudge down. Perturbing upward flips nothing at all.
+
+    Kept after the fix because the hazard is avoided, not removed: anything reintroducing
+    a float32-scale difference upstream of a tree head reintroduces this. The test
+    documents the amplification; it does not assert that it is acceptable.
     """
     model, loaded, X = fitted
     batch_mem, batch_onnx = model._model.models[0], loaded._batches[0]
-    prep_mem = np.asarray(batch_mem.prep.transform(X))
-    prep_onnx = np.asarray(batch_onnx.preprocessor.run(X))
+    prep = np.asarray(batch_mem.prep.transform(X))
 
-    perturbation = np.abs(prep_mem - prep_onnx).max()
-    assert perturbation < 1e-5, "the two preprocessors agree to float32 rounding"
+    nudged = np.nextafter(prep.astype(np.float32), np.float32(-np.inf))
+    perturbation = float(
+        np.abs(nudged.astype(np.float64) - prep.astype(np.float64)).max()
+    )
+    assert 0 < perturbation < 1e-5, (
+        "one float32 ULP, the scale the two paths differed by"
+    )
 
     amplified = {}
     for name, head in zip(batch_mem.portfolio, batch_onnx.heads):
-        a = head.predict_score(prep_mem)[:, 1]
-        b = head.predict_score(prep_onnx)[:, 1]
+        a = head.predict_score(prep)[:, 1]
+        b = head.predict_score(nudged)[:, 1]
         amplified[name] = float(np.abs(a - b).max())
 
     tree_heads = [n for n in ("xgb", "rf") if n in amplified]

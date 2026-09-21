@@ -8,6 +8,15 @@ Deliberately numpy-only. No logging either: diagnostics come back as data on
 :class:`CombineResult` and the caller decides whether to render them, which is what lets
 one function serve both the fit-time and inference call sites.
 
+How each output is pooled
+-------------------------
+``proba``, ``logit``, ``lift`` and ``binary`` come from one weighted sum in logit space.
+``score`` is a weighted mean of the raw scores. ``rank`` is *not* a weighted mean of the
+per-descriptor ranks -- averaging percentiles does not give the percentile of the average,
+and the two orderings genuinely disagreed -- it is the pooled probability read off one
+pooled out-of-fold reference, so it is a monotone view of ``proba``. Checkpoints fitted
+before that reference existed fall back to the old weighted mean.
+
 Weights, not just averages
 --------------------------
 Descriptors are not equally trustworthy, so they are combined with a per-sample weight
@@ -25,10 +34,38 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from ..utils.ranking import prepare_knots, rank_from_knots
+
 OUTPUT_NAMES = ("proba", "logit", "rank", "score", "lift", "binary")
 
 _DEFAULT_CUTOFF = 0.5
 _EPS = 1e-7
+
+POOLED_RANKER_KEY = "pooled_ranker"
+
+
+def read_pooled_rank_knots(metadata):
+    """Pull the pooled rank reference out of a task-level ``metadata.json``, or None.
+
+    One reader, because three call sites parse that file -- ``EnsembleSpec.from_metadata``
+    and the two loaders in ``lazyqsar.qsar`` -- and a checkpoint that reaches one of them
+    without the key silently falls back to the pre-v3.5.0 rank instead of failing.
+
+    Parameters
+    ----------
+    metadata : dict or None
+        Parsed ``metadata.json``. Every key is optional.
+
+    Returns
+    -------
+    ndarray or None
+        Ascending float64 knots, or ``None`` when the key is absent or empty.
+    """
+    block = (metadata or {}).get(POOLED_RANKER_KEY) or {}
+    knots = block.get("knots")
+    if knots is None or len(knots) == 0:
+        return None
+    return np.asarray(knots, dtype=np.float64)
 
 
 @dataclass(frozen=True)
@@ -57,6 +94,13 @@ class EnsembleSpec:
         Fraction of positives in the training set, the denominator for ``lift``.
     decision_cutoff : float
         Probability threshold for ``binary``.
+    pooled_rank_knots : ndarray, or None
+        Ascending ECDF knots over the pooled out-of-fold probability, built at fit time
+        by :func:`lazyqsar.ensemble.reference.build_pooled_rank_knots`. When present,
+        ``rank`` is this ECDF evaluated at the pooled probability. ``None`` -- the state
+        of every checkpoint fitted before v3.5.0 -- keeps the earlier weighted mean of
+        per-descriptor ranks. Not per-descriptor, so it is never sliced: it is written
+        after the active set is settled and describes exactly that set.
     """
 
     descriptor_names: tuple[str, ...] = ()
@@ -66,6 +110,7 @@ class EnsembleSpec:
     ad_hard_cutoffs: tuple[float, ...] | None = None
     population_prior: float = 0.5
     decision_cutoff: float = _DEFAULT_CUTOFF
+    pooled_rank_knots: np.ndarray | None = None
 
     @classmethod
     def from_metadata(
@@ -117,6 +162,7 @@ class EnsembleSpec:
             )
 
         prior = metadata.get("population_prior", 0.5)
+        pooled_knots = read_pooled_rank_knots(metadata)
         # decision_cutoff is deliberately NOT read from metadata["decision_cutoff_proba"].
         # That learned, balanced-accuracy-optimal threshold exists in every checkpoint but
         # has never been used by either prediction path, and adopting it would move the
@@ -137,6 +183,7 @@ class EnsembleSpec:
                     else None
                 ),
                 population_prior=float(prior if prior is not None else 0.5),
+                pooled_rank_knots=pooled_knots,
             ),
             active_names,
         )
@@ -361,9 +408,15 @@ def combine(Y, R=None, S=None, A=None, *, spec, outputs=OUTPUT_NAMES, cutoff=Non
     values: dict[str, np.ndarray] = {}
     wanted = set(outputs)
 
+    # `rank` is the pooled probability read off the pooled reference, so it needs the
+    # log-odds sum too -- and an `outputs=("rank",)` call would otherwise leave `p1`
+    # unbound.
+    pooled_knots = getattr(spec, "pooled_rank_knots", None)
+    pooled_rank = "rank" in wanted and pooled_knots is not None and len(pooled_knots)
+
     # proba, logit, lift and binary all derive from one weighted log-odds sum; computing
     # it once is what makes asking for several outputs cost no more than asking for one.
-    needs_logit = bool(wanted & {"proba", "logit", "lift", "binary"})
+    needs_logit = bool(wanted & {"proba", "logit", "lift", "binary"}) or pooled_rank
     if needs_logit:
         logits = np.log(np.clip(Y, _EPS, 1 - _EPS) / np.clip(1 - Y, _EPS, 1 - _EPS))
         l1 = (W * logits).sum(axis=1)
@@ -374,7 +427,13 @@ def combine(Y, R=None, S=None, A=None, *, spec, outputs=OUTPUT_NAMES, cutoff=Non
     if "logit" in wanted:
         values["logit"] = np.vstack((-l1, l1)).T
     if "rank" in wanted:
-        r1 = (W * R).sum(axis=1)
+        if pooled_rank:
+            r1 = rank_from_knots(p1, prepared=prepare_knots(pooled_knots))
+        else:
+            # Pre-v3.5.0 checkpoints carry no pooled reference. Silently, because a
+            # missing key is their normal state, and because this module deliberately
+            # has no logger.
+            r1 = (W * R).sum(axis=1)
         values["rank"] = np.vstack((1 - r1, r1)).T
     if "score" in wanted:
         s1 = (W * S).sum(axis=1)
