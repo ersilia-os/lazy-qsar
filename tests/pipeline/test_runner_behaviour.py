@@ -1,8 +1,13 @@
-"""The shared inference runner: reuse, chunking, channel selection and hygiene.
+"""The shared inference runner: reuse, chunking and hygiene.
 
 The runner is not wired into any entry point yet, so these tests drive it directly. They
 cover the properties the CLI and Python paths will inherit from it, and the ones a
 refactor could silently drop.
+
+Channel selection and source resolution are pure functions that never open a model, so
+they are tested in ``tests/unit/test_channels_selection.py`` and
+``tests/unit/test_runner_sources.py`` instead -- on the base install, without paying for
+the ``fit`` extra or a checkpoint build. Do not re-add them here.
 """
 
 import json
@@ -13,7 +18,6 @@ import pytest
 from _helpers.checkpoints import build_checkpoint
 from _helpers.smiles import make_smiles
 
-from lazyqsar.ensemble.channels import required_channels
 from lazyqsar.ensemble.combine import OUTPUT_NAMES
 from lazyqsar.ensemble.runner import (
     TaskSource,
@@ -21,67 +25,6 @@ from lazyqsar.ensemble.runner import (
     sources_from_mapping,
     sources_from_parent,
 )
-
-# ---------------------------------------------------------------------------
-# Channel selection
-# ---------------------------------------------------------------------------
-
-
-def test_required_channels_minimal_without_ad():
-    """No AD means uniform weights, so ranks are only needed if rank was asked for."""
-    assert required_channels(("proba",), has_ad=False) == {"y"}
-    assert required_channels(("logit", "lift", "binary"), has_ad=False) == {"y"}
-    assert required_channels(("rank",), has_ad=False) == {"y", "r"}
-    assert required_channels(("score",), has_ad=False) == {"y", "s"}
-
-
-def test_required_channels_with_ad_always_needs_rank():
-    """The weighting derives its per-sample reliability term from the ranks."""
-    assert required_channels(("proba",), has_ad=True) == {"y", "r", "a"}
-    assert required_channels(("score",), has_ad=True) == {"y", "r", "s", "a"}
-
-
-# ---------------------------------------------------------------------------
-# Source resolution
-# ---------------------------------------------------------------------------
-
-
-def test_sources_from_parent_sorted(multitask_checkpoint):
-    root, tasks, _, _ = multitask_checkpoint
-    sources = sources_from_parent(root)
-    assert [s.column_name for s in sources] == sorted(tasks)
-
-
-def test_sources_from_parent_models_txt_filters_and_reorders(
-    multitask_checkpoint, tmp_path
-):
-    root, _, _, _ = multitask_checkpoint
-    models_txt = tmp_path / "m.txt"
-    models_txt.write_text("taskC\ntaskA\n")
-    sources = sources_from_parent(root, str(models_txt))
-    assert [s.column_name for s in sources] == ["taskC", "taskA"]
-
-
-def test_sources_from_mapping_keeps_caller_order(multitask_checkpoint):
-    root, _, _, _ = multitask_checkpoint
-    col_map = {
-        "Zeta": os.path.join(root, "taskC"),
-        "Alpha": os.path.join(root, "taskA"),
-    }
-    assert [s.column_name for s in sources_from_mapping(col_map)] == ["Zeta", "Alpha"]
-
-
-def test_sources_from_mapping_keeps_duplicate_directories(multitask_checkpoint):
-    """Two columns may name one directory; a dict keyed by path would lose one."""
-    root, _, _, _ = multitask_checkpoint
-    col_map = {
-        "primary": os.path.join(root, "taskA"),
-        "primary_alias": os.path.join(root, "taskA"),
-    }
-    sources = sources_from_mapping(col_map)
-    assert [s.column_name for s in sources] == ["primary", "primary_alias"]
-    assert sources[0].task_dir == sources[1].task_dir
-
 
 # ---------------------------------------------------------------------------
 # Descriptor reuse
@@ -163,17 +106,6 @@ def test_chunk_size_does_not_change_results(multitask_checkpoint, chunk):
         assert np.allclose(a, b, rtol=0, atol=1e-6), (
             f"chunk_size={chunk} moved {name} by {np.abs(a - b).max():.2e}"
         )
-
-
-def test_chunk_size_from_environment(multitask_checkpoint, monkeypatch):
-    from lazyqsar.ensemble.runner import get_chunk_size
-
-    monkeypatch.setenv("LAZYQSAR_PREDICT_CHUNK", "13")
-    assert get_chunk_size() == 13
-    monkeypatch.setenv("LAZYQSAR_PREDICT_CHUNK", "nonsense")
-    assert get_chunk_size() == 1000
-    monkeypatch.setenv("LAZYQSAR_PREDICT_CHUNK", "-5")
-    assert get_chunk_size() == 1000
 
 
 # ---------------------------------------------------------------------------

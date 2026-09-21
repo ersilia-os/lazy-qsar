@@ -20,6 +20,10 @@ env:
   FORCE_COLOR: "1"
   RUFF_VERSION: "0.14.0"
 
+# Three jobs, no `needs` between them, so all three start at once and the run is as long
+# as its slowest job rather than the sum. The selectors are disjoint: `base` runs the base
+# tier, `full` runs everything. They used to overlap -- the old `fit` job ran base+fit and
+# the old `chem` job ran the whole suite -- so the base tier was executed five times per PR.
 jobs:
   lint:
     name: lint
@@ -60,65 +64,28 @@ jobs:
           ruff check --statistics lazyqsar >> "$GITHUB_STEP_SUMMARY" 2>&1 || true
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
-  build:
-    name: build
+  base:
+    # The Ersilia Model Hub deployment contract. This job cannot be merged into `full`:
+    # its whole point is that the package works with scikit-learn and RDKit *absent*,
+    # which is unprovable in an environment that has them installed.
+    name: base (core deps only)
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install build twine
-      - run: python -m build
-      - run: twine check dist/*
-      # poetry-core discovers packages implicitly; if that ever breaks, an empty wheel
-      # would sail through every other job because the source tree is also importable.
-      - name: Assert the wheel actually contains the package
-        run: |
-          python - <<'PY'
-          import glob, sys, zipfile
-          names = [n for n in zipfile.ZipFile(glob.glob("dist/*.whl")[0]).namelist()
-                   if n.startswith("lazyqsar/") and n.endswith(".py")]
-          print(len(names), "modules in the wheel")
-          sys.exit(0 if len(names) > 50 else 1)
-          PY
-      - uses: actions/upload-artifact@v4
-        with:
-          name: dist
-          path: dist/
-          retention-days: 7
-
-  base:
-    # The Ersilia Model Hub deployment contract, as a real environment rather than an
-    # in-process import blocker.
-    name: base (py${{ matrix.python }})
-    needs: build
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    strategy:
-      fail-fast: false
-      matrix:
-        python: ["3.11", "3.12"]
-    env:
-      COVERAGE_FILE: .coverage.base-${{ matrix.python }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python }}
-      - uses: actions/download-artifact@v4
-        with: { name: dist, path: dist }
       - uses: actions/cache@v4
         with:
           path: ~/.cache/pip
           # The tier is part of the key: a shared key would let this job's small cache
-          # overwrite the one the fit job needs.
-          key: pip-${{ runner.os }}-py${{ matrix.python }}-base-${{ hashFiles('pyproject.toml') }}
-          restore-keys: pip-${{ runner.os }}-py${{ matrix.python }}-base-
+          # overwrite the one the full job needs.
+          key: pip-${{ runner.os }}-py3.12-base-${{ hashFiles('pyproject.toml') }}
+          restore-keys: pip-${{ runner.os }}-py3.12-base-
 
-      - name: Install the wheel (core dependencies only)
-        run: pip install "$(ls dist/*.whl)[test]"
+      - name: Install core dependencies only
+        run: pip install ".[test]"
 
       - name: Assert the environment is genuinely minimal
         run: |
@@ -139,139 +106,49 @@ jobs:
           /tmp/ersilia-env/bin/pip install -q numpy==2.1.3 onnxruntime==1.20.1 \
                                               pandas==2.3.0 rich==14.1.0 loguru==0.7.3 \
                                               h5py==3.14.0 psutil==7.0.0
-          /tmp/ersilia-env/bin/pip install -q --no-deps "$(ls dist/*.whl)"
+          /tmp/ersilia-env/bin/pip install -q --no-deps .
           /tmp/ersilia-env/bin/python -c "
           import lazyqsar.api.classifier_predict, lazyqsar.registry, lazyqsar.ensemble.runner
           print('the inference path imports on a template install')"
 
-      # `pytest`, never `python -m pytest`: the latter puts the repo root on sys.path and
-      # would shadow the installed wheel with the source tree.
-      - name: Tests (base-install subset)
-        run: pytest -m "not fit and not chem and not deep and not network" --cov --cov-report=
+      - name: Tests (base tier)
+        run: pytest -m "not fit and not chem and not deep"
 
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: coverage-base-${{ matrix.python }}
-          path: .coverage.base-${{ matrix.python }}
-          include-hidden-files: true
-          if-no-files-found: ignore
-
-  fit:
-    name: fit (py${{ matrix.python }})
-    needs: build
+  full:
+    # Everything the PR path covers: fitting, ONNX export, the pipeline and real RDKit.
+    # No FPSim2 -- only descriptors/cddd.py needs it and nothing in the suite reaches cddd.
+    name: full (fit + rdkit)
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        python: ["3.11", "3.12"]
-    env:
-      COVERAGE_FILE: .coverage.fit-${{ matrix.python }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python }}
-      - uses: actions/download-artifact@v4
-        with: { name: dist, path: dist }
-      - uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: pip-${{ runner.os }}-py${{ matrix.python }}-fit-${{ hashFiles('pyproject.toml') }}
-          restore-keys: pip-${{ runner.os }}-py${{ matrix.python }}-fit-
-
-      - name: Install the wheel with [fit]
-        run: pip install "$(ls dist/*.whl)[fit,test]"
-
-      # The package pins OMP_NUM_THREADS=1, so each fit is single-threaded and the other
-      # vCPUs are idle. loadfile (not load) keeps a module's session checkpoint on one
-      # worker instead of rebuilding it per worker.
-      - name: Tests
-        run: pytest -m "not chem and not deep and not network" -n auto --dist loadfile --cov --cov-report=
-
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: coverage-fit-${{ matrix.python }}
-          path: .coverage.fit-${{ matrix.python }}
-          include-hidden-files: true
-          if-no-files-found: ignore
-
-  chem:
-    # Real chemistry without torch. rdkit and FPSim2 are cheap wheels and between them
-    # cover morgan, rdkit, clamp and cddd -- four of the five descriptors. Only chemeleon
-    # needs torch, which is why torch is fair to leave to the nightly run.
-    name: chem (fit + rdkit)
-    needs: build
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    env:
-      COVERAGE_FILE: .coverage.chem-3.12
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - uses: actions/download-artifact@v4
-        with: { name: dist, path: dist }
       - uses: actions/cache@v4
         with:
           path: ~/.cache/pip
-          key: pip-${{ runner.os }}-py3.12-chem-${{ hashFiles('pyproject.toml') }}
-          restore-keys: pip-${{ runner.os }}-py3.12-chem-
+          key: pip-${{ runner.os }}-py3.12-full-${{ hashFiles('pyproject.toml') }}
+          restore-keys: pip-${{ runner.os }}-py3.12-full-
 
-      - name: Install the wheel with [fit] plus rdkit and FPSim2
-        run: pip install "$(ls dist/*.whl)[fit,test]" "rdkit==2025.9.1" "FPSim2==0.7.3"
+      - name: Install with [fit] plus rdkit
+        run: pip install ".[fit,test]" "rdkit==2025.9.1"
 
       - name: Assert torch did not sneak in
         run: python -c "import importlib.util as u,sys; sys.exit(1 if u.find_spec('torch') else 0)"
 
-      - name: Tests
-        run: pytest -m "not deep and not network" -n auto --dist loadfile --cov --cov-report=
-
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: coverage-chem-3.12
-          path: .coverage.chem-3.12
-          include-hidden-files: true
-          if-no-files-found: ignore
-
-  coverage:
-    # Each tier can only reach part of the package, so a per-job number is misleading.
-    # The combined figure is the real one.
-    name: coverage
-    needs: [base, fit, chem]
-    if: always()
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with: { python-version: "3.12" }
-      # Must not be older than what pytest-cov wrote the data files with.
-      - run: pip install "coverage[toml]==7.16.1"
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: coverage-*
-          merge-multiple: true
-      - name: Combine and report
-        run: |
-          coverage combine || true
-          { echo '### Coverage (base + fit + chem combined)'; echo; } >> "$GITHUB_STEP_SUMMARY"
-          coverage report --format=markdown >> "$GITHUB_STEP_SUMMARY" || true
-          coverage xml || true
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with: { name: coverage-xml, path: coverage.xml, if-no-files-found: ignore }
+      # The package pins OMP_NUM_THREADS=1, so each fit is single-threaded and the other
+      # vCPUs are idle. loadfile (not load) keeps a module's session checkpoint on one
+      # worker instead of rebuilding it per worker.
+      - name: Tests (everything but the deep tier)
+        run: pytest -m "not deep" -n auto --dist loadfile
 
   ci-ok:
     # One required status check, so branch protection needs a single entry and adding a
-    # matrix entry does not mean editing the protection rule.
+    # job does not mean editing the protection rule.
     name: ci-ok
     if: always()
-    needs: [lint, build, base, fit, chem, coverage]
+    needs: [lint, base, full]
     runs-on: ubuntu-latest
     steps:
       - name: Fail if any job did not succeed

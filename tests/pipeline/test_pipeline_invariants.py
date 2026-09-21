@@ -328,36 +328,21 @@ def test_both_loaders_agree_on_the_weighting_aucs(multitask_checkpoint):
     )
 
 
-def test_cli_fit_writes_ensemble_checkpoints(tmp_path, stub_descriptors):
+def test_cli_fit_writes_ensemble_checkpoints(pooled_checkpoint):
     """The CLI fit now produces what the Python API produces.
 
     Previously it wrote per-descriptor models and a hand-rolled metadata.json with no
     portfolio, no applicability domain and none of the weighting fields, so a CLI
     checkpoint and a Python checkpoint were different kinds of object.
+
+    Shares ``pooled_checkpoint`` with ``tests/pipeline/test_rank_shortcut.py`` rather than
+    fitting again: a CLI fit is the most expensive thing a test in this file can do, and
+    both files want the same one.
     """
-    from lazyqsar.api.classifier_fit import fit
-
-    register = stub_descriptors
-    register("morgan")
-
-    data_dir = tmp_path / "data"
-    data_dir.mkdir()
-    smiles = make_smiles(80)
-    rng = np.random.default_rng(11)
-    for task in ("alpha", "beta"):
-        y = rng.integers(0, 2, len(smiles))
-        y[:10] = 1
-        y[-10:] = 0
-        rows = "".join(f"{s},{int(v)}\n" for s, v in zip(smiles, y))
-        (data_dir / f"{task}.csv").write_text("smiles,bin\n" + rows)
-
-    out = tmp_path / "models"
-    fit(data_dir=str(data_dir), model_dir=str(out), mode="fast")
-
-    for task in ("alpha", "beta"):
-        task_dir = out / task
-        assert (task_dir / "morgan" / "applicability_domain").is_dir()
-        with open(task_dir / "metadata.json") as f:
+    for task in pooled_checkpoint["tasks"]:
+        task_dir = os.path.join(pooled_checkpoint["models"], task)
+        assert os.path.isdir(os.path.join(task_dir, "morgan", "applicability_domain"))
+        with open(os.path.join(task_dir, "metadata.json")) as f:
             meta = json.load(f)
         for key in (
             "quality_aucs",
@@ -377,27 +362,10 @@ def test_cli_fit_rejects_an_unknown_mode(tmp_path):
         fit(data_dir=str(tmp_path), model_dir=str(tmp_path / "out"), mode="default")
 
 
-def test_cli_fit_leaves_no_scratch_in_the_model_dir(tmp_path, stub_descriptors):
-    from lazyqsar.api.classifier_fit import fit
-
-    register = stub_descriptors
-    register("morgan")
-    data_dir = tmp_path / "data"
-    data_dir.mkdir()
-    smiles = make_smiles(60)
-    rng = np.random.default_rng(12)
-    y = rng.integers(0, 2, len(smiles))
-    y[:8] = 1
-    y[-8:] = 0
-    rows = "".join(f"{s},{int(v)}\n" for s, v in zip(smiles, y))
-    (data_dir / "solo.csv").write_text("smiles,bin\n" + rows)
-
-    out = tmp_path / "models"
-    fit(data_dir=str(data_dir), model_dir=str(out), mode="fast")
-
+def test_cli_fit_leaves_no_scratch_in_the_model_dir(pooled_checkpoint):
     leftovers = [
         os.path.join(d, f)
-        for d, _, files in os.walk(out)
+        for d, _, files in os.walk(pooled_checkpoint["models"])
         for f in files
         if f.endswith(".npy")
     ]

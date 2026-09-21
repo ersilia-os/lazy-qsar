@@ -3,7 +3,7 @@
 The session checkpoint is the suite's main runtime saving, and the classic failure mode of a
 shared fixture is one test quietly writing into it and poisoning every later test. Rather
 than trusting each test not to, snapshot the tree and assert it is unchanged at teardown.
-Tests that legitimately need to write should request ``mutable_checkpoint`` instead.
+Tests that legitimately need to write should build their own checkpoint in ``tmp_path``.
 """
 
 from _helpers.tiers import skip_directory_if_tier_unavailable

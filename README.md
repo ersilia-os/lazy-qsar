@@ -189,14 +189,23 @@ naming the absent module, never an error.
 | Selection | Needs | Covers |
 |---|---|---|
 | `pytest -m "not fit and not chem and not deep"` | the base install | the inference path, the ensemble arithmetic, the registry and the CLI surface |
-| `pytest -m "not chem and not deep"` | `.[fit]` | the above, plus fitting, ONNX export and the full pipeline |
-| `pytest` | `.[all]` | everything, including the real descriptors |
+| `pytest -m "not deep"` | `.[fit]` plus `rdkit` | everything CI runs: the above, plus fitting, ONNX export, the pipeline and the real descriptors |
+| `pytest` | `.[all]` | also the torch-backed descriptors, which CI does not run |
 
 The base selection is the contract Ersilia Model Hub templates depend on: it must pass on
 the core dependencies alone — `numpy`, `onnxruntime`, `pandas`, `h5py`, `psutil`, `rich`
 and `loguru` — with no `scikit-learn`, `xgboost` or RDKit anywhere on the path. Add
 `-n auto --dist loadfile` for the heavier tiers, and `--durations=15` to see where the
 time goes.
+
+CI runs the first two selections as two parallel jobs on Python 3.12, so a pull request
+finishes in a few minutes. The `deep` tier — torch, chemprop, chemeleon — is not run
+anywhere automatically; exercise it locally with `pip install ".[all,test]"` before
+changing a descriptor.
+
+Install the `fit` extra from the pins rather than whatever is already in your environment:
+`scikit-learn` in particular is pinned to `1.9.1`, and descriptor selection differs enough
+between minor versions to change which descriptors a portfolio keeps.
 
 Test data lives in `tests/data/` and is documented in `tests/data/README.md`.
 
@@ -236,7 +245,7 @@ outputs, header = predict(model_dir=checkpoints_dir, smiles=smiles_list, predict
 write_out(outputs, header, output_file, np.float32)
 ```
 
-Descriptors are computed once per descriptor type and shared across every task, and the whole input is streamed in chunks rather than held in memory, so this scales to large compound libraries. Set `LAZYQSAR_PREDICT_CHUNK` to change the batch size (default 1000).
+Descriptors are computed once per descriptor type and shared across every task, and molecules are scored in blocks whose working set is released before the next block starts, so peak memory does not grow with the size of the input. The block size is derived from a fixed working-set budget of roughly 1 GB and the number of endpoints being scored, and is always a whole number of chunks — which is what keeps the output identical however the input is divided — so there is no knob for it. `LAZYQSAR_PREDICT_CHUNK` (default 1000) sets the featurization and inference batch size within a block.
 
 `model_dir` also accepts a `dict[str, str]` mapping **column names to model directories**, for scoring multiple targets stored under separate paths. Column names and their order are preserved exactly as given.
 

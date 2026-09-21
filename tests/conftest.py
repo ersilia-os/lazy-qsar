@@ -11,9 +11,8 @@ Tier markers are applied here rather than in each file, and a missing dependency
 
 import contextlib
 import dataclasses
-import os
 import pathlib
-import shutil
+import zlib
 
 import numpy as np
 import pytest
@@ -133,25 +132,6 @@ def checkpoint(_checkpoint_build, stub_descriptors):
 
 
 @pytest.fixture
-def mutable_checkpoint(_checkpoint_build, tmp_path):
-    """A private copy, for tests that write into a checkpoint.
-
-    Copying a few MB costs milliseconds; refitting costs seconds.
-    """
-    dst = tmp_path / "models"
-    shutil.copytree(_checkpoint_build.root, dst)
-    return dataclasses.replace(_checkpoint_build, root=str(dst))
-
-
-@pytest.fixture
-def load_model(checkpoint):
-    """Factory returning a *fresh* wrapper per call, so ``_ensemble_cache`` starts cold."""
-    from lazyqsar.qsar import LazyClassifierQSAR
-
-    return lambda task: LazyClassifierQSAR.load(os.path.join(checkpoint.root, task))
-
-
-@pytest.fixture
 def multitask_checkpoint(checkpoint):
     """``(root, tasks, smiles, counter)`` -- the shape the ported tests expect.
 
@@ -165,22 +145,66 @@ def multitask_checkpoint(checkpoint):
 
 
 @pytest.fixture(scope="session")
-def _multidescriptor_build(tmp_path_factory):
-    from _helpers.checkpoints import build_multidescriptor_checkpoint
+def _streaming_build(tmp_path_factory):
+    from _helpers.checkpoints import build_streaming_checkpoint
 
-    root = str(tmp_path_factory.mktemp("multi") / "models")
+    root = str(tmp_path_factory.mktemp("streaming") / "models")
     with stubbed_registry() as register:
-        root, task, smiles, descriptors = build_multidescriptor_checkpoint(
-            root, register
+        root, tasks, smiles, descriptors = build_streaming_checkpoint(root, register)
+    return {"root": root, "tasks": tasks, "smiles": smiles, "descriptors": descriptors}
+
+
+@pytest.fixture(scope="session")
+def _pooled_build(tmp_path_factory):
+    """A CLI-fitted checkpoint, which is what carries the pooled rank reference.
+
+    Built through ``api.classifier_fit.fit`` rather than ``build_checkpoint``: the pooled
+    reference is written by ``LazyClassifierQSAR.save_raw``, so a hand-assembled checkpoint
+    does not have one and silently exercises the pre-v3.5.0 fallback instead.
+    """
+    import contextlib
+    import io
+
+    from _helpers.smiles import make_smiles
+
+    root = tmp_path_factory.mktemp("pooled")
+    data = root / "data"
+    data.mkdir()
+    smiles = make_smiles(80)
+    rng = np.random.default_rng(5)
+    for task in ("alpha", "beta"):
+        y = rng.integers(0, 2, len(smiles))
+        y[:10] = 1
+        y[-10:] = 0
+        (data / f"{task}.csv").write_text(
+            "smiles,bin\n" + "".join(f"{s},{int(v)}\n" for s, v in zip(smiles, y))
         )
-    return {"root": root, "task": task, "smiles": smiles, "descriptors": descriptors}
+    models = root / "models"
+    with stubbed_registry() as register:
+        register("morgan")
+        from lazyqsar.api.classifier_fit import fit
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            fit(data_dir=str(data), model_dir=str(models), mode="fast")
+    return {"models": str(models), "smiles": smiles, "tasks": ["alpha", "beta"]}
 
 
 @pytest.fixture
-def multidescriptor_checkpoint(_multidescriptor_build, stub_descriptors):
-    """One task over three stubbed descriptors, for combining and weighting tests."""
-    stub_descriptors(*_multidescriptor_build["descriptors"])
-    return _multidescriptor_build
+def pooled_checkpoint(_pooled_build, stub_descriptors):
+    """Two tasks over one descriptor, fitted so that they carry a pooled rank reference."""
+    stub_descriptors("morgan")
+    return _pooled_build
+
+
+@pytest.fixture
+def streaming_checkpoint(_streaming_build, stub_descriptors):
+    """Two tasks over three stubbed descriptors, for the streaming/memory invariants.
+
+    The other two checkpoints each hold one of those dimensions at one, which makes "one
+    descriptor matrix on disk" or "one ONNX artifact in memory" true by construction.
+    """
+    stub_descriptors(*_streaming_build["descriptors"])
+    return _streaming_build
 
 
 # ------------------------------------------------------------------------- hygiene
@@ -210,5 +234,10 @@ def _scramble_global_rng(request):
     ``"randomized"`` at these dimensionalities and otherwise draws from global state. A fixed
     ambient seed would make a regression there invisible; a varying one turns it into a
     failure.
+
+    ``zlib.crc32`` rather than ``hash``: Python salts string hashing per process, so
+    ``hash(nodeid)`` gave a different seed on every run and a failure this tripwire caught
+    could not be reproduced by re-running it. crc32 is stable across processes while still
+    differing per test, which is the property actually wanted.
     """
-    np.random.seed(abs(hash(request.node.nodeid)) % (2**32))
+    np.random.seed(zlib.crc32(request.node.nodeid.encode()))

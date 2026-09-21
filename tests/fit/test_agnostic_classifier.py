@@ -26,13 +26,33 @@ def data():
     return X, y
 
 
-@pytest.fixture
-def h5_path(data, tmp_path):
+@pytest.fixture(scope="module")
+def h5_path(data, tmp_path_factory):
     X, _ = data
-    path = str(tmp_path / "desc.h5")
+    path = str(tmp_path_factory.mktemp("h5") / "desc.h5")
     with h5py.File(path, "w") as f:
         f.create_dataset("Values", data=X)
     return path
+
+
+@pytest.fixture(scope="module")
+def fitted(data):
+    """One fit, shared by every test that only reads the result.
+
+    Eight tests used to fit their own ``LazyClassifier`` on the same 200x30 array purely to
+    have something to call a predictor on, which was most of this file's runtime. Sharing is
+    safe here in a way it is not for the SMILES path: there are no descriptors, so there is
+    no featurization cache whose warmth could make a later assertion pass vacuously, and
+    ``save()`` delegates to ``self._model.save`` without rebinding anything on the instance.
+
+    The three tests that still fit their own model do so because the fit *is* the assertion:
+    the h5-versus-array comparison needs two, and the fluency test reads what ``fit``
+    returns.
+    """
+    X, y = data
+    model = LazyClassifier()
+    model.fit(X=X, y=y)
+    return model
 
 
 # ------------------------------------------------------------------------------ _load_h5
@@ -110,21 +130,18 @@ def test_the_h5_path_and_the_array_path_are_the_same_model(data, h5_path):
     "method",
     ["predict_proba", "predict_logit", "predict_score", "predict_lift", "predict_rank"],
 )
-def test_every_predictor_accepts_both_input_forms(data, h5_path, method):
-    X, y = data
-    model = LazyClassifier()
-    model.fit(X=X, y=y)
+def test_every_predictor_accepts_both_input_forms(data, h5_path, fitted, method):
+    X, _ = data
     np.testing.assert_allclose(
-        getattr(model, method)(X=X), getattr(model, method)(h5_file=h5_path), atol=1e-6
+        getattr(fitted, method)(X=X),
+        getattr(fitted, method)(h5_file=h5_path),
+        atol=1e-6,
     )
 
 
-def test_fitted_aucs_are_probabilities(data):
-    X, y = data
-    model = LazyClassifier()
-    model.fit(X=X, y=y)
-    assert 0.0 <= model.oof_auc_ <= 1.0
-    assert 0.0 <= model.train_auc_ <= 1.0
+def test_fitted_aucs_are_probabilities(fitted):
+    assert 0.0 <= fitted.oof_auc_ <= 1.0
+    assert 0.0 <= fitted.train_auc_ <= 1.0
 
 
 def test_fit_is_not_fluent(data):
@@ -136,13 +153,11 @@ def test_fit_is_not_fluent(data):
 # ---------------------------------------------------------------------------- save / load
 
 
-def test_directory_round_trip_preserves_predictions(data, tmp_path):
-    X, y = data
-    model = LazyClassifier()
-    model.fit(X=X, y=y)
-    before = model.predict_proba(X=X)
+def test_directory_round_trip_preserves_predictions(data, fitted, tmp_path):
+    X, _ = data
+    before = fitted.predict_proba(X=X)
 
-    out = model.save(str(tmp_path / "m"))
+    out = fitted.save(str(tmp_path / "m"))
     assert out == str(tmp_path / "m")
 
     reloaded = LazyClassifier.load(out)
@@ -156,14 +171,12 @@ def test_directory_round_trip_preserves_predictions(data, tmp_path):
     np.testing.assert_allclose(reloaded.predict_proba(X).sum(axis=1), 1.0, atol=1e-6)
 
 
-def test_zip_round_trip_preserves_predictions(data, tmp_path):
+def test_zip_round_trip_preserves_predictions(data, fitted, tmp_path):
     """The README tells people to do this, so it has to work."""
-    X, y = data
-    model = LazyClassifier()
-    model.fit(X=X, y=y)
-    before = model.predict_proba(X=X)
+    X, _ = data
+    before = fitted.predict_proba(X=X)
 
-    archive = model.save(str(tmp_path / "m.zip"))
+    archive = fitted.save(str(tmp_path / "m.zip"))
     assert archive.endswith(".zip")
     assert os.path.isfile(archive)
     assert not os.path.exists(str(tmp_path / "m")), (

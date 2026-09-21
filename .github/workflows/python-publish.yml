@@ -15,6 +15,52 @@ jobs:
   ci:
     uses: ./.github/workflows/ci.yml
 
+  # The wheel is built here rather than in ci.yml. Building on every PR gated the three
+  # test jobs behind it for a ~2 minute serialisation that only a release actually needs.
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install build twine
+      - run: python -m build
+      - run: twine check dist/*
+
+      # poetry-core discovers packages implicitly; if that ever breaks, an empty wheel
+      # would sail through every other job because the source tree is also importable.
+      - name: Assert the wheel actually contains the package
+        run: |
+          python - <<'PY'
+          import glob, sys, zipfile
+          names = [n for n in zipfile.ZipFile(glob.glob("dist/*.whl")[0]).namelist()
+                   if n.startswith("lazyqsar/") and n.endswith(".py")]
+          print(len(names), "modules in the wheel")
+          sys.exit(0 if len(names) > 50 else 1)
+          PY
+
+      # The base tier proves the source tree imports on core dependencies alone; this
+      # proves the built wheel does too, which is the artifact Ersilia actually installs.
+      - name: Ersilia template smoke on the built wheel (--no-deps)
+        run: |
+          python -m venv /tmp/ersilia-env
+          /tmp/ersilia-env/bin/pip install -q numpy==2.1.3 onnxruntime==1.20.1 \
+                                              pandas==2.3.0 rich==14.1.0 loguru==0.7.3 \
+                                              h5py==3.14.0 psutil==7.0.0
+          /tmp/ersilia-env/bin/pip install -q --no-deps "$(ls dist/*.whl)"
+          /tmp/ersilia-env/bin/python -c "
+          import lazyqsar.api.classifier_predict, lazyqsar.registry, lazyqsar.ensemble.runner
+          print('the published wheel imports on a template install')"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          retention-days: 7
+
   check-version:
     name: version matches the tag
     runs-on: ubuntu-latest
@@ -39,7 +85,7 @@ jobs:
           PY
 
   publish:
-    needs: [ci, check-version]
+    needs: [ci, build, check-version]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment:
@@ -50,7 +96,7 @@ jobs:
       # workflow_dispatch can trigger.
       id-token: write
     steps:
-      # Same run, so the reusable workflow's build artifact is visible here.
+      # Same run, so the build job's artifact is visible here.
       - uses: actions/download-artifact@v4
         with: { name: dist, path: dist }
       - uses: pypa/gh-action-pypi-publish@release/v1

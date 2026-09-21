@@ -80,8 +80,6 @@ markers = [
   "fit: requires the [fit] extra (scikit-learn, xgboost, skl2onnx, scipy, joblib)",
   "chem: requires RDKit (the [descriptors] extra)",
   "deep: requires torch / chemprop / chemeleon",
-  "network: downloads model checkpoints",
-  "slow: takes more than a second or so",
 ]
 # No `-m` default: a default deselect is how a whole tier stays broken for a month unnoticed.
 

@@ -93,19 +93,30 @@ def build_multitask_checkpoint(root, register, tasks=("taskA", "taskB", "taskC")
     return root, tasks, smiles
 
 
-def build_multidescriptor_checkpoint(
-    root, register, descriptors=("morgan", "rdkit", "cddd")
+def build_streaming_checkpoint(
+    root, register, tasks=("taskE", "taskF"), descriptors=("morgan", "rdkit")
 ):
-    """One task over several stubbed descriptors, for the combining and weighting tests."""
+    """Two tasks over the same two stubbed descriptors.
+
+    The shape the streaming invariants need, and the smallest one that works.
+    ``build_multitask_checkpoint`` has a single descriptor, so in it both "one descriptor
+    matrix on disk at a time" and "one ONNX artifact in memory at a time" hold by
+    construction and the tests pass while asserting nothing. Two tasks over two
+    descriptors is the minimum at which neither holds for free -- going below this makes
+    the streaming tests vacuous rather than merely weaker.
+    """
     from .smiles import make_smiles
 
+    tasks = list(tasks)
     descriptors = list(descriptors)
     counter = register(*descriptors)
-    rng = np.random.default_rng(1)
-    smiles = make_smiles(80)
-    y = rng.integers(0, 2, len(smiles))
-    y[:8] = 1
-    y[-8:] = 0
-    build_checkpoint(root, "taskD", descriptors, smiles, y)
+    rng = np.random.default_rng(2)
+    smiles = make_smiles(90)
+    for i, task in enumerate(tasks):
+        subset = smiles[i * 15 : i * 15 + 40]
+        y = rng.integers(0, 2, len(subset))
+        y[:8] = 1
+        y[-8:] = 0
+        build_checkpoint(root, task, descriptors, subset, y, seed=i)
     counter.reset()
-    return root, "taskD", smiles, descriptors
+    return root, tasks, smiles, descriptors
