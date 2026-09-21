@@ -23,23 +23,35 @@ class RDKitDescriptor(object):
 
     def transform(self, smiles_list):
         logger.debug("Transforming RDKit descriptors...")
+        n_desc = len(self._descriptor_names)
+        nan_row = np.full(n_desc, np.nan, dtype=np.float32)
         results = []
         for smi in smiles_list:
             try:
                 mol = Chem.MolFromSmiles(smi)
+            except Exception:
+                mol = None
+            if mol is None:
+                # Short-circuit rather than let the calculator see None. It would return a
+                # row of NaN either way, but MoleculeDescriptors catches each descriptor's
+                # exception and prints the traceback itself -- so one unparseable SMILES
+                # produces dozens of stack traces on stderr, which is not suppressible via
+                # RDLogger and buries the warning that says what actually happened. On a
+                # screening library with a few hundred bad rows that is tens of thousands
+                # of lines. Skipping is quieter and faster, and the row is identical.
+                results.append(nan_row.copy())
+                continue
+            try:
                 vals = np.array(self.calculator.CalcDescriptors(mol), dtype=np.float64)
                 vals[~np.isfinite(vals)] = np.nan
                 vals = np.clip(vals, -1e5, 1e5).astype(np.float32)
             except Exception:
-                vals = np.full(len(self._descriptor_names), np.nan, dtype=np.float32)
+                vals = nan_row.copy()
             results.append(vals)
         result = np.clip(np.array(results, dtype=np.float32), -1e5, 1e5)
         nan_rows = np.where(np.isnan(result).any(axis=1))[0]
         if len(nan_rows):
-            logger.warning(
-                f"[rdkit] {len(nan_rows)} SMILES produced NaN descriptors "
-                f"and will be median-imputed (indices: {nan_rows.tolist()})"
-            )
+            logger.nan_descriptor_rows("rdkit", nan_rows, len(result))
         return result
 
     def is_applicable(self, smiles_list: list) -> bool:

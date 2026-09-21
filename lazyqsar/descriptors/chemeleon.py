@@ -120,10 +120,7 @@ class ChemeleonDescriptor(object):
         result = np.concatenate(R, dtype=np.float32, axis=0)
         nan_rows = np.where(np.isnan(result).any(axis=1))[0]
         if len(nan_rows):
-            logger.warning(
-                f"[chemeleon] {len(nan_rows)} SMILES produced NaN descriptors "
-                f"and will be median-imputed (indices: {nan_rows.tolist()})"
-            )
+            logger.nan_descriptor_rows("chemeleon", nan_rows, len(result))
         return result
 
     def is_applicable(self, smiles_list: list) -> bool:
