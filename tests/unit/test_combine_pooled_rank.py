@@ -11,8 +11,6 @@ Numpy only, like the module under test: these run on a base install, so monotoni
 asserted by ordering rather than by a correlation coefficient.
 """
 
-import warnings
-
 import numpy as np
 import pytest
 
@@ -84,32 +82,45 @@ def test_asking_for_rank_alone_still_works():
     assert set(alone.values) == {"rank"}
 
 
-def test_without_a_pooled_reference_rank_is_the_old_weighted_mean():
-    """Every checkpoint fitted before v3.5.0 is in this branch and must not move."""
+def test_without_a_reference_rank_refuses_rather_than_falling_back():
+    """The old weighted mean of per-descriptor training percentiles is gone.
+
+    It answered a different question. Returning it under the same name would mean one
+    `rank` column meant "beats 99% of drug-like space" on one checkpoint and "beats 99% of
+    its own training set" on another, with nothing in the output distinguishing them. An
+    uncalibrated rank is worse than an error, because it gets believed.
+    """
     Y, R, S, A = _inputs()
-    res = combine(Y, R, S, A, spec=_spec())
-    np.testing.assert_array_equal(
-        res.values["rank"][:, 1], (res.weights * R).sum(axis=1)
+    with pytest.raises(ValueError, match="no reference-library rank"):
+        combine(Y, R, S, A, spec=_spec(), outputs=("rank",))
+
+
+def test_the_refusal_names_the_remedy():
+    """An error a user cannot act on is only marginally better than a wrong number."""
+    Y, R, S, A = _inputs()
+    with pytest.raises(ValueError) as exc:
+        combine(Y, R, S, A, spec=_spec(), outputs=("rank",))
+    assert "refit" in str(exc.value).lower()
+    assert "3.6" in str(exc.value)
+
+
+def test_the_other_five_outputs_survive_a_missing_reference():
+    """Only `rank` changed meaning, so only `rank` is withheld -- an old checkpoint is
+    not bricked."""
+    Y, R, S, A = _inputs()
+    res = combine(
+        Y, R, S, A, spec=_spec(), outputs=("proba", "logit", "lift", "score", "binary")
     )
-
-
-def test_the_fallback_is_silent():
-    """A missing reference is the normal state of an old checkpoint, not a problem."""
-    Y, R, S, A = _inputs()
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        combine(Y, R, S, A, spec=_spec())
-    assert not caught, f"combine warned on the fallback path: {caught}"
+    assert set(res.values) == {"proba", "logit", "lift", "score", "binary"}
 
 
 @pytest.mark.parametrize("knots", [np.array([]), None])
-def test_an_absent_reference_falls_back_rather_than_raising(knots):
-    """`prepare_knots` raises on an empty array; combine must never hand it one."""
+def test_an_empty_reference_refuses_too(knots):
+    """`prepare_knots` raises on an empty array; combine must never hand it one, and must
+    not treat empty knots as a usable reference either."""
     Y, R, S, A = _inputs()
-    res = combine(Y, R, S, A, spec=_spec(pooled_rank_knots=knots))
-    np.testing.assert_array_equal(
-        res.values["rank"][:, 1], (res.weights * R).sum(axis=1)
-    )
+    with pytest.raises(ValueError, match="no reference-library rank"):
+        combine(Y, R, S, A, spec=_spec(pooled_rank_knots=knots), outputs=("rank",))
 
 
 def test_a_single_distinct_knot_still_orders_molecules():

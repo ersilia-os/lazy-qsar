@@ -153,5 +153,7 @@ dmypy.json
 .pyre/
 
 # Reference-library staging area. Built by scripts/, published to public S3 via eosvc;
-# never committed -- the bundle is hundreds of megabytes and is versioned on S3 instead.
-data/
+# never committed -- the bundle is 267 MB and is versioned on S3 instead.
+# Anchored with a leading slash: a bare `data/` also matches `tests/data/`, which is
+# tracked, and would silently ignore any new fixture added there.
+/data/

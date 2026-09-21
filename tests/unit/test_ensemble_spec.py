@@ -53,7 +53,13 @@ def test_from_metadata_empty_metadata_gives_working_defaults():
 
 
 def test_from_metadata_reads_the_pooled_rank_reference():
-    meta = {"pooled_ranker": {"knots": [0.1, 0.4, 0.9], "n_train": 3, "source": "oof"}}
+    meta = {
+        "pooled_ranker": {
+            "knots": [0.1, 0.4, 0.9],
+            "n_train": 3,
+            "source": "reference_library",
+        }
+    }
     spec, _ = EnsembleSpec.from_metadata(meta, ["a"])
     assert isinstance(spec.pooled_rank_knots, np.ndarray)
     assert spec.pooled_rank_knots.tolist() == [0.1, 0.4, 0.9]
@@ -66,11 +72,31 @@ def test_from_metadata_treats_an_empty_pooled_reference_as_absent():
         assert spec.pooled_rank_knots is None
 
 
+def test_an_out_of_fold_reference_is_not_read_as_a_library_reference():
+    """v3.5.x wrote out-of-fold knots under this key, with `source: "oof"`.
+
+    Once read the two are indistinguishable -- both monotone, both in [0, 1] -- so an
+    ungated reader would report a training-set percentile as "beats 99% of drug-like
+    space". Those checkpoints must present as having no reference at all.
+    """
+    meta = {"pooled_ranker": {"knots": [0.1, 0.4, 0.9], "source": "oof"}}
+    spec, _ = EnsembleSpec.from_metadata(meta, ["a"])
+    assert spec.pooled_rank_knots is None
+
+
+def test_a_reference_with_no_source_is_not_trusted():
+    """Absent `source` means it predates the gate, so it is not a library reference."""
+    spec, _ = EnsembleSpec.from_metadata(
+        {"pooled_ranker": {"knots": [0.1, 0.4, 0.9]}}, ["a"]
+    )
+    assert spec.pooled_rank_knots is None
+
+
 def test_the_pooled_rank_reference_is_not_sliced_to_active_descriptors():
     """It describes the pooled probability of the active set as a whole, not one column."""
     meta = {
         "active_descriptors": {"a": True, "b": False},
-        "pooled_ranker": {"knots": [0.2, 0.5, 0.8]},
+        "pooled_ranker": {"knots": [0.2, 0.5, 0.8], "source": "reference_library"},
     }
     spec, active = EnsembleSpec.from_metadata(meta, ["a", "b"])
     assert active == ["a"]

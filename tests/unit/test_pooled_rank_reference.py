@@ -45,8 +45,11 @@ def test_averaging_percentiles_disagrees_with_the_percentile_of_the_average():
     """
     Y, R = _descriptor_channels()
     spec = _spec()
-    legacy = combine(Y, R, R, None, spec=spec, outputs=("rank",)).values["rank"][:, 1]
-    proba = combine(Y, R, R, None, spec=spec, outputs=("proba",)).values["proba"][:, 1]
+    res = combine(Y, R, R, None, spec=spec, outputs=("proba",))
+    # Computed here rather than asked of `combine`, which no longer offers it: this is the
+    # pre-v3.5.0 arithmetic, kept only to show what the pooled reference replaced.
+    legacy = (res.weights * R).sum(axis=1)
+    proba = res.values["proba"][:, 1]
 
     assert not np.array_equal(
         np.argsort(legacy, kind="stable"), np.argsort(proba, kind="stable")

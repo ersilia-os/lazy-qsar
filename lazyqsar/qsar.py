@@ -20,7 +20,7 @@ from .registry import (  # noqa: F401  (re-exported for backwards compatibility)
 )
 from .ensemble.combine import read_pooled_rank_knots, read_pooled_score_knots
 from .utils.logging import logger
-from .utils.ranking import prepare_knots, rank_from_knots, subsample_knots
+from .utils.ranking import prepare_knots, rank_from_reference, subsample_knots
 
 
 def _smiles_md5(smiles_list):
@@ -141,7 +141,14 @@ class _EnsemblePredictMixin:
             # that row should keep its score from the descriptors that did work.
             bad = invalid_smiles_indices(smiles_list)
             Y, R, S, A, spec = self._channels(smiles_list)
-            result = combine(Y, R, S, A, spec=spec, outputs=OUTPUT_NAMES)
+            # Narrowed, not blanket. `combine` raises for `rank` on a checkpoint with no
+            # reference library, and this call asks for every output at once -- so without
+            # this the raise would take `predict_proba` down with it on every checkpoint
+            # fitted before v3.6. `predict_rank` raises it deliberately instead.
+            wanted = OUTPUT_NAMES
+            if getattr(spec, "pooled_rank_knots", None) is None:
+                wanted = tuple(n for n in OUTPUT_NAMES if n != "rank")
+            result = combine(Y, R, S, A, spec=spec, outputs=wanted)
             if bad:
                 logger.warning(
                     f"{len(bad)} SMILES could not be parsed; their predictions are NaN "
@@ -162,8 +169,21 @@ class _EnsemblePredictMixin:
         return self._combined(smiles_list).values["logit"]
 
     def predict_rank(self, smiles_list):
-        """Weighted quantile ranks in [0, 1], shape (n_samples, 2)."""
-        return self._combined(smiles_list).values["rank"]
+        """Percentile against the reference library, shape (n_samples, 2).
+
+        ``0.99`` means the molecule scores above 99% of a fixed 50,000-molecule sample of
+        drug-like chemical space -- not above 99% of this model's training set, which is
+        what versions before 3.6 reported.
+
+        Raises ``ValueError`` on a checkpoint that carries no reference library. The other
+        five outputs still work; only this one changed meaning.
+        """
+        values = self._combined(smiles_list).values
+        if "rank" not in values:
+            from .ensemble.combine import NO_REFERENCE_MESSAGE
+
+            raise ValueError(NO_REFERENCE_MESSAGE)
+        return values["rank"]
 
     def predict_score(self, smiles_list):
         """Weighted raw (pre-calibration) scores, shape (n_samples, 2)."""
@@ -899,10 +919,22 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
 
         _knots = getattr(self, "pooled_rank_knots_", None)
         if _knots is not None and len(_knots):
+            _ref = getattr(self, "reference_meta_", None) or {}
             meta["pooled_ranker"] = {
                 "knots": np.asarray(_knots, dtype=np.float64).tolist(),
                 "n_train": int(len(_knots)),
-                "source": "oof",
+                # Readers gate on this. An out-of-fold reference and a library reference
+                # are both monotone and both land in [0, 1], so without it a checkpoint
+                # from an older version would be read as a library percentile and be
+                # wrong in a way nothing downstream could detect.
+                "source": "reference_library",
+                "library": _ref.get("library"),
+                # The knots describe the pooled probability of exactly this descriptor
+                # set. The runner builds its active set from whichever sub-directories
+                # exist on disk, so a checkpoint missing one would otherwise rank against
+                # a distribution it never had.
+                "descriptors": _ref.get("descriptors"),
+                "saturation": _ref.get("saturation"),
             }
             # decision_cutoff_raw/proba/logit/lift are one learned threshold in four
             # units. Its rank image used to be a mean of the per-descriptor rank cutoffs,
@@ -912,7 +944,7 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
             _cut_p = meta.get("decision_cutoff_proba")
             if _cut_p is not None:
                 meta["decision_cutoff_rank"] = float(
-                    rank_from_knots(float(_cut_p), prepared=prepare_knots(_knots))
+                    rank_from_reference(float(_cut_p), prepared=prepare_knots(_knots))
                 )
 
         with open(os.path.join(model_dir, "metadata.json"), "w") as f:

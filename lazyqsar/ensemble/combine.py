@@ -48,6 +48,19 @@ _EPS = 1e-7
 POOLED_RANKER_KEY = "pooled_ranker"
 POOLED_SCORER_KEY = "pooled_scorer"
 
+# The only `pooled_ranker.source` that means a percentile against drug-like chemical
+# space. Anything else -- notably "oof", written by v3.5.x -- is a training-set
+# percentile and is not comparable with one.
+REFERENCE_SOURCE = "reference_library"
+
+NO_REFERENCE_MESSAGE = (
+    "This checkpoint has no reference-library rank. `rank` is a percentile against a "
+    "fixed library of drug-like molecules; checkpoints fitted before v3.6 carry a "
+    "percentile against their own training set instead, which is not comparable and is "
+    "not reported as though it were. Refit with lazyqsar>=3.6 to get `rank`, or use "
+    "`proba`, `logit`, `lift`, `score` or `binary`, which are unaffected."
+)
+
 
 def read_pooled_rank_knots(metadata):
     """Pull the pooled rank reference out of a task-level ``metadata.json``, or None.
@@ -61,14 +74,28 @@ def read_pooled_rank_knots(metadata):
     metadata : dict or None
         Parsed ``metadata.json``. Every key is optional.
 
+    Only a reference-library block is accepted. Checkpoints fitted before v3.6 carry
+    out-of-fold knots under this same key, and the two are indistinguishable once read --
+    both monotone, both in [0, 1] -- so reading an old one would report "beats 99% of
+    drug-like space" about a training-set percentile. Those checkpoints are treated as
+    having no reference, and asking them for ``rank`` raises.
+
+    Parameters
+    ----------
+    metadata : dict or None
+        Parsed ``metadata.json``. Every key is optional.
+
     Returns
     -------
     ndarray or None
-        Ascending float64 knots, or ``None`` when the key is absent or empty.
+        Ascending float64 knots, or ``None`` when the key is absent, empty, or not a
+        reference-library block.
     """
     block = (metadata or {}).get(POOLED_RANKER_KEY) or {}
     knots = block.get("knots")
     if knots is None or len(knots) == 0:
+        return None
+    if block.get("source") != REFERENCE_SOURCE:
         return None
     return np.asarray(knots, dtype=np.float64)
 
@@ -458,17 +485,19 @@ def combine(Y, R=None, S=None, A=None, *, spec, outputs=OUTPUT_NAMES, cutoff=Non
     if "logit" in wanted:
         values["logit"] = np.vstack((-l1, l1)).T
     if "rank" in wanted:
-        if pooled_rank:
-            # `rank_from_reference`, not `rank_from_knots`: the knots come from a reference
-            # library, whose pooled probabilities stop well below 1 for any selective model
-            # (measured: 0.065 to 0.334). Clamping would tie every active at exactly 1.0 and
-            # break the invariant that rank orders molecules exactly as proba does.
-            r1 = rank_from_reference(p1, prepared=prepare_knots(pooled_knots))
-        else:
-            # Pre-v3.5.0 checkpoints carry no pooled reference. Silently, because a
-            # missing key is their normal state, and because this module deliberately
-            # has no logger.
-            r1 = (W * R).sum(axis=1)
+        if not pooled_rank:
+            # No silent fallback. The weighted mean of per-descriptor training percentiles
+            # this used to compute answers a different question, and returning it under the
+            # same name would mean one `rank` column meant "beats 99% of drug-like space"
+            # on one checkpoint and "beats 99% of its own training set" on another, with
+            # nothing in the output to tell them apart. An uncalibrated rank is worse than
+            # an error, because it gets believed.
+            raise ValueError(NO_REFERENCE_MESSAGE)
+        # `rank_from_reference`, not `rank_from_knots`: the knots come from a reference
+        # library, whose pooled probabilities stop well below 1 for any selective model
+        # (measured: 0.065 to 0.334). Clamping would tie every active at exactly 1.0 and
+        # break the invariant that rank orders molecules exactly as proba does.
+        r1 = rank_from_reference(p1, prepared=prepare_knots(pooled_knots))
         values["rank"] = np.vstack((1 - r1, r1)).T
     if "score" in wanted:
         if pooled_score:
