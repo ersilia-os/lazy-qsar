@@ -372,9 +372,6 @@ def combine(Y, R=None, S=None, A=None, *, spec, outputs=OUTPUT_NAMES, cutoff=Non
         raise ValueError(
             f"spec covers {len(spec.descriptor_names)} descriptors but Y has {D} columns"
         )
-    if S is None:
-        S = Y.copy()
-
     W, base = build_weight_matrix(Y, R, A, spec)
 
     diagnostics = None
@@ -436,7 +433,13 @@ def combine(Y, R=None, S=None, A=None, *, spec, outputs=OUTPUT_NAMES, cutoff=Non
             r1 = (W * R).sum(axis=1)
         values["rank"] = np.vstack((1 - r1, r1)).T
     if "score" in wanted:
-        s1 = (W * S).sum(axis=1)
+        # `S is None` means at least one descriptor could not supply a raw score, and the
+        # documented fallback is to use the calibrated one. Resolved here rather than with
+        # an `S = Y.copy()` beside the other upcasts, because that copy ran for every call
+        # -- a full (n_samples, n_descriptors) float64 array allocated and never read
+        # unless `score` was among the outputs, which for the default `proba` request it
+        # never is.
+        s1 = (W * (Y if S is None else S)).sum(axis=1)
         values["score"] = np.vstack((1 - s1, s1)).T
     if "lift" in wanted:
         prior = spec.population_prior

@@ -75,7 +75,12 @@ class _CheMeleonFingerprint:
             mol_graphs = list(ex.map(self.featurizer, valid_mols))
         bmg = BatchMolGraph(mol_graphs)
         bmg.to(device=self.model.device)
-        embeddings = self.model.fingerprint(bmg).numpy(force=True)
+        # `eval()` in the constructor switches the layers to inference behaviour; it does
+        # not stop autograd from recording. Without this the forward pass builds a graph
+        # for every batch that is discarded a line later, for a model that is never
+        # trained here. Forward values are unaffected.
+        with torch.no_grad():
+            embeddings = self.model.fingerprint(bmg).numpy(force=True)
         result = np.full(
             (len(molecules), embeddings.shape[1]), np.nan, dtype=np.float32
         )

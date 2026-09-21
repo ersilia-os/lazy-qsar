@@ -90,6 +90,44 @@ This release removes an inconsistency, it does not claim a better model.
 - Every requested output now comes from a single featurization pass. Asking for `proba` and
   `rank` used to featurize twice, and featurization is ~93% of inference wall clock.
 - `predict()` accepts both `threshold=` and `cutoff=` for the binary threshold.
+- **Prediction is bounded in memory.** Molecules are scored in blocks whose working set is
+  released before the next block starts, so peak memory no longer grows with the size of
+  the input. It used to: the accumulated per-task channels and the combined results were
+  held for the whole call, which at a million molecules and twenty endpoints came to about
+  3.6 GB, and `LAZYQSAR_PREDICT_CHUNK` did nothing about it — it bounds the descriptor
+  slice, not the accumulation. Peak temporary disk drops with it, from 8.2 GB to under 1 GB
+  at that size. The block is derived from a fixed working-set budget and the number of
+  endpoints, and is always a whole number of chunks, which is what keeps the output
+  identical however the input is divided; there is no knob for it.
+- **Asking for `rank` no longer doubles the ONNX work.** On a checkpoint carrying the
+  pooled reference a rank is that reference evaluated at the pooled probability — which the
+  scoring loop has already computed for the same rows. It was calling `predict_rank`, which
+  re-ran every preprocessor and every head to reach the identical number. Measured at 10
+  ONNX calls per chunk against 5. This is the default the Ersilia template deploys with,
+  and a checkpoint with an applicability domain needs the rank channel even for a plain
+  `proba` request, so it was most of the cost of the two commonest requests.
+- **Descriptors the portfolio rejected are no longer loaded.** Both Python loaders opened
+  every descriptor directory on disk — featurizer, ONNX sessions, applicability domain —
+  and then scored only the active ones, which they had always done. On a five-descriptor
+  checkpoint where two survived, 25 ONNX sessions became 10.
+- Molecules RDKit cannot parse are found by re-checking only the rows a descriptor already
+  returned as all-NaN, instead of parsing the whole library a second time after every
+  descriptor has already parsed it. A clean library now costs no parses at all. Descriptors
+  that repair NaN rows — `cddd` fetches a ChEMBL nearest neighbour — are excluded from the
+  shortcut, and a run using only those falls back to the full scan.
+- Morgan fingerprints are written into a preallocated array rather than a list of lists:
+  46 ms against 0.6 ms per thousand molecules, roughly 45 seconds per million on top of
+  RDKit's own cost. Same values, same dtype.
+- The CheMeleon forward pass runs under `torch.no_grad()`. `eval()` was called but autograd
+  was still recording a graph for every batch, for a model that is never trained here.
+- `combine()` no longer allocates a full `(n_samples, n_descriptors)` float64 copy of the
+  probabilities on every call. It was the fallback for a missing raw score, and nothing
+  reads it unless `score` is among the requested outputs.
+- **The fit-time descriptor union has a reproducible row order.** It was built from
+  `os.listdir` and `set`, so the same command over the same data laid the staged descriptor
+  matrices out differently from one process to the next. Nothing read the wrong row, but a
+  fit could not be reproduced exactly. Filenames are now sorted and duplicates dropped in
+  first-seen order.
 
 ### Internal
 
@@ -98,5 +136,11 @@ This release removes an inconsistency, it does not claim a better model.
   near-duplicate implementations became one.
 - New `lazyqsar/registry.py` and `lazyqsar/applicability/artifact.py`, both so the
   inference path imports without RDKit or scikit-learn.
-- No ONNX converter, opset or graph was changed, and nothing under `lazyqsar/artifacts/`
-  or `lazyqsar/base/` was modified beyond one import.
+- `persist_descriptors` returns the all-NaN row mask it can see for free while each chunk
+  is still in cache, and `predict_tasks` takes an optional `scan` dict reporting those rows
+  and the descriptors that ran. An out-parameter rather than a changed return type, so
+  existing callers are untouched; only the CSV-writing layer wants it.
+- No ONNX converter, opset or graph was changed, and nothing under `lazyqsar/base/` was
+  modified beyond one import. `lazyqsar/artifacts/classifier.py` gained one method,
+  `rank_from_proba`, which reads a rank off a probability the caller already has; it runs
+  no graph and the values are identical to what `predict_rank` returns.

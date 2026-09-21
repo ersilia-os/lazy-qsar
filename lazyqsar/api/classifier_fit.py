@@ -38,8 +38,20 @@ def prepare_files(models: list = None, path: str = None):
 
 
 def read_all_smiles(data_dir):
+    """Every compound across every task CSV, deduplicated, in a reproducible order.
+
+    Both halves of that order used to be accidental: the files were read in
+    ``os.listdir`` order, which the filesystem chooses, and duplicates were dropped with
+    ``list(set(...))``, which depends on ``PYTHONHASHSEED``. Row order here is the row
+    order of the staged descriptor matrices, so two runs of the same command over the
+    same data featurized the same compounds in different positions. Nothing downstream
+    read the wrong row — ``row_of`` is built from this same list — but it did mean a fit
+    could not be reproduced exactly from one process to the next.
+
+    Sorting the filenames also lines this up with ``get_task_names``, which already sorts.
+    """
     smiles_list = []
-    for fn in os.listdir(data_dir):
+    for fn in sorted(os.listdir(data_dir)):
         if not fn.endswith(".csv"):
             continue
         with open(os.path.join(data_dir, fn), "r") as f:
@@ -47,8 +59,7 @@ def read_all_smiles(data_dir):
             next(reader)
             for r in reader:
                 smiles_list += [r[0]]
-    smiles_list = list(set(smiles_list))
-    return smiles_list
+    return list(dict.fromkeys(smiles_list))
 
 
 def get_task_names(data_dir):

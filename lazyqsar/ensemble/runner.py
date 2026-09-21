@@ -76,15 +76,24 @@ def persist_descriptors(
     chunk_size: int,
     progress: Progress | None = None,
     task_id=None,
-) -> None:
+) -> np.ndarray:
     """Compute descriptors in chunks and stream each chunk into a memmap-backed .npy.
 
     Never materialises an X matrix with more than `chunk_size` rows in RAM. The output is a
     standard .npy file so it can be read back with `np.load(..., mmap_mode='r')`.
+
+    Returns
+    -------
+    ndarray of bool, shape (n_smiles,)
+        True where the descriptor produced an all-NaN row. Computed here because the chunk
+        is already in cache; the alternative is another pass over the whole matrix later.
+        Callers that do not want it can ignore the return value -- ``api.classifier_fit``
+        does.
     """
     n_total = len(smiles_list)
     if n_total == 0:
-        return
+        return np.zeros(0, dtype=bool)
+    all_nan = np.zeros(n_total, dtype=bool)
 
     first_end = min(chunk_size, n_total)
     first_chunk = featurizer.transform(smiles_list[:first_end])
@@ -98,8 +107,11 @@ def persist_descriptors(
     X_mm = np.lib.format.open_memmap(
         out_path, mode="w+", dtype=dtype, shape=(n_total, n_dim)
     )
+    inexact = np.issubdtype(dtype, np.inexact)
     try:
         X_mm[:first_end] = first_chunk
+        if inexact:
+            all_nan[:first_end] = np.isnan(first_chunk).all(axis=1)
         del first_chunk
         if progress is not None and task_id is not None:
             progress.update(task_id, advance=1)
@@ -108,6 +120,8 @@ def persist_descriptors(
             end = min(start + chunk_size, n_total)
             chunk = featurizer.transform(smiles_list[start:end])
             X_mm[start:end] = chunk
+            if inexact:
+                all_nan[start:end] = np.isnan(chunk).all(axis=1)
             del chunk
             if progress is not None and task_id is not None:
                 progress.update(task_id, advance=1)
@@ -115,6 +129,7 @@ def persist_descriptors(
     finally:
         del X_mm
     gc.collect()
+    return all_nan
 
 
 @dataclass(frozen=True)
@@ -227,6 +242,7 @@ def predict_tasks(
     chunk_size: int | None = None,
     scratch_dir: str | None = None,
     show_progress: bool = False,
+    scan: dict | None = None,
 ):
     """Score every source over *smiles_list*, sharing one featurization pass.
 
@@ -247,6 +263,15 @@ def predict_tasks(
         beside the checkpoints.
     show_progress : bool
         Render progress bars.
+    scan : dict, optional
+        Filled in place with ``{"descriptors": [names actually featurized], "nan_rows":
+        {positions where some descriptor produced an all-NaN row}}``. Lets the caller find
+        the unparseable molecules by re-checking a handful of candidate rows instead of
+        parsing the whole library a second time -- but only it knows whether the
+        descriptors that ran make that sound, which is why the names come back too.
+
+        An out-parameter rather than a second return value, so that every existing caller
+        and test keeps working unchanged; only the CSV-writing layer wants this.
 
     Returns
     -------
@@ -260,6 +285,7 @@ def predict_tasks(
         chunk_size = get_chunk_size()
 
     plans = [_plan(s) for s in sources]
+    nan_rows = scan.setdefault("nan_rows", set()) if scan is not None else None
 
     # Union across every task: this is what makes scoring N models cost one featurization
     # pass rather than N. Ordered by first appearance for reproducible progress output.
@@ -268,6 +294,9 @@ def predict_tasks(
         for name in plan.descriptors:
             if name not in descriptor_names:
                 descriptor_names.append(name)
+
+    if scan is not None:
+        scan["descriptors"] = list(descriptor_names)
 
     owned_scratch = scratch_dir is None
     scratch_dir = scratch_dir or tempfile.mkdtemp(prefix="lazyqsar-predict-")
@@ -290,12 +319,22 @@ def predict_tasks(
                 else None
             )
             logger.debug(f"Computing descriptors: {name}")
-            persist_descriptors(
+            all_nan = persist_descriptors(
                 featurizer, smiles_list, x_path, chunk_size, progress, task_id
             )
-            del featurizer
+            if nan_rows is not None:
+                nan_rows.update(np.flatnonzero(all_nan).tolist())
+            del all_nan, featurizer
             gc.collect()
 
+            # Scoring is the shorter phase but not a short one: a fifty-task bundle means
+            # fifty checkpoint loads per descriptor, and without this the bar for the
+            # descriptor completes and the terminal then sits silent through all of them.
+            pred_id = (
+                progress.add_task(f"[{name}] predicting", total=len(users))
+                if progress is not None
+                else None
+            )
             for i, plan in users:
                 sub = os.path.join(plan.source.task_dir, name)
                 artifact = _load_artifact(sub)
@@ -310,6 +349,15 @@ def predict_tasks(
                 )
                 del artifact, ad
                 gc.collect()
+                if pred_id is not None:
+                    progress.update(pred_id, advance=1)
+
+            # One Progress serves the whole call, so finished bars would otherwise pile up
+            # -- two rows per descriptor, ten in slow mode. Dropping them as each
+            # descriptor completes keeps the display to the descriptor being worked on.
+            if progress is not None:
+                progress.remove_task(task_id)
+                progress.remove_task(pred_id)
 
             try:
                 os.remove(x_path)

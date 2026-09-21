@@ -214,10 +214,28 @@ class LazyClassifierArtifact:
         -- see there for why this is not an average of the batches' percentiles. Falls
         back to that average for checkpoints saved before the reference existed.
         """
-        prepared = getattr(self, "_pooled_rank_prepared", None)
-        if prepared is not None:
-            rank_1 = rank_from_knots(self.predict_proba(X)[:, 1], prepared=prepared)
+        rank_1 = self.rank_from_proba(self.predict_proba(X)[:, 1])
+        if rank_1 is not None:
             return np.column_stack([1 - rank_1, rank_1])
         R = np.array([b.predict_rank(X)[:, 1] for b in self._batches])
         rank_1 = R.mean(axis=0)
         return np.column_stack([1 - rank_1, rank_1])
+
+    def rank_from_proba(self, p1):
+        """Ranks for probabilities the caller already has, or ``None`` if not possible.
+
+        On the pooled-reference path a rank is a table lookup against the training
+        distribution -- no graph is involved once the probability exists. A caller scoring
+        a chunk has usually just computed that probability, and asking :meth:`predict_rank`
+        for the rank would run every preprocessor and every head a second time to arrive at
+        the identical number. :mod:`lazyqsar.ensemble.channels` scores a chunk that way, and
+        an applicability domain makes it request ranks even for a plain ``proba`` call, so
+        that second pass was most of the cost of the most common request.
+
+        ``None`` means this checkpoint predates the pooled reference and its rank really is
+        an average over the batches' own percentiles, which does need the graph.
+        """
+        prepared = getattr(self, "_pooled_rank_prepared", None)
+        if prepared is None:
+            return None
+        return rank_from_knots(np.asarray(p1, dtype=np.float64), prepared=prepared)

@@ -2,7 +2,8 @@
 
 One pass over the descriptor matrix produces every channel :func:`combine` might need —
 calibrated probability, rank, raw score and applicability-domain score — instead of one
-pass per requested output. That matters because featurization dominates inference wall
+pass per requested output, and the rank is derived from the probability rather than asked
+for separately. That matters because featurization dominates inference wall
 clock by roughly an order of magnitude, and the caller that re-runs the whole pipeline
 once per output type pays it again each time.
 
@@ -83,9 +84,21 @@ def _score_chunks(chunks, artifact, ad_artifact, want, logger=None):
     unavailable = set()
 
     for X_chunk in chunks:
-        parts["y"].append(np.asarray(artifact.predict_proba(X_chunk))[:, 1])
+        y = np.asarray(artifact.predict_proba(X_chunk))[:, 1]
+        parts["y"].append(y)
         if "r" in want:
-            r = _positive_column(artifact.predict_rank, X_chunk, "predict_rank", logger)
+            # On a pooled-reference checkpoint the rank is a lookup against the training
+            # distribution, so it comes out of the probability already computed a line
+            # above. Asking `predict_rank` instead would re-run every preprocessor and
+            # every head to reach the identical number -- roughly doubling the ONNX work
+            # of the two most common requests, since `rank` is the deployed default and an
+            # applicability domain forces ranks on even for plain `proba`.
+            from_proba = getattr(artifact, "rank_from_proba", None)
+            r = from_proba(y) if from_proba is not None else None
+            if r is None:
+                r = _positive_column(
+                    artifact.predict_rank, X_chunk, "predict_rank", logger
+                )
             if r is None:
                 unavailable.add("r")
             else:

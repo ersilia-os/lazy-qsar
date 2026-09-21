@@ -226,6 +226,58 @@ def _spec_from_attributes(
     )
 
 
+def _positions_to_load(active_descriptors, n_descriptors):
+    """Which descriptor positions a loader should actually open.
+
+    All of them when the checkpoint carries no active mask, and all of them when the mask
+    rejects every descriptor -- both ``_channels`` implementations fall back to scoring
+    everything in that case, so loading nothing would leave them indexing ``None``.
+    """
+    if not active_descriptors or not any(active_descriptors):
+        return [True] * n_descriptors
+    return [bool(a) for a in active_descriptors]
+
+
+def _load_descriptor_stack(model_dir, descriptor_types, to_load):
+    """Featurizer, model and applicability domain per descriptor; ``None`` where skipped.
+
+    Inactive positions are kept rather than dropped so that every per-descriptor list stays
+    index-aligned with *descriptor_types*, which is what ``_spec_from_attributes`` and both
+    ``_channels`` implementations index into.
+
+    Skipping is the point. A descriptor the portfolio rejected at fit time is never scored,
+    but it was still being loaded -- an onnxruntime session per head per batch, plus the
+    featurizer's own weights, which for chemeleon or cddd is a torch model read off disk.
+    The shared inference runner has resolved the active set before opening anything since
+    the descriptor union moved into ``ensemble.runner``; this is the Python entry point
+    catching up.
+    """
+    from .agnostic import LazyClassifier
+    from .applicability import ApplicabilityDomainArtifact
+
+    descriptors, models, ad_models = [], [], []
+    for descriptor_type, wanted in zip(descriptor_types, to_load):
+        if not wanted:
+            descriptors.append(None)
+            models.append(None)
+            ad_models.append(None)
+            continue
+        model_subdir = os.path.join(model_dir, descriptor_type)
+        if not os.path.exists(model_subdir):
+            raise FileNotFoundError(
+                f"Descriptor directory {model_subdir} does not exist."
+            )
+        descriptors.append(get_descriptor_type(descriptor_type).load(model_subdir))
+        models.append(LazyClassifier.load(model_subdir))
+        ad_subdir = os.path.join(model_subdir, "applicability_domain")
+        ad_models.append(
+            ApplicabilityDomainArtifact.load(ad_subdir)
+            if os.path.isdir(ad_subdir)
+            else None
+        )
+    return descriptors, models, ad_models
+
+
 class ArtifactWrapper(_EnsemblePredictMixin):
     """
     ONNX inference wrapper for a multi-descriptor LazyClassifierQSAR model.
@@ -759,8 +811,6 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
 
     @classmethod
     def load_raw(cls, model_dir: str):
-        from .applicability import ApplicabilityDomainArtifact
-
         descriptor_types = []
         for fn in os.listdir(model_dir):
             if fn in DESCRIPTOR_TYPES.keys():
@@ -769,10 +819,12 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
         # Read mode from metadata if available; fall back to inference for old models.
         meta_path = os.path.join(model_dir, "metadata.json")
         mode = None
+        active_map = {}
         if os.path.isfile(meta_path):
             with open(meta_path) as _f:
                 _meta = json.load(_f)
             mode = _meta.get("mode")
+            active_map = _meta.get("active_descriptors") or {}
         if mode is None:
             for k, v in DESCRIPTORS_MODE.items():
                 if set(v) == set(descriptor_types):
@@ -780,24 +832,18 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
                     break
         if mode is None:
             mode = "slow"  # safe default for models saved before mode tracking
-        from .agnostic import LazyClassifier
 
-        descriptors = []
-        models = []
-        ad_models = []
-        for descriptor_type in descriptor_types:
-            model_subdir = os.path.join(model_dir, descriptor_type)
-            if not os.path.exists(model_subdir):
-                raise FileNotFoundError(
-                    f"Descriptor directory {model_subdir} does not exist."
-                )
-            descriptors += [get_descriptor_type(descriptor_type).load(model_subdir)]
-            models += [LazyClassifier.load(model_subdir)]
-            ad_subdir = os.path.join(model_subdir, "applicability_domain")
-            if os.path.isdir(ad_subdir):
-                ad_models.append(ApplicabilityDomainArtifact.load(ad_subdir))
-            else:
-                ad_models.append(None)
+        # Same as `load_onnx`: the mask decides what is opened, not just what is scored.
+        descriptors, models, ad_models = _load_descriptor_stack(
+            model_dir,
+            descriptor_types,
+            _positions_to_load(
+                [active_map.get(d, True) for d in descriptor_types]
+                if active_map
+                else None,
+                len(descriptor_types),
+            ),
+        )
 
         obj = cls(mode=mode)
         obj.descriptor_types = descriptor_types
@@ -860,33 +906,14 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
 
     @classmethod
     def load_onnx(cls, model_dir: str):
-        from .applicability import ApplicabilityDomainArtifact
-
         descriptor_types = []
         for fn in os.listdir(model_dir):
             if fn in DESCRIPTOR_TYPES.keys():
                 descriptor_types += [fn]
         descriptor_types = sorted(descriptor_types)
-        from .agnostic import LazyClassifier
 
-        descriptors = []
-        artifacts = []
-        ad_artifacts = []
-        for descriptor_type in descriptor_types:
-            model_subdir = os.path.join(model_dir, descriptor_type)
-            if not os.path.exists(model_subdir):
-                raise FileNotFoundError(
-                    f"Descriptor directory {model_subdir} does not exist."
-                )
-            descriptors += [get_descriptor_type(descriptor_type).load(model_subdir)]
-            artifacts += [LazyClassifier.load(model_subdir)]
-            ad_subdir = os.path.join(model_subdir, "applicability_domain")
-            if os.path.isdir(ad_subdir):
-                ad_artifacts.append(ApplicabilityDomainArtifact.load(ad_subdir))
-            else:
-                ad_artifacts.append(None)
-
-        has_ad = any(a is not None for a in ad_artifacts)
+        # The metadata is read before anything is opened, not after: it carries the active
+        # mask, and a descriptor the portfolio rejected should never be loaded at all.
         meta_path = os.path.join(model_dir, "metadata.json")
         oof_aucs = None
         proxy_aucs = None
@@ -930,6 +957,14 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
                 else None
             )
             pooled_rank_knots = read_pooled_rank_knots(meta)
+
+        descriptors, artifacts, ad_artifacts = _load_descriptor_stack(
+            model_dir,
+            descriptor_types,
+            _positions_to_load(active_descriptors, len(descriptor_types)),
+        )
+        has_ad = any(a is not None for a in ad_artifacts)
+
         return ArtifactWrapper(
             descriptors=descriptors,
             artifacts=artifacts,
