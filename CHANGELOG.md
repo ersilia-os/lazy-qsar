@@ -43,6 +43,31 @@ numpy and onnxruntime.
   only the descriptors a model actually uses are downloaded -- 6.5 MB for a `fast` model,
   267 MB for all five.
 
+### Added
+
+- **`oof_diagnostics` in every checkpoint, and in the fit log.** A rank on its own cannot be
+  judged, so a fitted model now records how it treats molecules whose labels are known:
+  where its out-of-fold actives and inactives land on the rank scale (quartiles, with
+  counts), a `screening_auc`, and a `generic_hit_rate`.
+
+  `screening_auc` is the out-of-fold actives against the reference library, and it answers a
+  question `oof_auc` does not. `oof_auc` separates actives from *measured inactives for that
+  target*, usually close analogues from the same assay; a screen instead asks whether actives
+  rise above generic chemical space. A model can do the first well and the second badly, and
+  then a real screen drowns in false positives.
+
+  `generic_hit_rate` is the share of drug-like chemical space the model would call active.
+  On the ChEMBL fixture a working model reports 0.6%; the same model fitted on shuffled
+  labels reports 34.9%, which is a more actionable statement about it than any accuracy
+  metric.
+
+  These are advisory and never enter the rank scale. Anchoring the scale on the out-of-fold
+  actives -- so that "0.95 means looks like a known active" -- was considered and rejected,
+  because it would put every model's median active at 0.95 by construction and make a model
+  with AUC 0.95 indistinguishable from one with AUC 0.55. Reported rather than anchored, the
+  numbers keep that signal: on shuffled labels the actives' band collapses onto the
+  inactives' instead of being pinned high.
+
 ### Known limitations
 
 - **Above 0.75 the scale is not a percentile.** A molecule at `rank = 0.9` beats far more

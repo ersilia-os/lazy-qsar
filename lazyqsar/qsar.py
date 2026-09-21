@@ -214,6 +214,20 @@ class _EnsemblePredictMixin:
         return labels.astype(int)
 
 
+def _rank_band(ranks):
+    """Quartiles of a set of ranks, or ``None`` when the class is empty.
+
+    Quartiles rather than a mean: the point is to say where known molecules *sit*, and a
+    band a user can compare a single compound against is more useful than a centre.
+    """
+    ranks = np.asarray(ranks, dtype=np.float64)
+    ranks = ranks[np.isfinite(ranks)]
+    if ranks.size == 0:
+        return None
+    p25, p50, p75 = (float(v) for v in np.percentile(ranks, [25, 50, 75]))
+    return {"n": int(ranks.size), "rank_p25": p25, "rank_p50": p50, "rank_p75": p75}
+
+
 def _spec_from_attributes(
     names,
     active_indices,
@@ -626,44 +640,70 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
         # reference against the previous fit's knots.
         self.pooled_rank_knots_ = None
         self.reference_meta_ = None
-        self.pooled_score_knots_ = self._build_pooled_score_map(
-            _oof_channels, _train_ad
-        )
+        _stacked = self._oof_channels_stacked(_oof_channels, _train_ad)
+        self.pooled_score_knots_ = self._build_pooled_score_map(_stacked)
         self.pooled_rank_knots_, self.reference_meta_ = (
             self._build_reference_rank_knots()
         )
+        # After the knots, because the band is expressed on the scale they define.
+        self.oof_diagnostics_ = self._build_oof_diagnostics(_stacked, y)
 
         for row, active in zip(desc_rows, active_mask):
             row["active"] = active
 
         logger.rule()
         logger.descriptor_table(desc_rows)
+        self._log_oof_diagnostics()
 
-    def _build_pooled_score_map(self, oof_channels, train_ad):
-        """Learn the pooled out-of-fold map ``score`` is read back through.
+    def _log_oof_diagnostics(self):
+        """Print the advisory numbers where the person who can act on them is watching."""
+        diag = getattr(self, "oof_diagnostics_", None)
+        if not diag:
+            return
+        for label in ("actives", "inactives"):
+            band = diag.get(label)
+            if band:
+                logger.info(
+                    f"{label:>9} (n={band['n']}) rank "
+                    f"{band['rank_p25']:.3f} / {band['rank_p50']:.3f} / "
+                    f"{band['rank_p75']:.3f}  (p25/p50/p75)"
+                )
+        auc = diag.get("screening_auc")
+        if auc is not None:
+            logger.info(
+                f"  screening AUC {auc:.3f}  (actives vs the reference library -- "
+                "whether actives rise above generic chemistry, which oof_auc does not ask)"
+            )
+        hit = diag.get("generic_hit_rate")
+        if hit is not None:
+            logger.info(
+                f"  this model would call {hit:.2%} of drug-like chemical space active"
+            )
 
-        Out-of-fold, not reference-library, and deliberately so: this is a
-        probability-to-raw-score map, a property of *this model's* calibrators rather than
-        of any population, and the training data covers the high-probability region a
-        generic library barely reaches.
+    def _oof_channels_stacked(self, oof_channels, train_ad):
+        """Stack the per-descriptor out-of-fold channels into ``(Y, R, S, A, spec)``.
 
-        Must run after the active set is settled -- a map built over three descriptors does
-        not describe the pooled probability of two.
+        Extracted because two things need it -- the ``score`` map and the out-of-fold
+        diagnostics -- and the stacking has to match what :meth:`_channels` does exactly.
+        Two copies of it would be two chances to drift.
 
-        Returns ``None`` unless every active descriptor supplied out-of-fold channels. A
-        map assembled from a subset would still be monotone and still lie in range, so
-        nothing downstream could tell it was built against the wrong distribution.
+        Must run after the active set is settled: a stack over three descriptors does not
+        describe the pooled probability of two.
+
+        Returns ``None`` unless *every* active descriptor supplied out-of-fold channels.
+        Anything assembled from a subset would still be monotone and still lie in range, so
+        nothing downstream could tell it had been built against the wrong distribution.
         """
         active_indices = [i for i, a in enumerate(self.active_descriptors_) if a]
         if not active_indices:
-            return None, None
+            return None
         cols = [oof_channels[i] for i in active_indices]
         if any(c is None for c in cols):
             logger.debug(
-                "No pooled references: at least one active descriptor has no "
+                "No pooled out-of-fold stack: at least one active descriptor has no "
                 "out-of-fold predictions."
             )
-            return None, None
+            return None
 
         Y = np.column_stack([c[0] for c in cols])
         R = np.column_stack([c[1] for c in cols])
@@ -682,7 +722,99 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
             self.ad_hard_cutoffs_,
             self.population_prior_,
         )
-        return build_pooled_score_knots(Y, R, S, A, spec)
+        return Y, R, S, A, spec
+
+    def _build_pooled_score_map(self, stacked):
+        """Learn the pooled out-of-fold map ``score`` is read back through.
+
+        Out-of-fold, not reference-library, and deliberately so: this is a
+        probability-to-raw-score map, a property of *this model's* calibrators rather than
+        of any population, and the training data covers the high-probability region a
+        generic library barely reaches.
+        """
+        if stacked is None:
+            return None
+        return build_pooled_score_knots(*stacked)
+
+    def _build_oof_diagnostics(self, stacked, y):
+        """Advisory numbers describing how this model treats molecules with known labels.
+
+        None of this enters the rank scale, and that is the design. Anchoring the scale on
+        the out-of-fold actives -- so that "0.95 means looks like a known active" -- was
+        considered and rejected, because it would put *every* model's median active at 0.95
+        by construction and make a model with AUC 0.95 indistinguishable from one with 0.55.
+        Reporting the same numbers instead keeps the signal: measured on simulated strong,
+        moderate and no-skill models, the median active reads 0.937, 0.826 and 0.230, and
+        that spread is the useful part.
+
+        Three things, each ``None`` rather than an exception when it cannot be computed --
+        these are advisory and must never be able to fail a fit:
+
+        ``actives`` / ``inactives``
+            Where known molecules land on the rank scale the user actually sees. This is
+            what turns a rank into a decision: "known actives here score 0.85 to 0.95, and
+            your compound scored 0.94". For a weak model the band comes out low and says so.
+
+        ``screening_auc``
+            Out-of-fold actives against the reference library. ``oof_auc`` separates actives
+            from *measured inactives for this target*, which are usually close analogues
+            from the same assay; a screen instead asks whether actives rise above generic
+            chemical space. A model can do the first well and the second badly, and then a
+            real screen drowns in false positives.
+
+        ``generic_hit_rate``
+            The share of drug-like chemical space this model would call active. A model
+            calling 20% of a generic library a hit is a more actionable finding than any
+            rank rescale.
+        """
+        knots = getattr(self, "pooled_rank_knots_", None)
+        if stacked is None or knots is None or not len(knots):
+            return None
+
+        p1 = combine(*stacked[:4], spec=stacked[4], outputs=("proba",)).values["proba"][
+            :, 1
+        ]
+        y = np.asarray(y).ravel()
+        if len(y) != len(p1):
+            return None
+
+        prepared = prepare_knots(knots)
+        ranks = rank_from_reference(p1, prepared=prepared)
+        out = {
+            "actives": _rank_band(ranks[y == 1]),
+            "inactives": _rank_band(ranks[y == 0]),
+            "screening_auc": None,
+            "generic_hit_rate": None,
+        }
+
+        # The knots are a uniform subsample of the reference's pooled probabilities, so a
+        # quantile, an AUROC or a tail fraction taken from them is unbiased and nothing
+        # extra has to be held in memory.
+        reference = np.asarray(knots, dtype=np.float64)
+        act = p1[y == 1]
+        if act.size and reference.size:
+            from sklearn.metrics import roc_auc_score
+
+            try:
+                labels = np.concatenate(
+                    [np.ones(act.size, dtype=int), np.zeros(reference.size, dtype=int)]
+                )
+                out["screening_auc"] = float(
+                    roc_auc_score(labels, np.concatenate([act, reference]))
+                )
+            except Exception:  # pragma: no cover - degenerate label vectors only
+                pass
+
+        cutoffs = [
+            m._model.decision_cutoff_proba_
+            for m in self.models
+            if hasattr(getattr(m, "_model", None), "decision_cutoff_proba_")
+        ]
+        if cutoffs and reference.size:
+            out["generic_hit_rate"] = float(
+                (reference >= float(np.mean(cutoffs))).mean()
+            )
+        return out
 
     def _build_reference_rank_knots(self):
         """Score the reference library and keep the sorted pooled probabilities as knots.
@@ -916,6 +1048,12 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
                 "n_train": int(len(_sx)),
                 "source": "oof",
             }
+
+        _diag = getattr(self, "oof_diagnostics_", None)
+        if _diag is not None:
+            # Top level, not inside `pooled_ranker`: these describe the model, not the
+            # scale, and nothing may read them as part of the reference.
+            meta["oof_diagnostics"] = _diag
 
         _knots = getattr(self, "pooled_rank_knots_", None)
         if _knots is not None and len(_knots):
