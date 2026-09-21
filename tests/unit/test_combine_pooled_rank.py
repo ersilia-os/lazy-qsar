@@ -15,7 +15,7 @@ import numpy as np
 import pytest
 
 from lazyqsar.ensemble import EnsembleSpec, combine
-from lazyqsar.utils.ranking import rank_from_knots
+from lazyqsar.utils.ranking import rank_from_reference
 
 # Spans the whole probability range, so nothing is clamped to the ECDF's flat ends and
 # every comparison below is about the interpolated interior.
@@ -41,11 +41,15 @@ def _spec(d=3, **kw):
     )
 
 
-def test_rank_is_the_ecdf_of_the_pooled_probability():
-    """The definition, pinned: no averaging of per-descriptor ranks is involved."""
+def test_rank_is_the_reference_scale_applied_to_the_pooled_probability():
+    """The definition, pinned: no averaging of per-descriptor ranks is involved.
+
+    `rank_from_reference`, not `rank_from_knots` -- the reference's quartiles anchor the
+    scale at 0.25/0.50/0.75, and a plain ECDF would tie every active at exactly 1.0.
+    """
     Y, R, S, A = _inputs()
     res = combine(Y, R, S, A, spec=_spec(pooled_rank_knots=WIDE_KNOTS))
-    expected = rank_from_knots(res.values["proba"][:, 1], WIDE_KNOTS)
+    expected = rank_from_reference(res.values["proba"][:, 1], WIDE_KNOTS)
     np.testing.assert_array_equal(res.values["rank"][:, 1], expected)
     np.testing.assert_allclose(res.values["rank"].sum(axis=1), 1.0)
 

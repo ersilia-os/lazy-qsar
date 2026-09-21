@@ -69,24 +69,31 @@ from lazyqsar.qsar import LazyClassifierQSAR
 model = LazyClassifierQSAR(mode="slow") # default is "slow"
 model.fit(smiles_list=smiles_train, y=y_train)
 
-ranks = model.predict_rank(smiles_list=smiles_test)[:, 1]  # percentile against 50,000 drug-like reference molecules
+ranks = model.predict_rank(smiles_list=smiles_test)[:, 1]  # position against 50,000 drug-like reference molecules
 ```
 
 Other prediction methods are `predict_proba`, `predict_logit`, `predict_score`, `predict_lift` and `predict` (binary labels). All six share one implementation with the CLI, so a checkpoint gives the same answer through either entry point.
 
-> `predict_rank` is a percentile against a **fixed reference library** of 50,000 drug-like
-> molecules, so `rank = 0.99` means "scores above 99% of drug-like chemical space". Within
-> one model it is a monotone view of `proba` -- they order molecules identically, so any
-> ordering-only metric (AUROC, AUPRC, BEDROC) gives the same answer from either.
+> `predict_rank` positions a molecule against a **fixed reference library** of 50,000
+> drug-like molecules, anchored on that library's quartiles: **0.25, 0.50 and 0.75 are
+> exactly the quartiles of drug-like chemical space**, and between them `rank` is the true
+> percentile. Within one model it is a monotone view of `proba` -- they order molecules
+> identically, so any ordering-only metric (AUROC, AUPRC, BEDROC) gives the same answer
+> from either.
 >
-> Two things to expect. A selective model scores generic chemistry low, so the reference
-> may top out well below 1 (measured: 0.065 to 0.334 on an antimicrobial model). Anything
-> above that ceiling is extrapolated: it still orders molecules, but it means "better than
-> all 50,000" rather than a percentile, and printed at three decimals a set of active
-> compounds will all read as 1.0. Use `predict_proba` to discriminate among your top hits.
+> **Above 0.75 it is not a percentile.** A molecule at `rank = 0.9` beats far more than 90%
+> of drug-like space. The scale is deliberately not calibrated out there: a selective model
+> scores generic chemistry into a narrow band -- measured 0.065 to 0.334 on an antimicrobial
+> model, while its actives sat at 0.4 to 0.95 -- so any calibrated scale pins every active
+> at 1.0 and a hit list becomes an undifferentiated wall. Outside the quartiles `rank` is a
+> bounded linear function of probability instead, reaching 1.0 only at certainty.
 >
-> And a uniform rank says nothing about model skill -- a random model produces perfectly
-> uniform reference ranks. Report `proba`, `lift` and the out-of-fold AUC alongside it.
+> One consequence: roughly a quarter of a generic screening library lands just above 0.75,
+> because the top quartile of generic chemistry is still generic.
+>
+> And a rank says nothing on its own about model skill -- a random model still puts a
+> quarter of the reference above 0.75. Report `proba`, `lift` and the out-of-fold AUC
+> alongside it.
 
 ### LazyClassifier (custom descriptors)
 
@@ -155,7 +162,7 @@ The output CSV contains one column per task, ordered alphabetically by task name
 | type | meaning |
 |------|---------|
 | `proba` (default) | calibrated probability of the positive class |
-| `rank` | percentile against the 50,000-molecule drug-like reference library |
+| `rank` | position against the 50,000-molecule drug-like reference library, anchored on its quartiles |
 | `logit` | log-odds of the calibrated probability |
 | `lift` | probability divided by the training-set positive rate |
 | `score` | the pre-calibration scale, read off the calibrated probability |

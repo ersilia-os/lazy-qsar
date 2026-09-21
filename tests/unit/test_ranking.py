@@ -71,31 +71,104 @@ def test_self_ranking_is_approximately_uniform():
     assert counts.min() > 0.08 * len(sample)
 
 
+def _reference(n=50_000, lo=0.065, hi=0.334, seed=0):
+    """A reference library shaped like a real one: a selective model scores generic
+    chemistry into a narrow band well below 1."""
+    rng = np.random.default_rng(seed)
+    return np.sort(lo + (hi - lo) * rng.beta(2.0, 3.0, n))
+
+
+def test_the_quartiles_of_the_reference_land_on_the_quartiles_of_the_scale():
+    """The anchoring, and the whole point of the scale.
+
+    0.25, 0.50 and 0.75 mean exactly the quartiles of drug-like chemical space, so between
+    them `rank` is the true percentile.
+    """
+    ref = _reference()
+    prep = prepare_knots(ref)
+    q1, med, q3 = np.percentile(ref, [25, 50, 75])
+    assert float(rank_from_reference(q1, prepared=prep)) == pytest.approx(
+        0.25, abs=1e-4
+    )
+    assert float(rank_from_reference(med, prepared=prep)) == pytest.approx(
+        0.50, abs=1e-4
+    )
+    assert float(rank_from_reference(q3, prepared=prep)) == pytest.approx(
+        0.75, abs=1e-4
+    )
+
+
+def test_a_quarter_of_the_reference_sits_outside_each_anchor():
+    """Distribution-free, and the single assertion that catches almost any mis-wiring.
+
+    Whatever shape the reference has, exactly a quarter of it must fall above 0.75 and a
+    quarter below 0.25 -- that is what anchoring on quartiles means.
+    """
+    for seed in (0, 1, 2):
+        ref = _reference(seed=seed)
+        r = rank_from_reference(ref, prepared=prepare_knots(ref))
+        assert (r > 0.75).mean() == pytest.approx(0.25, abs=1e-3)
+        assert (r < 0.25).mean() == pytest.approx(0.25, abs=1e-3)
+
+
+def test_molecules_past_the_reference_keep_spreading_instead_of_tying_at_one():
+    """Why this is not a plain ECDF.
+
+    A selective model's actives sit two to eight reference-IQRs above the reference median.
+    An ECDF pins all of them at exactly 1.0, which is an unreadable hit list; here they
+    stay ordered and visibly apart.
+    """
+    ref = _reference()
+    prep = prepare_knots(ref)
+    actives = np.array([0.40, 0.55, 0.70, 0.85, 0.95])
+    r = rank_from_reference(actives, prepared=prep)
+    assert np.all(np.diff(r) > 0)
+    assert r.max() - r.min() > 0.1, "actives must be separable, not a wall of 1.000"
+    assert r.max() < 1.0
+    # ... and every one of them is above the whole reference library.
+    assert r.min() > rank_from_reference(ref.max(), prepared=prep)
+
+
 def test_reference_ranks_accept_a_scalar():
     """`decision_cutoff_rank` is one number, not an array.
 
-    `np.interp` of a scalar returns a numpy scalar, which has no item assignment, so a tail
-    written with boolean indexing raised `TypeError` at save time -- on a real fit only,
-    which is why the unit tests missed it.
+    `np.interp` of a scalar returns a numpy scalar, which has no item assignment, so a
+    branch written with boolean indexing raised `TypeError` at save time -- on a real fit
+    only, which is why the unit tests missed it.
     """
-    knots = np.linspace(0.065, 0.334, 1000)
-    assert 0.0 <= float(rank_from_reference(0.9, knots=knots)) <= 1.0
-    assert 0.0 <= float(rank_from_reference(0.01, knots=knots)) <= 1.0
+    prep = prepare_knots(_reference())
+    for p in (0.01, 0.2, 0.9):
+        assert 0.0 <= float(rank_from_reference(p, prepared=prep)) <= 1.0
 
 
-def test_reference_ranks_extrapolate_past_the_library_ceiling():
-    """A selective model scores generic chemistry low, so the reference stops well short
-    of 1 -- measured 0.065 to 0.334. Clamping there would tie every active at exactly 1.0
-    and stop `rank` ordering molecules at the only end anyone looks at."""
-    knots = np.linspace(0.065, 0.334, 1000)
-    above = rank_from_reference(np.array([0.4, 0.6, 0.9, 0.99]), knots=knots)
-    assert np.all(np.diff(above) > 0)
-    assert above.max() < 1.0
+def test_reference_ranks_are_monotone_and_bounded_across_both_joins():
+    ref = _reference()
+    grid = np.linspace(1e-6, 1.0, 20_000)
+    r = rank_from_reference(grid, prepared=prepare_knots(ref))
+    assert np.all(np.diff(r) >= 0)
+    assert r.min() >= 0.0 and r.max() <= 1.0
 
 
-def test_reference_ranks_stay_monotone_across_the_joins():
-    knots = np.linspace(0.2, 0.8, 500)
-    scores = np.linspace(0.001, 0.999, 400)
-    ranks = rank_from_reference(scores, knots=knots)
-    assert np.all(np.diff(ranks) >= 0)
-    assert ranks.min() >= 0.0 and ranks.max() <= 1.0
+def test_the_scale_is_continuous_where_the_segments_meet():
+    """Three pieces joined at Q1 and Q3; a gap there would be a visible discontinuity in
+    every screening output."""
+    ref = _reference()
+    prep = prepare_knots(ref)
+    for q in np.percentile(ref, [25, 75]):
+        below = float(rank_from_reference(q - 1e-9, prepared=prep))
+        above = float(rank_from_reference(q + 1e-9, prepared=prep))
+        assert below == pytest.approx(above, abs=1e-6)
+
+
+def test_only_certainty_reaches_one():
+    prep = prepare_knots(_reference())
+    assert float(rank_from_reference(1.0, prepared=prep)) == pytest.approx(1.0)
+    assert float(rank_from_reference(0.999, prepared=prep)) < 1.0
+
+
+def test_a_degenerate_reference_does_not_divide_by_zero():
+    """One distinct value carries no interior. It must still return something monotone and
+    bounded rather than raising."""
+    r = rank_from_reference(np.array([0.1, 0.4, 0.9]), knots=np.full(16, 0.4))
+    assert np.all(np.diff(r) >= 0)
+    assert r.min() >= 0.0 and r.max() <= 1.0

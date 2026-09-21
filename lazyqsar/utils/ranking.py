@@ -16,10 +16,6 @@ import numpy as np
 # far below any meaningful decision margin and makes the comparison runtime-independent.
 _CUTOFF_ATOL = 1e-6
 
-# Smallest probability the tail extrapolation will represent. Matches the clipping
-# `combine` already applies when it takes log-odds, so the two agree at the extremes.
-_TAIL_EPS = 1e-7
-
 
 def binarize(scores, threshold):
     """Return 0/1 labels for *scores* against *threshold*, tolerant of exact ties.
@@ -143,61 +139,75 @@ def score_from_knots(p1, knots):
 
 
 def rank_from_reference(scores, knots=None, prepared=None):
-    """Percentile against a reference library, with both tails extrapolated.
+    """Position against a reference library, anchored on its quartiles.
 
-    Identical to :func:`rank_from_knots` between the smallest and largest knot. Outside
-    that range it keeps extrapolating instead of clamping, linearly in log-odds, reaching
-    exactly 1.0 only as the score approaches 1 and exactly 0.0 only as it approaches 0.
+    Between the reference's first and third quartiles this **is** the exact percentile, so
+    0.25, 0.50 and 0.75 are precisely the quartiles of drug-like chemical space. Outside
+    that range it continues as a bounded linear function of probability::
 
-    The clamping :func:`rank_from_knots` does is right for an out-of-fold ECDF, where the
-    knots span the whole score range the model produces. It is wrong for a reference
-    library, because a selective model scores generic drug-like molecules low: measured on
-    an antimicrobial model, the 50,000 reference compounds spanned a pooled probability of
-    only 0.065 to 0.334. Every active above 0.334 would pin to exactly 1.0 -- so the top of
-    a screen, which is the entire point of ranking, would be one undifferentiated tie, and
-    ``rank`` would stop being a monotone view of ``proba``.
+        Q1 <= p <= Q3   ECDF(p)                        (runs 0.25 -> 0.75 by definition)
+        p > Q3          0.75 + 0.25 * (p - Q3)/(1 - Q3)
+        p < Q1          0.25 * p / Q1
 
-    Above the largest knot the value means *better than every reference compound*, ordered
-    but not a percentile any more. That is a weaker claim than the interior, and callers
-    reporting near-1.0 ranks should say so.
+    Above Q3 the value is therefore **not** a percentile: a molecule at 0.95 beats far more
+    than 95% of drug-like space. It is a readable, bounded, order-preserving scale.
+
+    Why not the plain ECDF everywhere. A selective model scores generic chemistry low --
+    measured on an antimicrobial model, the 50,000 reference molecules spanned a pooled
+    probability of only 0.065 to 0.334, while its actives sat at 0.4 to 0.95, which is two
+    to eight reference-IQRs above the reference median. An ECDF pins every one of them at
+    exactly 1.0, and so does any other scale calibrated to the reference's spread: a
+    logistic fitted to its quartiles only moves from 0.9916 to 0.99999999 across that whole
+    range. Being eight IQRs outside generic chemistry *is* the model working, so a
+    calibrated measure has no choice but to say "at the top" -- which leaves a hit list as
+    an undifferentiated wall of 1.000 and stops `rank` ordering molecules at the one end
+    anyone looks at.
+
+    Why the quartiles and not the range. Q1 and Q3 barely move under resampling or a refit.
+    The minimum and maximum of a 50,000-sample are order statistics, the least reproducible
+    numbers in the distribution, so anchoring on them would put the scale's boundaries
+    somewhere different for every model. They are deliberately unused, which also leaves
+    this construction with no free parameter: `proba` is already bounded, so the outer
+    segments have a natural endpoint.
+
+    Parameters
+    ----------
+    scores : array_like or float
+        Pooled probabilities. A scalar is accepted -- the decision cutoff is expressed as a
+        rank through this function.
+    knots, prepared
+        The reference, as raw knots or as the output of :func:`prepare_knots`.
+
+    Returns
+    -------
+    ndarray
+        Ranks in [0, 1], monotone in *scores*, reaching 1.0 only as the probability does.
     """
     vals, midranks = prepare_knots(knots) if prepared is None else prepared
     scores = np.asarray(scores, dtype=np.float64)
 
-    # A single distinct knot is degenerate but reachable. It is still extrapolated rather
-    # than returned as a constant: the tails are the whole reason this function exists, and
-    # one knot at least says which side of it a molecule falls on, monotonically.
-    ranks = (
-        np.full(scores.shape, float(midranks[0]))
-        if len(vals) == 1
-        else np.interp(scores, vals, midranks)
-    )
+    if len(vals) == 1:
+        # One distinct value carries no interior at all. Fall back to the two outer
+        # segments meeting at it, which still says which side of it a molecule falls on.
+        q1 = q3 = float(vals[0])
+        interior = np.full(scores.shape, 0.5)
+    else:
+        # Inverse interpolation: the probabilities at which the reference's own ECDF
+        # crosses 0.25 and 0.75.
+        q1 = float(np.interp(0.25, midranks, vals))
+        q3 = float(np.interp(0.75, midranks, vals))
+        interior = np.interp(scores, vals, midranks)
 
-    lo, hi = vals[0], vals[-1]
-    r_lo, r_hi = midranks[0], midranks[-1]
+    # `np.where`, never boolean assignment: `np.interp` of a scalar returns a numpy scalar,
+    # which has no item assignment.
+    ranks = interior
 
-    # `np.where` rather than boolean assignment: `np.interp` of a scalar returns a numpy
-    # scalar, which has no item assignment, and this is called with a single value when the
-    # decision cutoff is expressed as a rank.
-    x = _logit(np.clip(scores, _TAIL_EPS, 1.0 - _TAIL_EPS))
+    if q3 < 1.0 and q3 >= q1:
+        upper = 0.75 + 0.25 * (scores - q3) / (1.0 - q3)
+        ranks = np.where(scores > q3, upper, ranks)
 
-    if r_hi < 1.0:
-        # Straight line in log-odds from the top knot to (1 - _TAIL_EPS, 1.0). Monotone,
-        # continuous at the join, and bounded above by 1.
-        x0, x1 = _logit(hi), _logit(1.0 - _TAIL_EPS)
-        if x1 > x0:
-            t = np.clip((x - x0) / (x1 - x0), 0.0, 1.0)
-            ranks = np.where(scores > hi, r_hi + t * (1.0 - r_hi), ranks)
-
-    if r_lo > 0.0:
-        x0, x1 = _logit(lo), _logit(_TAIL_EPS)
-        if x1 < x0:
-            t = np.clip((x - x0) / (x1 - x0), 0.0, 1.0)
-            ranks = np.where(scores < lo, r_lo * (1.0 - t), ranks)
+    if q1 > 0.0 and q3 >= q1:
+        lower = 0.25 * scores / q1
+        ranks = np.where(scores < q1, lower, ranks)
 
     return np.clip(ranks, 0.0, 1.0)
-
-
-def _logit(p):
-    p = np.clip(np.asarray(p, dtype=np.float64), _TAIL_EPS, 1.0 - _TAIL_EPS)
-    return np.log(p / (1.0 - p))

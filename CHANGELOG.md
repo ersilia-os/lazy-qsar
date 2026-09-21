@@ -2,9 +2,10 @@
 
 ## 3.6.0
 
-`predict_rank` now reports a percentile against a fixed reference library of 50,000
-drug-like molecules. `rank = 0.99` means "scores above 99% of drug-like chemical space".
-Before this release it meant "above 99% of this model's own training set", which sounds
+`predict_rank` now positions a molecule against a fixed reference library of 50,000
+drug-like molecules, anchored on that library's quartiles: 0.25, 0.50 and 0.75 are exactly
+the quartiles of drug-like chemical space, and between them `rank` is the true percentile.
+Before this release it was a percentile against the model's own training set, which sounds
 similar and is not.
 
 The old behaviour was not a bug in the ranking arithmetic. A trained model's out-of-fold
@@ -44,15 +45,20 @@ numpy and onnxruntime.
 
 ### Known limitations
 
-- **A selective model saturates the top of the scale.** Generic chemistry scores low, so
-  the reference library's pooled probability can top out well below 1 -- 0.334 on the
-  antimicrobial model used to validate this. Molecules above that ceiling are extrapolated
-  in log-odds: they still order correctly, but the value means "better than all 50,000"
-  rather than a percentile, and at three decimals a set of actives all print as 1.0. Use
-  `proba` to discriminate among top hits.
-- **A uniform rank says nothing about model skill.** A random model produces perfectly
-  uniform reference ranks, and its "top 0.1%" is 50 random compounds. If the real problem
-  is that top-ranked compounds are not active, this relabels it rather than fixing it.
+- **Above 0.75 the scale is not a percentile.** A molecule at `rank = 0.9` beats far more
+  than 90% of drug-like space. This is deliberate. A selective model scores generic
+  chemistry into a narrow band -- measured 0.065 to 0.334, while its actives sat at 0.4 to
+  0.95, two to eight reference-IQRs above the reference median -- so *any* scale calibrated
+  to the reference pins every active at 1.0 and leaves a hit list as an undifferentiated
+  wall. A plain ECDF does it exactly; even a logistic fitted to the reference's quartiles
+  only moves from 0.9916 to 0.99999999 across the whole active range. Outside the quartiles
+  `rank` is a bounded linear function of probability instead.
+- **Roughly a quarter of a generic library lands just above 0.75**, since the reference's
+  own top quartile is compressed there. That is the cost of reserving the upper scale, and
+  it reads correctly: the top quartile of generic chemistry is still generic.
+- **A rank says nothing on its own about model skill.** A random model still puts a
+  quarter of the reference above 0.75. If the real problem is that top-ranked compounds are
+  not active, this relabels it rather than fixing it.
 - **`proba` remains conditioned on the training prior**, not the screening library's, so
   this release does not make probabilities real-world-calibrated.
 - **The applicability-domain veto stays train-relative**, so diverse library compounds trip
@@ -72,8 +78,8 @@ Every selected molecule is CDDD-calculable by construction, which matters becaus
 refuses a dataset failing more than 0.1% of its filters and the library's own rate is
 1.88% -- a random 50,000-molecule slice would have made CDDD inapplicable.
 
-Validated on 965 held-out molecules that never entered the knots: mean rank 0.515,
-P(rank > 0.99) = 0.0145, deciles 0.084 to 0.119.
+The anchoring is exact by construction and checked directly: a quarter of the reference
+falls above rank 0.75 and a quarter below 0.25, whatever shape the reference has.
 
 ## 3.5.0
 
