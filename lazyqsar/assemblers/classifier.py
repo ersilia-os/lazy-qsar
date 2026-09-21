@@ -3,7 +3,12 @@ import os
 import time as _time
 import numpy as np
 
-from lazyqsar.utils.ranking import binarize
+from lazyqsar.utils.ranking import (
+    binarize,
+    prepare_knots,
+    rank_from_knots,
+    subsample_knots,
+)
 
 from ..portfolios.classification import Portfolio
 from ..preprocessors.classification.prep import Preprocessor
@@ -368,6 +373,10 @@ class LazyClassifier(object):
             batch_classifier.fit(batch_X, batch_y)
             self.models.append(batch_classifier)
 
+        # Kept, not just used: `oof_channels` replays the same partition to build the
+        # pooled out-of-fold reference. Re-deriving it there would couple that reference
+        # to `_plan_batches`' private seed.
+        self.batch_indices_ = batch_indices
         self.batch_priors_ = [m.train_prior_ for m in self.models]
         self.decision_cutoff_raw_ = float(
             np.mean([m.decision_cutoff_raw_ for m in self.models])
@@ -386,6 +395,7 @@ class LazyClassifier(object):
             if _prior and _prior > 0
             else None
         )
+        self._build_pooled_rank_reference(X)
         self.oof_auc_ = self._compute_oof_auc(X, y, batch_indices)
         self.train_auc_ = self._compute_train_auc(X, y)
         logger.success(
@@ -402,6 +412,100 @@ class LazyClassifier(object):
             return float(roc_auc_score(y, train_proba))
         except Exception:
             return 0.5
+
+    def _build_pooled_rank_reference(self, X):
+        """Learn the out-of-fold probability distribution ``predict_rank`` reports against.
+
+        Sets ``pooled_rank_knots_``, which is persisted, and its prepared form. Both stay
+        ``None`` when out-of-fold data is unavailable, and ``predict_rank`` then keeps its
+        pre-v3.5.0 behaviour.
+        """
+        self.pooled_rank_knots_ = None
+        self._pooled_rank_prepared_ = None
+        pooled = self._oof_accumulate(X)
+        if pooled is None:
+            return
+        self.pooled_rank_knots_ = subsample_knots(np.sort(pooled[0]))
+        self._pooled_rank_prepared_ = prepare_knots(self.pooled_rank_knots_)
+
+    def _oof_accumulate(self, X):
+        """Pooled out-of-fold ``(proba, score)`` per training row, or None.
+
+        The pooled reference that ``rank`` is measured against has to be built from
+        predictions the model did not train on, or the ECDF is calibrated against a
+        distribution nothing at inference time produces. The pieces exist -- every head
+        keeps ``oof_probas_`` and ``oof_raw_`` from its calibration fold -- but they live
+        one batch and one head down, and until now were read once for an AUC and thrown
+        away.
+
+        Each value is combined exactly as its deployed counterpart is: heads are pooled
+        with the batch's gating weights, as :meth:`_BatchLazyClassifier.predict_proba`
+        does, and the prior correction is applied per batch *before* averaging, as
+        :meth:`predict_proba` does. Applying it after averaging is a different function.
+
+        Returns ``None`` when any head lacks out-of-fold data. A partial reference is
+        worse than none: a mis-calibrated ECDF is still monotone and still in [0, 1], so
+        nothing downstream could detect it.
+
+        Notes
+        -----
+        Under imbalance batching a positive appears in every batch and a negative in
+        exactly one, so a negative's value here comes from a single sub-model where
+        deployment averages all of them. Averaging over the batches that contain each row
+        is the only defensible reading; it leaves the reference's tails mildly optimistic.
+        """
+        indices = getattr(self, "batch_indices_", None)
+        if not indices or not getattr(self, "models", None):
+            return None
+
+        n = X.shape[0]
+        acc_y = np.zeros(n, dtype=np.float64)
+        acc_s = np.zeros(n, dtype=np.float64)
+        cnt = np.zeros(n, dtype=np.float64)
+
+        for batch, idx in zip(self.models, indices):
+            heads = [getattr(h, "model", None) for h in batch.heads]
+            if not all(
+                m is not None and hasattr(m, "oof_probas_") and hasattr(m, "oof_raw_")
+                for m in heads
+            ):
+                return None
+            try:
+                S_cal = np.column_stack([m.oof_probas_ for m in heads])
+                S_raw = np.column_stack([m.oof_raw_ for m in heads])
+                W = batch.pooler.get_weights(batch.prep.transform(X[idx]))
+            except Exception as exc:  # noqa: BLE001 - deliberately broad; degrade, don't raise
+                logger.debug(
+                    f"pooled rank reference unavailable: {type(exc).__name__}: {exc}"
+                )
+                return None
+            if S_cal.shape[0] != len(idx):
+                return None
+
+            acc_y[idx] += _correct_prior(
+                (W * S_cal).sum(axis=1), batch.train_prior_, self.population_prior_
+            )
+            acc_s[idx] += (W * S_raw).sum(axis=1)
+            cnt[idx] += 1.0
+
+        if (cnt == 0).any():
+            return None
+        return acc_y / cnt, acc_s / cnt
+
+    def oof_channels(self, X):
+        """Out-of-fold ``(proba, rank, score)`` per training row, or None.
+
+        What :class:`~lazyqsar.qsar.LazyClassifierQSAR` stacks across descriptors to build
+        the ensemble-level pooled reference. ``rank`` is this descriptor's own reference
+        evaluated at ``proba``, so it is uniform by construction -- which is what makes it
+        a usable self-check on the reference rather than a second opinion about it.
+        """
+        prepared = getattr(self, "_pooled_rank_prepared_", None)
+        pooled = self._oof_accumulate(X)
+        if pooled is None or prepared is None:
+            return None
+        proba, score = pooled
+        return proba, rank_from_knots(proba, prepared=prepared), score
 
     def _compute_oof_auc(self, X, y, batch_indices) -> float:
         from sklearn.metrics import roc_auc_score
@@ -458,7 +562,25 @@ class LazyClassifier(object):
         return np.array([1 - proba, proba]).T
 
     def predict_rank(self, X):
-        """Return batch-averaged rank quantiles (0–1), shape (n, 2)."""
+        """Return the training-set percentile of the pooled probability, shape (n, 2).
+
+        Not an average of the batches' percentiles: averaging percentiles does not give
+        the percentile of the average, so that version could order two molecules one way
+        while ``predict_proba`` ordered them the other. Reading one pooled reference makes
+        ``rank`` a monotone view of ``proba``, which is what it was always taken to be --
+        and it removes the ECDF amplification that made ``rank`` the output least
+        reproducible across the ONNX export boundary.
+
+        Falls back to the batch average for models fitted before the reference existed.
+        """
+        prepared = getattr(self, "_pooled_rank_prepared_", None)
+        if prepared is None:
+            knots = getattr(self, "pooled_rank_knots_", None)
+            if knots is not None and len(knots):
+                prepared = self._pooled_rank_prepared_ = prepare_knots(knots)
+        if prepared is not None:
+            rank_1 = rank_from_knots(self.predict_proba(X)[:, 1], prepared=prepared)
+            return np.column_stack([1 - rank_1, rank_1])
         R = np.array([model.predict_rank(X)[:, 1] for model in self.models])
         rank_1 = R.mean(axis=0)
         return np.column_stack([1 - rank_1, rank_1])
@@ -486,6 +608,16 @@ class LazyClassifier(object):
             "decision_cutoff_logit": self.decision_cutoff_logit_,
             "decision_cutoff_lift": self.decision_cutoff_lift_,
         }
+        knots = getattr(self, "pooled_rank_knots_", None)
+        if knots is not None and len(knots):
+            # The distribution `predict_rank` reports against. Without it a loaded
+            # checkpoint would fall back to averaging the batches' percentiles and stop
+            # agreeing with the model it came from.
+            metadata["pooled_ranker"] = {
+                "knots": np.asarray(knots, dtype=np.float64).tolist(),
+                "n_train": int(len(knots)),
+                "source": "oof",
+            }
         with open(f"{directory}/metadata.json", "w") as f:
             json.dump(metadata, f, indent=4)
         logger.success(f"Saved {len(self.models)} batch(es) to {directory!r}")

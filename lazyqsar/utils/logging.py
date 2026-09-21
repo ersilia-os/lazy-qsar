@@ -19,13 +19,59 @@ _loguru.level("SUCCESS", color="<black><bold><bg green>")
 
 _FORMAT = "<green>{time:HH:mm:ss}</green> <level>{level: <8}</level> {message}"
 
+# How many row indices a NaN-descriptor warning names before it truncates.
+_MAX_LISTED_ROWS = 10
+
+
+def _stderr_sink(message):
+    """Write to whatever ``sys.stderr`` is bound *now*.
+
+    Passing ``sys.stderr`` to ``logger.add`` would capture the stream object as it stands
+    at import time. Anything that later replaces it -- pytest's capture, a notebook
+    kernel, ``contextlib.redirect_stderr`` -- would then be written past, and if the
+    captured stream has since been closed loguru raises inside the handler. Resolving the
+    attribute per message costs nothing at these volumes and makes the sink indifferent to
+    all of it.
+    """
+    sys.stderr.write(message)
+
 
 class Logger:
+    """Quiet by default, but never silent about things the caller must know.
+
+    ``_loguru.remove()`` above drops loguru's default sink, so nothing is emitted unless
+    this class adds one. It used to add a sink only under ``set_verbosity(True)``, which
+    meant every ``logger.warning`` in the package went nowhere in the default
+    configuration -- including "N SMILES could not be parsed", the one message that
+    explains why a prediction came back blank. The CLI has no verbosity flag, so on the
+    deployed path that warning could not be seen at all.
+
+    So there are two sinks. A WARNING-level one is installed once per process and never
+    removed; ``set_verbosity(True)`` adds a second at DEBUG. Verbose mode therefore lowers
+    the floor rather than switching output on, and a warning is never something the caller
+    has to have opted in to. The two are filtered to disjoint level ranges so a warning is
+    not printed twice while verbose.
+
+    The WARNING sink is tracked on the class, not the instance. ``loguru.logger`` is a
+    process-wide singleton, so a per-instance sink would mean a second ``Logger()`` --
+    which this package does not create, but nothing stops a caller or a test from doing --
+    silently doubling every warning.
+    """
+
+    _warn_sink_id: Optional[int] = None
+
     def __init__(self):
         self.logger = _loguru
         self._console = Console(stderr=True, highlight=False)
         self._sink_id: Optional[int] = None
         self._verbose: bool = False
+        if Logger._warn_sink_id is None:
+            Logger._warn_sink_id = self.logger.add(
+                _stderr_sink,
+                format=_FORMAT,
+                colorize=True,
+                level="WARNING",
+            )
 
     @property
     def verbose(self) -> bool:
@@ -35,10 +81,12 @@ class Logger:
         self._verbose = verbose
         if verbose and self._sink_id is None:
             self._sink_id = self.logger.add(
-                sys.stderr,
+                _stderr_sink,
                 format=_FORMAT,
                 colorize=True,
                 level="DEBUG",
+                # The always-on sink already handles WARNING and above.
+                filter=lambda record: record["level"].no < _loguru.level("WARNING").no,
             )
         elif not verbose and self._sink_id is not None:
             try:
@@ -64,6 +112,25 @@ class Logger:
 
     def success(self, text):
         self.logger.success(text)
+
+    def nan_descriptor_rows(self, tag: str, rows, n_total: int) -> None:
+        """Warn that *rows* came back all-NaN from the ``tag`` descriptor.
+
+        Shared by every descriptor so the message reads the same wherever it comes from,
+        and truncated because it is now printed by default: a 300k-compound screen with a
+        few percent of unparseable rows would otherwise put a five-figure list of indices
+        on one line, four or five times over.
+        """
+        rows = list(rows)
+        if not rows:
+            return
+        shown = ", ".join(str(int(i)) for i in rows[:_MAX_LISTED_ROWS])
+        if len(rows) > _MAX_LISTED_ROWS:
+            shown += f", ... ({len(rows) - _MAX_LISTED_ROWS} more)"
+        self.warning(
+            f"[{tag}] {len(rows)}/{n_total} SMILES produced NaN descriptors and will be "
+            f"median-imputed by the preprocessor (rows: {shown})"
+        )
 
     def rule(self, title: str = "", style: str = "dim blue"):
         if not self._verbose:

@@ -1,115 +1,57 @@
+"""Score one or more saved LazyQSAR models over a list of SMILES.
+
+The entry point the Ersilia Model Hub calls. Both forms of ``model_dir`` — a parent
+directory of task subdirectories, or a caller-supplied ``{column_name: directory}``
+mapping — resolve to the same list of ``(column, directory)`` pairs and run through the
+shared inference runner, so the CLI and the Python API compute the same thing.
+
+The descriptor streaming, chunking and reuse all live in :mod:`lazyqsar.ensemble.runner`;
+what remains here is argument handling, column ordering, CSV I/O -- and the one thing the
+runner deliberately does not do, which is bound the input.
+
+The runner holds its accumulated per-task channels, and the combined results for every
+task, for as long as the call lasts. That is the right trade inside one pass, but it makes
+peak memory scale with the number of molecules times the number of endpoints, and
+``LAZYQSAR_PREDICT_CHUNK`` does nothing about it -- it bounds the descriptor slice, not the
+accumulation. So this module feeds the runner a block of molecules at a time and lets each
+block's working set go before starting the next, which is what keeps a large library from
+exhausting memory. See :func:`_block_size`.
+"""
+
 import csv
-import gc
 import os
-import shutil
 import tempfile
 
 import numpy as np
 import pandas as pd
-from rich.progress import (
-    BarColumn,
-    MofNCompleteColumn,
-    Progress,
-    TextColumn,
-    TimeElapsedColumn,
-)
 
-from ..agnostic import LazyClassifier
-from ..qsar import get_descriptor_type
+from ..ensemble.combine import OUTPUT_NAMES, mask_rows
+from ..ensemble.runner import (
+    get_chunk_size,
+    new_progress,
+    persist_descriptors,
+    predict_tasks,
+    sources_from_mapping,
+    sources_from_parent,
+)
+from ..qsar import invalid_smiles_indices
+from ..registry import DESCRIPTORS_MODE, get_descriptor_type
 from ..utils.logging import logger
 
+# Kept importable from here: Ersilia model templates and analysis scripts reach for these.
+_new_progress = new_progress
+_get_chunk_size = get_chunk_size
+_persist_descriptors = persist_descriptors
 
-def _new_progress() -> Progress:
-    return Progress(
-        TextColumn("[bold blue]{task.description}"),
-        BarColumn(),
-        MofNCompleteColumn(),
-        TextColumn("•"),
-        TimeElapsedColumn(),
-        transient=True,
-    )
-
-
-def _get_chunk_size() -> int:
-    try:
-        v = int(os.environ.get("LAZYQSAR_PREDICT_CHUNK", "1000"))
-        return v if v > 0 else 1000
-    except ValueError:
-        return 1000
-
-
-def _persist_descriptors(
-    featurizer,
-    smiles_list: list,
-    out_path: str,
-    chunk_size: int,
-    progress: Progress | None = None,
-    task_id=None,
-) -> None:
-    """Compute descriptors in chunks and stream each chunk into a memmap-backed .npy at `out_path`.
-
-    Never materialises an X matrix with more than `chunk_size` rows in RAM. The output is a
-    standard .npy file so it can be read back with `np.load(..., mmap_mode='r')`.
-    """
-    n_total = len(smiles_list)
-    if n_total == 0:
-        return
-
-    first_end = min(chunk_size, n_total)
-    first_chunk = featurizer.transform(smiles_list[:first_end])
-    if first_chunk.ndim != 2:
-        raise ValueError(
-            f"featurizer.transform must return a 2D array; got shape {first_chunk.shape}"
-        )
-    n_dim = int(first_chunk.shape[1])
-    dtype = first_chunk.dtype
-
-    X_mm = np.lib.format.open_memmap(
-        out_path, mode="w+", dtype=dtype, shape=(n_total, n_dim)
-    )
-    try:
-        X_mm[:first_end] = first_chunk
-        del first_chunk
-        if progress is not None and task_id is not None:
-            progress.update(task_id, advance=1)
-
-        for start in range(first_end, n_total, chunk_size):
-            end = min(start + chunk_size, n_total)
-            chunk = featurizer.transform(smiles_list[start:end])
-            X_mm[start:end] = chunk
-            del chunk
-            if progress is not None and task_id is not None:
-                progress.update(task_id, advance=1)
-        X_mm.flush()
-    finally:
-        del X_mm
-    gc.collect()
-
-
-def _predict_from_persisted(
-    model, x_path: str, predict_fn, chunk_size: int
-) -> np.ndarray:
-    """Run `predict_fn(model, X_chunk)` over mmapped chunks of the persisted descriptor matrix."""
-    X_mm = np.load(x_path, mmap_mode="r")
-    n_total = X_mm.shape[0]
-    parts: list[np.ndarray] = []
-    for start in range(0, n_total, chunk_size):
-        end = min(start + chunk_size, n_total)
-        X_chunk = np.ascontiguousarray(X_mm[start:end])
-        parts.append(predict_fn(model, X_chunk))
-        del X_chunk
-    del X_mm
-    return np.concatenate(parts) if len(parts) > 1 else parts[0]
-
-
-_PREDICT_DISPATCH = {
-    "proba": lambda model, X: model.predict_proba(X)[:, 1],
-    "rank": lambda model, X: model.predict_rank(X)[:, 1],
-    "logit": lambda model, X: model.predict_logit(X)[:, 1],
-    "lift": lambda model, X: model.predict_lift(X)[:, 1],
-    "score": lambda model, X: model.predict_score(X)[:, 1],
-    "binary": lambda model, X: model.predict(X),
-}
+__all__ = [
+    "predict",
+    "prepare_files",
+    "read_smiles",
+    "read_output_array",
+    "get_task_names",
+    "get_featurizer_names",
+    "load_featurizer",
+]
 
 
 def prepare_files(
@@ -183,132 +125,82 @@ def load_featurizer(model_dir, featurizer_name):
     return featurizer
 
 
-def _predict_from_dict(
-    model_dir: dict[str, str],
-    input_csv: str | None,
-    output_csv: str | None,
-    models_txt: str | None,
-    predict_type: str,
-    smiles: list | None = None,
-) -> tuple[np.ndarray, list[str]]:
-    if predict_type not in _PREDICT_DISPATCH:
-        raise ValueError(
-            f"Unknown predict_type '{predict_type}'. "
-            f"Choose from: {sorted(_PREDICT_DISPATCH)}"
-        )
+# One gigabyte of working set per block. Not configurable on purpose: a knob here would be
+# a second thing to tune beside LAZYQSAR_PREDICT_CHUNK, with worse failure modes -- too
+# large and it defeats the point, too small and it reloads featurizers for nothing.
+_BLOCK_BUDGET_BYTES = 1 << 30
 
-    col_map = {os.path.abspath(p): col for col, p in model_dir.items()}
-    if input_csv is not None:
-        input_csv = os.path.abspath(input_csv)
-    if output_csv is not None:
-        output_csv = os.path.abspath(output_csv)
+# The widest descriptor LazyQSAR ships (morgan and chemeleon are both 2048), the most any
+# one model can use, and the most channels any request needs. All three are deliberate
+# over-estimates: they make the block smaller than strictly necessary, never larger.
+#
+# The descriptor count is read from the registry rather than written down, because a sixth
+# descriptor would otherwise make this silently under-count and the blocks too large --
+# the one direction the error must not go. The width is not derivable: no descriptor
+# declares its dimensionality without being constructed, and constructing one here would
+# pull in RDKit and torch on a path that deliberately avoids both.
+_WIDEST_DESCRIPTOR = 2048
+_MAX_DESCRIPTORS = max(len(names) for names in DESCRIPTORS_MODE.values())
+_MAX_CHANNELS = len(("y", "r", "s", "a"))
 
-    logger.info(
-        f"Running dict prediction | {len(col_map)} models | input: {input_csv} | "
-        f"output: {output_csv} | predict_type: {predict_type}"
+# Descriptors that leave an all-NaN row for a molecule RDKit cannot parse, so that the rows
+# they flag are a superset of the unparseable ones. `cddd` is deliberately absent: it
+# repairs NaN rows from a ChEMBL nearest neighbour, so a row it returns clean is not
+# evidence the molecule parsed. When none of these ran, the scan below is skipped and the
+# whole list is checked, exactly as it always was.
+_NAN_FAITHFUL = frozenset({"morgan", "rdkit", "chemeleon", "clamp"})
+
+
+def _block_size(n_tasks: int, chunk_size: int) -> int:
+    """Molecules to push through the runner at once, derived from a memory budget.
+
+    Per molecule a block costs roughly the descriptor matrix being featurized, the runner's
+    accumulated channels, and one ``CombineResult`` per task -- whose ``weights`` and
+    ``ranks`` are float64 and, for the CLI, unread. At twenty endpoints and five
+    descriptors that is about 11 kB per molecule, so a million molecules in one pass needs
+    several gigabytes.
+
+    Always a whole multiple of *chunk_size*, and never smaller than it. That is what keeps
+    the result bit-identical: featurization and scoring both step in ``chunk_size`` rows,
+    and onnxruntime picks different kernels for different batch sizes, so a block boundary
+    that produced a short chunk would move the numbers in the last few digits.
+    """
+    per_row = (
+        4 * _WIDEST_DESCRIPTOR
+        + 4 * n_tasks * _MAX_DESCRIPTORS * _MAX_CHANNELS
+        + n_tasks * (16 + 16 * _MAX_DESCRIPTORS)
     )
+    rows = _BLOCK_BUDGET_BYTES // per_row
+    return max(chunk_size, (rows // chunk_size) * chunk_size)
 
-    if smiles is not None:
-        smiles_list = smiles
-        logger.info(f"Using {len(smiles_list)} SMILES from argument")
-    else:
-        smiles_list = read_smiles(input_csv)
-        logger.info(f"Loaded {len(smiles_list)} SMILES from {input_csv}")
 
-    if models_txt is not None:
-        with open(models_txt) as f:
-            allowed = {line.strip() for line in f}
-        col_map = {p: c for p, c in col_map.items() if c in allowed}
-        logger.info(f"Filtered to {len(col_map)} models via {models_txt}")
-    if not col_map:
-        raise ValueError("No valid models found.")
+def _unparseable(smiles_list, scan):
+    """Positions RDKit cannot parse, re-checking only the rows a descriptor already NaN'd.
 
-    all_featurizers = sorted(
-        {
-            dn
-            for p in col_map
-            for dn in os.listdir(p)
-            if os.path.isdir(os.path.join(p, dn))
-        }
-    )
-    logger.info(f"Featurizers found: {all_featurizers}")
+    Every descriptor in :data:`_NAN_FAITHFUL` emits an all-NaN row exactly when
+    ``Chem.MolFromSmiles`` returns ``None``, and may emit one for its own reasons as well.
+    So the rows they flag contain every unparseable molecule and usually a few extra, and
+    confirming that handful with RDKit gives the same answer as parsing all N -- which is
+    what this used to do, after all five descriptors had already parsed every molecule.
 
-    _predict_fn = _PREDICT_DISPATCH[predict_type]
-    results: dict[tuple[str, str], np.ndarray] = {}
+    A clean library means zero parses here instead of one per molecule.
+    """
+    if not _NAN_FAITHFUL.intersection(scan.get("descriptors", ())):
+        return invalid_smiles_indices(smiles_list)
+    candidates = sorted(scan.get("nan_rows", ()))
+    if not candidates:
+        return []
+    subset = [smiles_list[i] for i in candidates]
+    return [candidates[j] for j in invalid_smiles_indices(subset)]
 
-    chunk_size = _get_chunk_size()
-    n_total = len(smiles_list)
-    n_chunks = (n_total + chunk_size - 1) // chunk_size
-    scratch_dir = tempfile.mkdtemp(prefix="lazyqsar-predict-")
-    try:
-        for featurizer_name in all_featurizers:
-            featurizer = None
-            for p in col_map:
-                feat_dir = os.path.join(p, featurizer_name)
-                if os.path.isdir(feat_dir):
-                    featurizer = get_descriptor_type(featurizer_name).load(feat_dir)
-                    break
-            if featurizer is None:
-                continue
 
-            cols_with_models = [
-                (p, c)
-                for p, c in col_map.items()
-                if os.path.isdir(os.path.join(p, featurizer_name))
-            ]
-            if not cols_with_models:
-                continue
+def _as_column(values):
+    """Reduce one output to the single column that goes in the CSV.
 
-            logger.info(f"Computing descriptors: {featurizer_name}")
-            x_path = os.path.join(scratch_dir, f"X_{featurizer_name}.npy")
-
-            with _new_progress() as progress:
-                desc_task = progress.add_task(
-                    f"[{featurizer_name}] descriptors", total=n_chunks
-                )
-                _persist_descriptors(
-                    featurizer,
-                    smiles_list,
-                    x_path,
-                    chunk_size,
-                    progress=progress,
-                    task_id=desc_task,
-                )
-                del featurizer
-                gc.collect()
-
-                pred_task = progress.add_task(
-                    f"[{featurizer_name}] predicting", total=len(cols_with_models)
-                )
-                for p, col_name in cols_with_models:
-                    model_subdir = os.path.join(p, featurizer_name)
-                    model = LazyClassifier.load(model_subdir)
-                    results[(col_name, featurizer_name)] = _predict_from_persisted(
-                        model, x_path, _predict_fn, chunk_size
-                    )
-                    del model
-                    gc.collect()
-                    progress.update(pred_task, advance=1)
-
-            try:
-                os.remove(x_path)
-            except OSError:
-                pass
-    finally:
-        shutil.rmtree(scratch_dir, ignore_errors=True)
-
-    aggregated: dict[str, np.ndarray] = {}
-    for col_name in col_map.values():
-        vals = [v for (c, _), v in results.items() if c == col_name]
-        if vals:
-            aggregated[col_name] = np.average(np.array(vals), axis=0)
-
-    cols_ordered = list(col_map.values())
-    R = np.array([aggregated[c] for c in cols_ordered]).T
-    if output_csv is not None:
-        pd.DataFrame(R, columns=cols_ordered).to_csv(output_csv, index=False)
-        logger.success(f"Predictions saved to {output_csv}")
-    return R, cols_ordered
+    ``binary`` is already per-sample labels; the rest are ``[negative, positive]`` pairs
+    and the positive class is the one reported.
+    """
+    return values if values.ndim == 1 else values[:, 1]
 
 
 def predict(
@@ -319,116 +211,125 @@ def predict(
     predict_type: str = "proba",
     smiles: list = None,
 ) -> tuple[np.ndarray, list[str]]:
-    if isinstance(model_dir, dict):
-        return _predict_from_dict(
-            model_dir, input_csv, output_csv, models_txt, predict_type, smiles
-        )
+    """Score every model in *model_dir* over the given SMILES.
 
-    if predict_type not in _PREDICT_DISPATCH:
+    Parameters
+    ----------
+    model_dir : str or dict
+        A directory whose subdirectories are tasks, or ``{column_name: directory}`` to
+        name the output columns explicitly and draw models from unrelated paths. Two
+        column names may point at the same directory; both are returned.
+    input_csv : str, optional
+        CSV with SMILES in the first column and a header. Ignored when *smiles* is given.
+    output_csv : str, optional
+        Where to write the result. Nothing is written when omitted.
+    models_txt : str, optional
+        One column name per line. Filters, and its order becomes the column order.
+    predict_type : str
+        One of ``proba``, ``rank``, ``logit``, ``lift``, ``score``, ``binary``.
+    smiles : list of str, optional
+        SMILES to score, instead of reading *input_csv*.
+
+    Returns
+    -------
+    R : ndarray of shape (n_smiles, n_columns)
+    header : list of str
+        Column names, aligned with the columns of *R*.
+    """
+    if predict_type not in OUTPUT_NAMES:
         raise ValueError(
-            f"Unknown predict_type '{predict_type}'. "
-            f"Choose from: {sorted(_PREDICT_DISPATCH)}"
+            f"Unknown predict_type '{predict_type}'. Choose from: {sorted(OUTPUT_NAMES)}"
         )
-
-    model_dir = os.path.abspath(model_dir)
-    if input_csv is not None:
-        input_csv = os.path.abspath(input_csv)
-    if output_csv is not None:
-        output_csv = os.path.abspath(output_csv)
-
-    logger.info(
-        f"Running prediction | model: {model_dir} | input: {input_csv} | output: {output_csv} | predict_type: {predict_type}"
-    )
 
     if smiles is not None:
         smiles_list = smiles
         logger.info(f"Using {len(smiles_list)} SMILES from argument")
     else:
-        smiles_list = read_smiles(input_csv)
+        if input_csv is None:
+            raise ValueError("Provide either `smiles` or `input_csv`.")
+        smiles_list = read_smiles(os.path.abspath(input_csv))
         logger.info(f"Loaded {len(smiles_list)} SMILES from {input_csv}")
 
-    tasks = get_task_names(model_dir)
-    logger.info(f"Found tasks: {tasks}")
-    if models_txt is not None:
-        with open(models_txt, "r") as f:
-            models = [line.strip() for line in f]
-        tasks = [t for t in models if t in tasks]
-        logger.info(f"Filtered to tasks: {tasks}")
-    if len(tasks) == 0:
-        raise ValueError("No valid tasks found in the model directory.")
+    if isinstance(model_dir, dict):
+        sources = sources_from_mapping(model_dir, models_txt)
+    else:
+        sources = sources_from_parent(os.path.abspath(model_dir), models_txt)
+    if not sources:
+        raise ValueError("No valid models found.")
 
-    featurizers = get_featurizer_names(model_dir, tasks)
-    _predict = _PREDICT_DISPATCH[predict_type]
-
-    chunk_size = _get_chunk_size()
-
-    results = {}
+    header = [s.column_name for s in sources]
     n_total = len(smiles_list)
-    n_chunks = (n_total + chunk_size - 1) // chunk_size
-    scratch_dir = tempfile.mkdtemp(prefix="lazyqsar-predict-")
-    try:
-        for featurizer_name in featurizers:
-            tasks_with_models = [
-                t
-                for t in tasks
-                if os.path.isdir(os.path.join(model_dir, t, featurizer_name))
-            ]
-            if not tasks_with_models:
-                continue
+    chunk_size = get_chunk_size()
+    block = _block_size(len(sources), chunk_size)
+    n_blocks = max(1, (n_total + block - 1) // block)
 
-            logger.info(f"Computing descriptors: {featurizer_name}")
-            featurizer = load_featurizer(model_dir, featurizer_name)
-            x_path = os.path.join(scratch_dir, f"X_{featurizer_name}.npy")
+    logger.info(
+        f"Running prediction | {len(sources)} model(s) | {n_total} molecule(s) | "
+        f"{n_blocks} block(s) of up to {block} | "
+        f"output: {output_csv} | predict_type: {predict_type}"
+    )
 
-            with _new_progress() as progress:
-                desc_task = progress.add_task(
-                    f"[{featurizer_name}] descriptors", total=n_chunks
-                )
-                _persist_descriptors(
-                    featurizer,
-                    smiles_list,
-                    x_path,
-                    chunk_size,
-                    progress=progress,
-                    task_id=desc_task,
-                )
-                del featurizer
-                gc.collect()
+    # Filled per block rather than concatenated at the end: holding every block's slice and
+    # then joining them would mean two full copies of the output, which is exactly the kind
+    # of whole-input allocation this loop exists to remove.
+    R = None
+    n_bad = 0
+    for index, start in enumerate(range(0, n_total, block), start=1):
+        end = min(start + block, n_total)
+        if n_blocks > 1:
+            logger.info(f"Block {index}/{n_blocks} | rows {start}-{end - 1}")
+        part = smiles_list[start:end]
 
-                pred_task = progress.add_task(
-                    f"[{featurizer_name}] predicting", total=len(tasks_with_models)
-                )
-                for task_name in tasks_with_models:
-                    model_subdir = os.path.join(model_dir, task_name, featurizer_name)
-                    model = LazyClassifier.load(model_subdir)
-                    results[(task_name, featurizer_name)] = _predict_from_persisted(
-                        model, x_path, _predict, chunk_size
-                    )
-                    del model
-                    gc.collect()
-                    progress.update(pred_task, advance=1)
+        scan: dict = {}
+        results = predict_tasks(
+            sources,
+            part,
+            outputs=(predict_type,),
+            chunk_size=chunk_size,
+            show_progress=True,
+            scan=scan,
+        )
 
-            try:
-                os.remove(x_path)
-            except OSError:
-                pass
-    finally:
-        shutil.rmtree(scratch_dir, ignore_errors=True)
+        # Molecules RDKit cannot parse are blanked rather than dropped or imputed. Their
+        # descriptor rows are all-NaN, which the preprocessor's imputer would otherwise
+        # fill with the training median -- returning an ordinary-looking score for a
+        # string that is not a molecule. Row count and order are untouched, so the output
+        # still aligns with the input; the gap is simply visible.
+        bad = _unparseable(part, scan)
+        if bad:
+            n_bad += len(bad)
+            shown = [start + i for i in bad[:10]]
+            logger.warning(
+                f"{len(bad)} SMILES could not be parsed; their predictions are NaN "
+                f"(positions: {shown}{' ...' if len(bad) > 10 else ''})"
+            )
+            for r in results:
+                mask_rows(r.values, bad)
 
-    aggregated_results = {}
-    for task_name in tasks:
-        R = []
-        for k, v in results.items():
-            if k[0] == task_name:
-                R += [v]
-        aggregated_results[task_name] = np.average(np.array(R), axis=0)
+        block_R = np.column_stack([_as_column(r.values[predict_type]) for r in results])
+        # The block's channels, weights and combined results go here, before the next
+        # block allocates its own. This is the whole point of blocking.
+        del results, scan
 
-    R = []
-    for task in tasks:
-        R += [aggregated_results[task]]
-    R = np.array(R).T
+        if R is None:
+            R = np.empty((n_total, len(sources)), dtype=block_R.dtype)
+        elif block_R.dtype != R.dtype:
+            # `binary` is integer labels until some block has a NaN row to carry. Promote
+            # what is already filled rather than truncating this block into an int array,
+            # so the dtype ends up where a single unblocked pass would have put it.
+            R = R.astype(np.result_type(R.dtype, block_R.dtype))
+        R[start:end] = block_R
+        del block_R
+
+    if R is None:
+        # No molecules at all, so the loop never ran. An empty result with the right number
+        # of columns, which is what the unblocked column_stack used to produce.
+        R = np.empty((0, len(sources)))
+    if n_bad:
+        logger.warning(f"{n_bad} of {n_total} SMILES could not be parsed in total")
 
     if output_csv is not None:
-        pd.DataFrame(R, columns=tasks).to_csv(output_csv, index=False)
+        output_csv = os.path.abspath(output_csv)
+        pd.DataFrame(R, columns=header).to_csv(output_csv, index=False)
         logger.success(f"Predictions saved to {output_csv}")
-    return R, tasks
+    return R, header

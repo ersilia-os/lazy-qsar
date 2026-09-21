@@ -18,6 +18,7 @@ A Python library for building supervised QSAR models quickly, with minimal confi
   - [LazyClassifier (custom descriptors)](#lazyclassifier-custom-descriptors)
   - [Saving and loading](#saving-and-loading)
 - [CLI](#cli)
+- [Running the tests](#running-the-tests)
 - [How It Works](#how-it-works)
 - [Base Models](#base-models)
 - [Ersilia Model Hub integration](#ersilia-model-hub-integration)
@@ -68,10 +69,12 @@ from lazyqsar.qsar import LazyClassifierQSAR
 model = LazyClassifierQSAR(mode="slow") # default is "slow"
 model.fit(smiles_list=smiles_train, y=y_train)
 
-ranks = model.predict_rank(smiles_list=smiles_test)[:, 1]  # percentile rank vs training set
+ranks = model.predict_rank(smiles_list=smiles_test)[:, 1]  # percentile within the model's own training distribution
 ```
 
-Other prediction methods include `predict_proba`, `predict`, `predict_lift`, and more — see [docs/internals.md](docs/internals.md#part-8-prediction-methods) for the full list.
+Other prediction methods are `predict_proba`, `predict_logit`, `predict_score`, `predict_lift` and `predict` (binary labels). All six share one implementation with the CLI, so a checkpoint gives the same answer through either entry point.
+
+> `predict_rank` is a percentile against the *training* distribution of that model, so ranks are not comparable between models and compress on chemistry unlike the training set. Use `predict_proba` when you need a calibrated value. Within one model `rank` is a monotone view of `proba`: they order molecules identically, so any ordering-only metric (AUROC, AUPRC, BEDROC) gives the same answer from either.
 
 ### LazyClassifier (custom descriptors)
 
@@ -135,7 +138,23 @@ Pass `--models_txt` to train a subset of tasks (one CSV stem per line); without 
 lazyqsar predict --input $INPUT_CSV --model $MODEL_DIR --output $OUTPUT_CSV [--models_txt FILE] [--predict_type TYPE]
 ```
 
-The output CSV contains one column per task, ordered alphabetically by task name, or filtered and ordered by `--models_txt` at predict time. `--predict_type` controls the output format: `proba` (default), `rank`, `logit`, `lift`, `score`, or `binary`.
+The output CSV contains one column per task, ordered alphabetically by task name, or filtered and ordered by `--models_txt` at predict time. `--predict_type` controls the output format:
+
+| type | meaning |
+|------|---------|
+| `proba` (default) | calibrated probability of the positive class |
+| `rank` | percentile within the model's own training distribution |
+| `logit` | log-odds of the calibrated probability |
+| `lift` | probability divided by the training-set positive rate |
+| `score` | the pre-calibration scale, read off the calibrated probability |
+| `binary` | 0/1 label, thresholded at probability 0.5 |
+
+All six rank molecules identically — they are different scales on one quantity, so sorting
+by any of them gives the same order. `score` reports what the model looked like before
+calibration; it reaches that scale through a monotone map stored in the checkpoint rather
+than by pooling the raw per-descriptor scores, which would not agree with `proba` about the
+order. Checkpoints fitted before v3.5.0 carry no map and keep the older behaviour, where
+`score` could disagree.
 
 ## How it works
 
@@ -162,6 +181,52 @@ The components under `lazyqsar/base/` can be used independently of the full pipe
 | [`lazyqsar.base.linear`](lazyqsar/base/linear/README.md) | Automatic linear model selection (logistic/ridge/SGD) |
 | [`lazyqsar.base.randomforest`](lazyqsar/base/randomforest/README.md) | Random Forest classifier with zero-shot hyperparameter selection |
 | [`lazyqsar.base.svc`](lazyqsar/base/svc/) | Support Vector Classifier with automatic kernel and C selection |
+
+## Running the tests
+
+```bash
+pip install -e ".[fit,test]"
+pytest
+```
+
+The suite is organised by what a test needs installed, so it runs — and reports honestly —
+in whichever environment you have. A test whose tier is missing is skipped with a message
+naming the absent module, never an error.
+
+| Selection | Needs | Covers |
+|---|---|---|
+| `pytest -m "not fit and not chem"` | the base install | the inference path, the ensemble arithmetic, the registry and the CLI surface |
+| `pytest` | `.[fit]` plus `rdkit` | the above, plus fitting, ONNX export, the pipeline, and Morgan and RDKit descriptors |
+
+Those are the only two selections, and CI runs both as parallel jobs on Python 3.12, so a
+pull request finishes in a few minutes. There is no third, larger one: `pip install
+".[all]"` pulls in torch, chemprop and chemeleon but adds no tests, because nothing in the
+suite executes them.
+
+The base selection is the contract Ersilia Model Hub templates depend on: it must pass on
+the core dependencies alone — `numpy`, `onnxruntime`, `pandas`, `h5py`, `psutil`, `rich`
+and `loguru` — with no `scikit-learn`, `xgboost` or RDKit anywhere on the path. Add
+`-n auto --dist loadfile` for the heavier tier, and `--durations=15` to see where the time
+goes.
+
+### What is not covered
+
+Worth stating plainly, because a green suite does not mean these are exercised:
+
+- **Three of the five descriptors have no execution coverage.** Only `morgan` and `rdkit`
+  are ever actually run. `cddd`, `clamp` and `chemeleon` appear in tests only as names —
+  in stubbed registries, CLI argument validation and import-purity checks — so a change to
+  any of them can break `slow` mode without reddening anything. Test them by hand against
+  real molecules before changing them.
+- **The SVC ONNX export.** The score-column sign and the per-head export-versus-fit
+  comparison are not checked. A converter regression there is silent.
+- **Python 3.11 and 3.13.** Supported per `requires-python`, exercised by nothing.
+
+Install the `fit` extra from the pins rather than whatever is already in your environment:
+`scikit-learn` in particular is pinned to `1.9.1`, and descriptor selection differs enough
+between minor versions to change which descriptors a portfolio keeps.
+
+Test data lives in `tests/data/` and is documented in `tests/data/README.md`.
 
 ## Ersilia Model Hub integration
 
@@ -199,9 +264,9 @@ outputs, header = predict(model_dir=checkpoints_dir, smiles=smiles_list, predict
 write_out(outputs, header, output_file, np.float32)
 ```
 
-This function computes descriptors once per descriptor type and reuses them across all tasks, making it suitable for scoring large compound libraries. `predict_type` controls the output format and is available in both the Python API and the CLI (`--predict_type`).
+Descriptors are computed once per descriptor type and shared across every task, and molecules are scored in blocks whose working set is released before the next block starts, so peak memory does not grow with the size of the input. The block size is derived from a fixed working-set budget of roughly 1 GB and the number of endpoints being scored, and is always a whole number of chunks — which is what keeps the output identical however the input is divided — so there is no knob for it. `LAZYQSAR_PREDICT_CHUNK` (default 1000) sets the featurization and inference batch size within a block.
 
-`model_dir` also accepts a `dict[str, str]` mapping **column names to model directories**, for scoring multiple targets stored under separate paths — see [docs/internals.md](docs/internals.md) for details.
+`model_dir` also accepts a `dict[str, str]` mapping **column names to model directories**, for scoring multiple targets stored under separate paths. Column names and their order are preserved exactly as given.
 
 ## Disclaimer
 

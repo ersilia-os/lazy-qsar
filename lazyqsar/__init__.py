@@ -9,9 +9,25 @@ import sys as _sys  # noqa: E402
 import tempfile as _tempfile  # noqa: E402
 
 if "MPLCONFIGDIR" not in _os.environ:
-    _mpl_dir = _tempfile.mkdtemp(prefix="lazyqsar_mpl_")
+    # Matplotlib needs a writable config dir and falls over on a read-only HOME, which is
+    # what a container running an Ersilia model has. Pointing it at the system temp dir
+    # fixes that -- but a fresh mkdtemp per process also threw the font cache away every
+    # run, so every invocation paid the rebuild and printed "Matplotlib is building the
+    # font cache" to stderr. A stable per-user path keeps the read-only-HOME fix and lets
+    # the cache survive; the uid is in the name so two users on one machine cannot collide
+    # on a directory neither of them can write.
+    _mpl_dir = _os.path.join(
+        _tempfile.gettempdir(),
+        f"lazyqsar-mpl-{_os.getuid() if hasattr(_os, 'getuid') else 'shared'}",
+    )
+    try:
+        _os.makedirs(_mpl_dir, exist_ok=True)
+    except (
+        OSError
+    ):  # pragma: no cover - fall back to a throwaway dir we know we can make
+        _mpl_dir = _tempfile.mkdtemp(prefix="lazyqsar_mpl_")
+        _atexit.register(lambda: _shutil.rmtree(_mpl_dir, ignore_errors=True))
     _os.environ["MPLCONFIGDIR"] = _mpl_dir
-    _atexit.register(lambda: _shutil.rmtree(_mpl_dir, ignore_errors=True))
 
 if _sys.platform == "darwin":
     # On macOS, PyTorch and XGBoost each ship their own libomp. When both are

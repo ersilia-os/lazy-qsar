@@ -135,7 +135,7 @@ def _make_svc(params: dict):
     Build a (not yet fitted) sklearn SVC or LinearSVC from a preset params dict.
 
     The 'use_linear' key controls which estimator is created; it is not passed
-    to the sklearn estimator.  For SVC, probability=False is always used so
+    to the sklearn estimator.  For SVC, Platt probabilities are never requested so
     that the ONNX model exports raw decision function values; calibration is
     applied externally.
     """
@@ -157,11 +157,16 @@ def _make_svc(params: dict):
     else:
         from sklearn.svm import SVC
 
+        # `probability` is deliberately not passed. This code has always wanted
+        # probability=False -- raw decision values are what gets exported, and calibration
+        # is applied externally -- and False is sklearn's default, so omitting it builds
+        # the identical estimator. sklearn 1.9 deprecated the parameter outright and
+        # removes it in 1.11: passing it emits a FutureWarning on every fit today and
+        # would be a TypeError then. Omitting it is correct on every supported version.
         return SVC(
             **common,
             kernel=params.get("kernel", "rbf"),
             gamma=params.get("gamma", "scale"),
-            probability=False,  # export raw scores; calibration is external
             random_state=params.get("random_state", 42),
         )
 

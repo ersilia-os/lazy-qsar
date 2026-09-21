@@ -1,0 +1,159 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+  workflow_dispatch:
+
+# Cancel superseded PR runs, but never cancel a run a release is waiting on.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  FORCE_COLOR: "1"
+  RUFF_VERSION: "0.14.0"
+
+# Three jobs, no `needs` between them, so all three start at once and the run is as long
+# as its slowest job rather than the sum. The selectors are disjoint: `base` runs the base
+# tier, `full` runs everything. They used to overlap -- the old `fit` job ran base+fit and
+# the old `chem` job ran the whole suite -- so the base tier was executed five times per PR.
+jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # the changed-files ratchet needs history
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install "ruff==${RUFF_VERSION}"
+
+      # Gate 1: the standard this repo already maintains.
+      - name: Format check
+        run: ruff format --check lazyqsar tests dev
+
+      # Gate 2: bugs, not style. These must be zero on any healthy tree.
+      - name: Lint (errors only, whole repo)
+        run: ruff check --select E9,F821,F822,F823 lazyqsar tests dev
+
+      # Gate 3: the ratchet. Full rule set, but only on what this PR touched, so the
+      # pre-existing findings in lazyqsar/ never block an unrelated change.
+      - name: Lint changed files (full rule set)
+        if: github.event_name == 'pull_request'
+        run: |
+          git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
+          FILES=$(git diff --name-only --diff-filter=ACMR \
+                    "origin/${{ github.base_ref }}"...HEAD -- '*.py' | tr '\n' ' ')
+          if [ -z "$FILES" ]; then echo "no python files changed"; else ruff check $FILES; fi
+
+      # Visible and non-blocking, so the debt is seen shrinking instead of forgotten.
+      - name: Lint debt (informational)
+        if: always()
+        run: |
+          { echo '### Ruff debt (whole repo, not gating)'; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          ruff check --statistics lazyqsar >> "$GITHUB_STEP_SUMMARY" 2>&1 || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+  base:
+    # The Ersilia Model Hub deployment contract. This job cannot be merged into `full`:
+    # its whole point is that the package works with scikit-learn and RDKit *absent*,
+    # which is unprovable in an environment that has them installed.
+    name: base (core deps only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          # The tier is part of the key: a shared key would let this job's small cache
+          # overwrite the one the full job needs.
+          key: pip-${{ runner.os }}-py3.12-base-${{ hashFiles('pyproject.toml') }}
+          restore-keys: pip-${{ runner.os }}-py3.12-base-
+
+      - name: Install core dependencies only
+        run: pip install ".[test]"
+
+      - name: Assert the environment is genuinely minimal
+        run: |
+          python - <<'PY'
+          import importlib.util as u, sys
+          banned = ["sklearn", "xgboost", "skl2onnx", "onnxmltools", "rdkit", "torch",
+                    "chemprop", "chemeleon", "scipy", "joblib", "FPSim2"]
+          leaked = [b for b in banned if u.find_spec(b) is not None]
+          print("leaked:", leaked)
+          sys.exit(1 if leaked else 0)
+          PY
+
+      # A stricter contract than "nothing banned is importable": everything the code needs
+      # must be present in what an Ersilia template actually installs.
+      - name: Ersilia template smoke (--no-deps)
+        run: |
+          python -m venv /tmp/ersilia-env
+          /tmp/ersilia-env/bin/pip install -q numpy==2.1.3 onnxruntime==1.20.1 \
+                                              pandas==2.3.0 rich==14.1.0 loguru==0.7.3 \
+                                              h5py==3.14.0 psutil==7.0.0
+          /tmp/ersilia-env/bin/pip install -q --no-deps .
+          /tmp/ersilia-env/bin/python -c "
+          import lazyqsar.api.classifier_predict, lazyqsar.registry, lazyqsar.ensemble.runner
+          print('the inference path imports on a template install')"
+
+      - name: Tests (base tier)
+        run: pytest -m "not fit and not chem"
+
+  full:
+    # Everything the PR path covers: fitting, ONNX export, the pipeline and real RDKit.
+    # No FPSim2 -- only descriptors/cddd.py needs it and nothing in the suite reaches cddd.
+    name: full (fit + rdkit)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-py3.12-full-${{ hashFiles('pyproject.toml') }}
+          restore-keys: pip-${{ runner.os }}-py3.12-full-
+
+      - name: Install with [fit] plus rdkit
+        run: pip install ".[fit,test]" "rdkit==2025.9.1"
+
+      - name: Assert torch did not sneak in
+        run: python -c "import importlib.util as u,sys; sys.exit(1 if u.find_spec('torch') else 0)"
+
+      # The package pins OMP_NUM_THREADS=1, so each fit is single-threaded and the other
+      # vCPUs are idle. loadfile (not load) keeps a module's session checkpoint on one
+      # worker instead of rebuilding it per worker.
+      - name: Tests (the whole suite)
+        run: pytest -n auto --dist loadfile
+
+  ci-ok:
+    # One required status check, so branch protection needs a single entry and adding a
+    # job does not mean editing the protection rule.
+    name: ci-ok
+    if: always()
+    needs: [lint, base, full]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail if any job did not succeed
+        run: |
+          echo '${{ toJSON(needs) }}'
+          if ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}; then
+            exit 1
+          fi

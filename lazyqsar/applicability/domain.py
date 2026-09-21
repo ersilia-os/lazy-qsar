@@ -46,8 +46,15 @@ import numpy as np
 from sklearn.decomposition import PCA
 from sklearn.impute import SimpleImputer
 
+from .artifact import (  # noqa: F401  (re-exported; moved to keep it sklearn-free)
+    ApplicabilityDomainArtifact,
+)
+
 
 _N_CAL_KNOTS = 200
+
+# Matches the seed used throughout the package (assemblers, portfolios, base estimators).
+_RANDOM_STATE = 42
 
 
 def _to_dense(X) -> np.ndarray:
@@ -100,7 +107,16 @@ class ApplicabilityDomain:
         )
         k = max(1, k)
 
-        self.pca_ = PCA(n_components=k, whiten=False)
+        # random_state is load-bearing here, not hygiene. At the shapes this sees --
+        # p runs from 768 (CLAMP) to 2048 (Morgan, Chemeleon) -- sklearn's
+        # svd_solver="auto" resolves to "randomized", which draws its projection from
+        # global numpy state. Left unseeded, two fits of identical X return different
+        # components, so the Mahalanobis distances differ, the AD scores differ, and
+        # build_weight_matrix vetoes a different set of descriptors per sample. The
+        # effect is invisible on held-out folds -- the veto only fires out of domain --
+        # and surfaces as a model that ranks a screening library differently each time
+        # it is trained.
+        self.pca_ = PCA(n_components=k, whiten=False, random_state=_RANDOM_STATE)
         X_pca = self.pca_.fit_transform(X)  # (n, k)
 
         self.centroid_ = X_pca.mean(axis=0)  # (k,)
@@ -272,57 +288,3 @@ class ApplicabilityDomain:
         }
         with open(os.path.join(directory, "applicability_domain.json"), "w") as fh:
             json.dump(meta, fh, indent=2)
-
-
-# ---------------------------------------------------------------------------
-# Inference-only artifact (onnxruntime only)
-# ---------------------------------------------------------------------------
-
-
-class ApplicabilityDomainArtifact:
-    """
-    Inference-only applicability domain loaded from a saved ONNX model.
-
-    Requires only onnxruntime and numpy — no sklearn, no scipy.
-    """
-
-    def __init__(self) -> None:
-        self._session = None
-        self.metadata: dict = {}
-
-    @classmethod
-    def load(cls, directory: str) -> "ApplicabilityDomainArtifact":
-        inst = cls()
-        json_path = os.path.join(directory, "applicability_domain.json")
-        if not os.path.isfile(json_path):
-            raise FileNotFoundError(f"No AD metadata found at {json_path!r}")
-        with open(json_path) as fh:
-            inst.metadata = json.load(fh)
-
-        import onnxruntime as rt
-
-        onnx_path = os.path.join(directory, "applicability_domain.onnx")
-        inst._session = rt.InferenceSession(
-            onnx_path, providers=["CPUExecutionProvider"]
-        )
-        return inst
-
-    def score(self, X) -> np.ndarray:
-        """
-        Return AD scores in [0, 1] for each row of X.
-
-        Parameters
-        ----------
-        X : array-like of shape (n_samples, n_features)
-            Feature matrix — same featurizer as used during fit.
-
-        Returns
-        -------
-        scores : np.ndarray of shape (n_samples,), dtype float32
-            1.0 = fully in-domain, 0.0 = fully out-of-domain.
-        """
-        if hasattr(X, "toarray"):
-            X = X.toarray()
-        X_f32 = np.asarray(X, dtype=np.float32)
-        input_name = self._session.get_inputs()[0].name
-        return self._session.run(None, {input_name: X_f32})[0]

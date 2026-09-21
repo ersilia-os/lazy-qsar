@@ -1,4 +1,4 @@
-name: Upload Python Package
+name: Publish to PyPI
 
 on:
   release:
@@ -9,38 +9,94 @@ permissions:
   contents: read
 
 jobs:
-  pypi-release:
+  # Runs the full suite inside this same workflow run, so the artifact that gets published
+  # is byte-identical to the one that was tested. Previously a release shipped a wheel that
+  # no job had ever imported.
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  # The wheel is built here rather than in ci.yml. Building on every PR gated the three
+  # test jobs behind it for a ~2 minute serialisation that only a release actually needs.
+  build:
+    name: build
     runs-on: ubuntu-latest
-
+    timeout-minutes: 5
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - run: pip install build twine
+      - run: python -m build
+      - run: twine check dist/*
 
-      - name: Install Poetry
-        uses: abatilo/actions-poetry@v4.0.0
+      # poetry-core discovers packages implicitly; if that ever breaks, an empty wheel
+      # would sail through every other job because the source tree is also importable.
+      - name: Assert the wheel actually contains the package
+        run: |
+          python - <<'PY'
+          import glob, sys, zipfile
+          names = [n for n in zipfile.ZipFile(glob.glob("dist/*.whl")[0]).namelist()
+                   if n.startswith("lazyqsar/") and n.endswith(".py")]
+          print(len(names), "modules in the wheel")
+          sys.exit(0 if len(names) > 50 else 1)
+          PY
 
-      # Extract version from release tag, or fall back to manual input
-      - name: Determine version
-        id: get_version
+      # The base tier proves the source tree imports on core dependencies alone; this
+      # proves the built wheel does too, which is the artifact Ersilia actually installs.
+      - name: Ersilia template smoke on the built wheel (--no-deps)
         run: |
-          if [ "${{ github.event_name }}" = "release" ]; then
-            VERSION="${GITHUB_REF_NAME#v}"
-          else
-            VERSION=$(poetry version -s)
-          fi
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Publishing version $VERSION"
-      - name: Configure PyPI credentials
+          python -m venv /tmp/ersilia-env
+          /tmp/ersilia-env/bin/pip install -q numpy==2.1.3 onnxruntime==1.20.1 \
+                                              pandas==2.3.0 rich==14.1.0 loguru==0.7.3 \
+                                              h5py==3.14.0 psutil==7.0.0
+          /tmp/ersilia-env/bin/pip install -q --no-deps "$(ls dist/*.whl)"
+          /tmp/ersilia-env/bin/python -c "
+          import lazyqsar.api.classifier_predict, lazyqsar.registry, lazyqsar.ensemble.runner
+          print('the published wheel imports on a template install')"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          retention-days: 7
+
+  check-version:
+    name: version matches the tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      # Assert, do not rewrite. The old workflow ran `poetry version $TAG`, which let
+      # pyproject.toml and what PyPI serves drift apart silently.
+      - name: Tag must match [project].version
+        if: github.event_name == 'release'
         run: |
-          poetry config pypi-token.pypi "${{ secrets.ALL_PYPI_PROJECTS_API_TOKEN }}"
-      - name: Build and publish to PyPI
-        env:
-          VERSION: ${{ steps.get_version.outputs.version }}
-        run: |
-          poetry version $VERSION
-          poetry publish --build
+          python - <<'PY'
+          import os, tomllib
+          with open("pyproject.toml", "rb") as f:
+              declared = tomllib.load(f)["project"]["version"]
+          tag = os.environ["GITHUB_REF_NAME"].lstrip("v")
+          if declared != tag:
+              raise SystemExit(f"pyproject.toml says {declared}, the tag says {tag}")
+          print("version ok:", declared)
+          PY
+
+  publish:
+    needs: [ci, build, check-version]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: pypi
+      url: https://pypi.org/p/lazyqsar
+    permissions:
+      # Trusted Publishing, so no long-lived token lives in a workflow that any
+      # workflow_dispatch can trigger.
+      id-token: write
+    steps:
+      # Same run, so the build job's artifact is visible here.
+      - uses: actions/download-artifact@v4
+        with: { name: dist, path: dist }
+      - uses: pypa/gh-action-pypi-publish@release/v1

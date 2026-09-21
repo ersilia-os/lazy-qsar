@@ -1,0 +1,18 @@
+# Strings RDKit must reject.
+#
+# Committed rather than generated on purpose. Which strings RDKit rejects is RDKit's
+# business and shifts between versions, so this file is the specification: an RDKit bump
+# that starts accepting one of these should fail a test, not silently weaken validation.
+#
+# Blank lines and lines starting with '#' are ignored.
+
+c1cc
+C1CC
+CC(
+)CC
+C(C)(C)(C)(C)C
+[Xx]
+c1ccccc
+N(C)(C)(C)(C)C
+C=1CC
+**not a molecule**

@@ -122,7 +122,17 @@ class XGBoostArtifact:
         return np.column_stack([-logit_1, logit_1])
 
     def predict_score(self, X) -> np.ndarray:
-        """Return raw (pre-calibration) ONNX probabilities, shape (n_samples, 2)."""
+        """Return raw (pre-calibration) ONNX probabilities, shape (n_samples, 2).
+
+        The one-column normalisation matches :meth:`run`, and did not used to. On a graph
+        that emits a single probability column -- what ORT infers for a legacy export
+        whose ``probabilities`` output carries no ``n_targets``, the case
+        :func:`_build_xgb_session` exists to repair -- this returned ``(n, 1)`` while
+        ``run`` returned ``(n, 2)``. The caller's ``[:, 1]`` then raised, the scoring loop
+        swallowed it as "channel unavailable", and ``predict_type="score"`` silently fell
+        back to pooling the *calibrated* probabilities: a wrong number, no error. Every
+        head shipped today emits ``(n, 2)`` and is unaffected.
+        """
         X_f32 = np.asarray(X, dtype=np.float32)
         outputs = self._session.run(None, {self._input_name: X_f32})
         prob_output = next(
@@ -130,7 +140,10 @@ class XGBoostArtifact:
             for o, meta in zip(outputs, self._session.get_outputs())
             if meta.name == "probabilities"
         )
-        return np.asarray(prob_output, dtype=np.float64)
+        proba = np.asarray(prob_output, dtype=np.float64)
+        if proba.ndim == 1 or proba.shape[1] == 1:
+            proba = np.column_stack([1 - proba.ravel(), proba.ravel()])
+        return proba
 
     def predict_rank(self, X) -> np.ndarray:
         """Map calibrated scores to [0, 1] ranks via OOF ECDF, shape (n_samples, 2)."""

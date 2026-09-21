@@ -94,6 +94,7 @@ class BasePreprocessor(BaseEstimator, TransformerMixin):
         ).shape[1]
 
         self.kept_feature_indices_: list = self._compute_kept_indices()
+        self._bind_onnx_runtime()
 
         logger.success(
             f"scaler={self.scaler_name_} | reducer={self.reducer_name_} | "
@@ -101,10 +102,57 @@ class BasePreprocessor(BaseEstimator, TransformerMixin):
         )
         return self
 
+    def _bind_onnx_runtime(self) -> None:
+        """Make the fitted preprocessor compute the way the exported one will.
+
+        The shipped checkpoint runs this pipeline as a float32 ONNX graph, while
+        scikit-learn runs it in float64 and rounds afterwards. The two agree to about a
+        float32 ULP -- which sounds harmless and is not, because the heads downstream are
+        piecewise constant. A value that lands a hair either side of a learned split falls
+        into a different leaf, so an input difference of ~1e-07 can move a score by ~0.4.
+        That is the whole of the historical fit-versus-export gap.
+
+        Rather than chase the rounding, remove the difference: run the exported graph here
+        too, so the matrix the heads are *fitted* on is bit-identical to the matrix they
+        will be *served*. Split thresholds, calibrators, out-of-fold scores and ranker
+        knots are then all learned on exactly the values inference produces.
+
+        Falls back to the scikit-learn pipeline, with a warning, if the export or the
+        session fails -- a preprocessor that works is worth more than one that matches.
+        """
+        self._onnx_session_ = None
+        self._onnx_input_ = None
+        try:
+            import onnxruntime as rt
+
+            session = rt.InferenceSession(
+                self._to_onnx_bytes(), providers=["CPUExecutionProvider"]
+            )
+        except Exception as exc:  # noqa: BLE001 - see docstring; degrade, don't raise
+            logger.warning(
+                f"Preprocessor could not be bound to its ONNX form "
+                f"({type(exc).__name__}: {exc}); fitting against the scikit-learn path "
+                "instead. The exported checkpoint may not reproduce this model exactly."
+            )
+            return
+        self._onnx_session_ = session
+        self._onnx_input_ = session.get_inputs()[0].name
+
     def transform(self, X) -> np.ndarray:
-        """Apply the fitted pipeline to X, returning the preprocessed array."""
+        """Apply the fitted pipeline to X, returning the preprocessed array.
+
+        Runs the ONNX form of the pipeline when one is bound, so that fit-time and
+        inference-time features are bit-identical. See :meth:`_bind_onnx_runtime`.
+        """
         check_is_fitted(self, "pipeline_")
-        return self.pipeline_.transform(X)
+        session = getattr(self, "_onnx_session_", None)
+        if session is None:
+            return self.pipeline_.transform(X)
+        if hasattr(X, "toarray"):
+            X = X.toarray()
+        return session.run(None, {self._onnx_input_: np.asarray(X, dtype=np.float32)})[
+            0
+        ]
 
     def fit_transform(self, X, y=None, **fit_params) -> np.ndarray:
         """Fit and transform in one step."""
@@ -155,8 +203,13 @@ class BasePreprocessor(BaseEstimator, TransformerMixin):
         with open(base + ".json", "w") as f:
             json.dump(self._metadata_dict(), f, indent=2)
 
-    def to_onnx(self, path: str) -> None:
-        """Export the pipeline to ONNX (opset 15) at *path*."""
+    def _to_onnx_bytes(self) -> bytes:
+        """Serialise the fitted pipeline to an ONNX graph (opset 15).
+
+        One definition, used both by :meth:`save` and by :meth:`_bind_onnx_runtime`: the
+        graph fitting runs against has to be the same graph that gets written, or binding
+        it buys nothing.
+        """
         check_is_fitted(self, "pipeline_")
         from skl2onnx import convert_sklearn
         from skl2onnx.common.data_types import FloatTensorType
@@ -164,11 +217,14 @@ class BasePreprocessor(BaseEstimator, TransformerMixin):
 
         _register_correlation_filter_onnx_converter()
         initial_type = [("float_input", FloatTensorType([None, self.n_features_in_]))]
-        onnx_model = convert_sklearn(
+        return convert_sklearn(
             self.pipeline_, initial_types=initial_type, target_opset=15
-        )
+        ).SerializeToString()
+
+    def to_onnx(self, path: str) -> None:
+        """Export the pipeline to ONNX (opset 15) at *path*."""
         with open(path, "wb") as f:
-            f.write(onnx_model.SerializeToString())
+            f.write(self._to_onnx_bytes())
 
 
 class BasePreprocessorArtifact:
