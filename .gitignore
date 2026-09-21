@@ -151,3 +151,7 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# Reference-library staging area. Built by scripts/, published to public S3 via eosvc;
+# never committed -- the bundle is hundreds of megabytes and is versioned on S3 instead.
+data/

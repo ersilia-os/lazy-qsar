@@ -40,11 +40,11 @@ jobs:
 
       # Gate 1: the standard this repo already maintains.
       - name: Format check
-        run: ruff format --check lazyqsar tests dev
+        run: ruff format --check lazyqsar tests dev scripts
 
       # Gate 2: bugs, not style. These must be zero on any healthy tree.
       - name: Lint (errors only, whole repo)
-        run: ruff check --select E9,F821,F822,F823 lazyqsar tests dev
+        run: ruff check --select E9,F821,F822,F823 lazyqsar tests dev scripts
 
       # Gate 3: the ratchet. Full rule set, but only on what this PR touched, so the
       # pre-existing findings in lazyqsar/ never block an unrelated change.

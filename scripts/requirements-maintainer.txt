@@ -1,0 +1,12 @@
+# Maintainer-only dependencies for scripts/.
+#
+# NEVER referenced by pyproject.toml. These are needed to *build and publish* the
+# reference library, not to use lazyqsar. The installed package reads the published
+# bundle over plain HTTPS and imports none of this.
+#
+# Install alongside the package's own extras:
+#     pip install "lazyqsar[all]" -r scripts/requirements-maintainer.txt
+
+bblean==0.10.3        # BitBIRCH clustering (github.com/mqcomplab/bblean)
+scikit-learn==1.9.1   # already in lazyqsar[fit]; restated because scripts/ uses it directly
+tqdm==4.70.1
