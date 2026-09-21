@@ -34,7 +34,11 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from ..utils.ranking import prepare_knots, rank_from_knots, score_from_knots
+from ..utils.ranking import (
+    prepare_knots,
+    rank_from_reference,
+    score_from_knots,
+)
 
 OUTPUT_NAMES = ("proba", "logit", "rank", "score", "lift", "binary")
 
@@ -455,7 +459,11 @@ def combine(Y, R=None, S=None, A=None, *, spec, outputs=OUTPUT_NAMES, cutoff=Non
         values["logit"] = np.vstack((-l1, l1)).T
     if "rank" in wanted:
         if pooled_rank:
-            r1 = rank_from_knots(p1, prepared=prepare_knots(pooled_knots))
+            # `rank_from_reference`, not `rank_from_knots`: the knots come from a reference
+            # library, whose pooled probabilities stop well below 1 for any selective model
+            # (measured: 0.065 to 0.334). Clamping would tie every active at exactly 1.0 and
+            # break the invariant that rank orders molecules exactly as proba does.
+            r1 = rank_from_reference(p1, prepared=prepare_knots(pooled_knots))
         else:
             # Pre-v3.5.0 checkpoints carry no pooled reference. Silently, because a
             # missing key is their normal state, and because this module deliberately

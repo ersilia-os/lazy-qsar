@@ -112,16 +112,18 @@ def test_an_absent_reference_falls_back_rather_than_raising(knots):
     )
 
 
-def test_a_single_distinct_knot_gives_a_step_and_stays_monotone():
-    """Degenerate but reachable: one distinct OOF probability carries no resolution.
+def test_a_single_distinct_knot_still_orders_molecules():
+    """Degenerate but reachable: one distinct reference probability carries no resolution.
 
-    `rank_from_knots` pins the open ends, so the reference collapses to "above or below
-    0.4". Still a monotone function of proba, which is all anything downstream relies on.
+    It used to collapse to a step at 0.4, because `rank_from_knots` pins the open ends.
+    A reference rank extrapolates them instead, so the result is still monotone in proba
+    but no longer throws away the ordering of everything above and below the knot -- which
+    is the same reason the tails are extrapolated in the non-degenerate case.
     """
     Y, R, S, A = _inputs()
     res = combine(Y, R, S, A, spec=_spec(pooled_rank_knots=np.full(10, 0.4)))
     proba, rank = res.values["proba"][:, 1], res.values["rank"][:, 1]
-    assert set(np.unique(rank)) <= {0.0, 1.0}
+    assert rank.min() >= 0.0 and rank.max() <= 1.0
     assert np.all(np.diff(rank[np.argsort(proba, kind="stable")]) >= 0)
 
 

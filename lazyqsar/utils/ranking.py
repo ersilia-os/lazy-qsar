@@ -16,6 +16,10 @@ import numpy as np
 # far below any meaningful decision margin and makes the comparison runtime-independent.
 _CUTOFF_ATOL = 1e-6
 
+# Smallest probability the tail extrapolation will represent. Matches the clipping
+# `combine` already applies when it takes log-odds, so the two agree at the extremes.
+_TAIL_EPS = 1e-7
+
 
 def binarize(scores, threshold):
     """Return 0/1 labels for *scores* against *threshold*, tolerant of exact ties.
@@ -136,3 +140,65 @@ def score_from_knots(p1, knots):
     """
     x, y = knots
     return np.interp(np.asarray(p1, dtype=np.float64), x, y)
+
+
+def rank_from_reference(scores, knots=None, prepared=None):
+    """Percentile against a reference library, with both tails extrapolated.
+
+    Identical to :func:`rank_from_knots` between the smallest and largest knot. Outside
+    that range it keeps extrapolating instead of clamping, linearly in log-odds, reaching
+    exactly 1.0 only as the score approaches 1 and exactly 0.0 only as it approaches 0.
+
+    The clamping :func:`rank_from_knots` does is right for an out-of-fold ECDF, where the
+    knots span the whole score range the model produces. It is wrong for a reference
+    library, because a selective model scores generic drug-like molecules low: measured on
+    an antimicrobial model, the 50,000 reference compounds spanned a pooled probability of
+    only 0.065 to 0.334. Every active above 0.334 would pin to exactly 1.0 -- so the top of
+    a screen, which is the entire point of ranking, would be one undifferentiated tie, and
+    ``rank`` would stop being a monotone view of ``proba``.
+
+    Above the largest knot the value means *better than every reference compound*, ordered
+    but not a percentile any more. That is a weaker claim than the interior, and callers
+    reporting near-1.0 ranks should say so.
+    """
+    vals, midranks = prepare_knots(knots) if prepared is None else prepared
+    scores = np.asarray(scores, dtype=np.float64)
+
+    # A single distinct knot is degenerate but reachable. It is still extrapolated rather
+    # than returned as a constant: the tails are the whole reason this function exists, and
+    # one knot at least says which side of it a molecule falls on, monotonically.
+    ranks = (
+        np.full(scores.shape, float(midranks[0]))
+        if len(vals) == 1
+        else np.interp(scores, vals, midranks)
+    )
+
+    lo, hi = vals[0], vals[-1]
+    r_lo, r_hi = midranks[0], midranks[-1]
+
+    above = scores > hi
+    if above.any() and r_hi < 1.0:
+        # Straight line in log-odds from the top knot to (1 - _TAIL_EPS, 1.0). Monotone,
+        # continuous at the join, and bounded above by 1.
+        x0, x1 = _logit(hi), _logit(1.0 - _TAIL_EPS)
+        if x1 > x0:
+            t = (_logit(np.clip(scores[above], _TAIL_EPS, 1.0 - _TAIL_EPS)) - x0) / (
+                x1 - x0
+            )
+            ranks[above] = r_hi + np.clip(t, 0.0, 1.0) * (1.0 - r_hi)
+
+    below = scores < lo
+    if below.any() and r_lo > 0.0:
+        x0, x1 = _logit(lo), _logit(_TAIL_EPS)
+        if x1 < x0:
+            t = (_logit(np.clip(scores[below], _TAIL_EPS, 1.0 - _TAIL_EPS)) - x0) / (
+                x1 - x0
+            )
+            ranks[below] = r_lo * (1.0 - np.clip(t, 0.0, 1.0))
+
+    return np.clip(ranks, 0.0, 1.0)
+
+
+def _logit(p):
+    p = np.clip(np.asarray(p, dtype=np.float64), _TAIL_EPS, 1.0 - _TAIL_EPS)
+    return np.log(p / (1.0 - p))

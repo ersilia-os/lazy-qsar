@@ -7,7 +7,6 @@ import numpy as np
 from .ensemble import (
     OUTPUT_NAMES,
     EnsembleSpec,
-    build_pooled_rank_knots,
     build_pooled_score_knots,
     combine,
     mask_rows,
@@ -21,7 +20,7 @@ from .registry import (  # noqa: F401  (re-exported for backwards compatibility)
 )
 from .ensemble.combine import read_pooled_rank_knots, read_pooled_score_knots
 from .utils.logging import logger
-from .utils.ranking import prepare_knots, rank_from_knots
+from .utils.ranking import prepare_knots, rank_from_knots, subsample_knots
 
 
 def _smiles_md5(smiles_list):
@@ -602,8 +601,16 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
         self.active_descriptors_ = active_mask
         self.ad_hard_cutoffs_ = _ad_hard_cutoffs_raw
 
-        self.pooled_rank_knots_, self.pooled_score_knots_ = (
-            self._build_pooled_references(_oof_channels, _train_ad)
+        # Cleared before the build, not after: `_channels` passes `pooled_rank_knots_`
+        # into the spec, so a refit that reused the attribute would calibrate the new
+        # reference against the previous fit's knots.
+        self.pooled_rank_knots_ = None
+        self.reference_meta_ = None
+        self.pooled_score_knots_ = self._build_pooled_score_map(
+            _oof_channels, _train_ad
+        )
+        self.pooled_rank_knots_, self.reference_meta_ = (
+            self._build_reference_rank_knots()
         )
 
         for row, active in zip(desc_rows, active_mask):
@@ -612,17 +619,20 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
         logger.rule()
         logger.descriptor_table(desc_rows)
 
-    def _build_pooled_references(self, oof_channels, train_ad):
-        """Learn the pooled out-of-fold references ``rank`` and ``score`` report against.
+    def _build_pooled_score_map(self, oof_channels, train_ad):
+        """Learn the pooled out-of-fold map ``score`` is read back through.
 
-        Must run after the active set is settled: the reference describes the pooled
-        probability of exactly the descriptors that will be scored, and a reference built
-        over three descriptors does not describe the pooled probability of two.
+        Out-of-fold, not reference-library, and deliberately so: this is a
+        probability-to-raw-score map, a property of *this model's* calibrators rather than
+        of any population, and the training data covers the high-probability region a
+        generic library barely reaches.
 
-        Returns ``None`` -- and ``rank`` keeps its pre-v3.5.0 behaviour -- unless every
-        active descriptor supplied out-of-fold channels. A reference assembled from a
-        subset would still be monotone and still lie in [0, 1], so nothing downstream
-        could tell it was calibrated against the wrong distribution.
+        Must run after the active set is settled -- a map built over three descriptors does
+        not describe the pooled probability of two.
+
+        Returns ``None`` unless every active descriptor supplied out-of-fold channels. A
+        map assembled from a subset would still be monotone and still lie in range, so
+        nothing downstream could tell it was built against the wrong distribution.
         """
         active_indices = [i for i, a in enumerate(self.active_descriptors_) if a]
         if not active_indices:
@@ -652,27 +662,115 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
             self.ad_hard_cutoffs_,
             self.population_prior_,
         )
-        return (
-            build_pooled_rank_knots(Y, R, S, A, spec),
-            build_pooled_score_knots(Y, R, S, A, spec),
+        return build_pooled_score_knots(Y, R, S, A, spec)
+
+    def _build_reference_rank_knots(self):
+        """Score the reference library and keep the sorted pooled probabilities as knots.
+
+        This is what makes ``rank`` mean "beats this fraction of drug-like chemical space"
+        rather than "beats this fraction of my own training set". A trained model's
+        out-of-fold scores are bimodal -- inactives crushed near 0, actives near 1 -- so
+        screening compounds land in the empty middle where the training ECDF is flat and
+        every one of them comes back around 0.9.
+
+        The reference molecules go through exactly the path a query takes: same models,
+        same pooling, same weighting. That identity is the whole design. It is what makes
+        the result uniform on the library by construction, instead of uniform only while
+        two code paths happen to agree.
+
+        Streamed in chunks. Materialising three 50,000-row matrices at once would cost
+        about 1.2 GB for a value that is consumed row by row.
+        """
+        from .reference import ReferenceUnavailable, iter_chunks
+        from .reference.identity import DEFAULT_N, REFERENCE_ID
+
+        active_indices = self._active_indices()
+        names = [self.descriptor_types[i] for i in active_indices]
+        spec = _spec_from_attributes(
+            self.descriptor_types,
+            active_indices,
+            self.quality_aucs_,
+            self.proxy_aucs_,
+            self._rank_error_curves_,
+            self.ad_hard_cutoffs_,
+            self.population_prior_,
         )
 
-    def _channels(self, smiles_list):
+        # Positional against `active_indices`, so index by name -- never by whatever order
+        # a mapping iterates in.
+        streams = [
+            iter_chunks(name, expected_dim=self.descriptors[i].n_dim)
+            for i, name in zip(active_indices, names)
+        ]
+        pooled = []
+        for chunk_set in zip(*streams):
+            Y, R, S, A = self._channels_from_matrices(
+                list(chunk_set), active_indices, want_score=False
+            )
+            out = combine(Y, R, S, A, spec=spec, outputs=("proba",))
+            pooled.append(out.values["proba"][:, 1].copy())
+
+        p1 = np.concatenate(pooled) if pooled else np.empty(0)
+        p1 = p1[np.isfinite(p1)]
+        if p1.size == 0:
+            raise ReferenceUnavailable(
+                "The reference library produced no finite pooled probabilities; "
+                "`predict_rank` would have nothing to report against."
+            )
+
+        knots = subsample_knots(np.sort(p1))
+        meta = {
+            "library": {"id": REFERENCE_ID, "n": DEFAULT_N},
+            "descriptors": list(names),
+            "saturation": {"p_max": float(p1.max())},
+        }
+        logger.info(
+            f"Reference library scored: {p1.size:,} molecules, "
+            f"pooled probability max {p1.max():.3f}"
+        )
+        return knots, meta
+
+    def _active_indices(self):
         active_mask = getattr(
             self, "active_descriptors_", [True] * len(self.descriptor_types)
         )
         active_indices = [i for i, a in enumerate(active_mask) if a]
-        if not active_indices:
-            active_indices = list(range(len(self.descriptor_types)))
+        return active_indices or list(range(len(self.descriptor_types)))
 
+    def _channels_from_matrices(self, matrices, active_indices, want_score=True):
+        """Channels for feature matrices the caller already has.
+
+        Split out of :meth:`_channels` so the reference library can be scored through
+        exactly the path a query takes -- same models, same pooling, same weighting. That
+        identity is what makes the resulting percentiles uniform on the reference set by
+        construction, rather than uniform only if two code paths happen to agree.
+
+        *matrices* is positional against *active_indices*, so callers building it from a
+        name-keyed source must index by ``self.descriptor_types[i]``, never by the order a
+        dict happens to iterate in.
+
+        ``want_score=False`` skips ``predict_score``. Nothing in the ``proba`` branch or in
+        the weighting reads ``S``; computing it on a 50,000-row reference would be a second
+        full pass through every preprocessor and head for a value that is discarded.
+        """
+        if len(matrices) != len(active_indices):
+            raise ValueError(
+                f"{len(matrices)} matrices for {len(active_indices)} active descriptors"
+            )
         y_hats, score_preds, rank_preds, ad_scores = [], [], [], []
-        for i in active_indices:
-            X = self._transform_cached(i, smiles_list)
+        for i, X in zip(active_indices, matrices):
             y_hats.append(self.models[i].predict_proba(X=X)[:, 1])
-            score_preds.append(_optional(self.models[i].predict_score, X))
+            if want_score:
+                score_preds.append(_optional(self.models[i].predict_score, X))
             if self.ad_models:
                 ad_scores.append(self.ad_models[i].score(X))
             rank_preds.append(_optional(self.models[i].predict_rank, X))
+        return _stack_channels(y_hats, rank_preds, score_preds, ad_scores)
+
+    def _channels(self, smiles_list):
+        active_indices = self._active_indices()
+        matrices = [self._transform_cached(i, smiles_list) for i in active_indices]
+        Y, R, S, A = self._channels_from_matrices(matrices, active_indices)
 
         # Weight by quality (= 2*oof - train), not plain OOF AUC. Both loaders and
         # `EnsembleSpec.from_metadata` have always used quality, so passing `oof_aucs_`
@@ -691,7 +789,7 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
             getattr(self, "pooled_rank_knots_", None),
             getattr(self, "pooled_score_knots_", None),
         )
-        return _stack_channels(y_hats, rank_preds, score_preds, ad_scores) + (spec,)
+        return Y, R, S, A, spec
 
     def save_raw(self, model_dir: str):
         os.makedirs(model_dir, exist_ok=True)
