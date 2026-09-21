@@ -18,6 +18,7 @@ A Python library for building supervised QSAR models quickly, with minimal confi
   - [LazyClassifier (custom descriptors)](#lazyclassifier-custom-descriptors)
   - [Saving and loading](#saving-and-loading)
 - [CLI](#cli)
+- [Running the tests](#running-the-tests)
 - [How It Works](#how-it-works)
 - [Base Models](#base-models)
 - [Ersilia Model Hub integration](#ersilia-model-hub-integration)
@@ -173,6 +174,31 @@ The components under `lazyqsar/base/` can be used independently of the full pipe
 | [`lazyqsar.base.linear`](lazyqsar/base/linear/README.md) | Automatic linear model selection (logistic/ridge/SGD) |
 | [`lazyqsar.base.randomforest`](lazyqsar/base/randomforest/README.md) | Random Forest classifier with zero-shot hyperparameter selection |
 | [`lazyqsar.base.svc`](lazyqsar/base/svc/) | Support Vector Classifier with automatic kernel and C selection |
+
+## Running the tests
+
+```bash
+pip install -e ".[fit,test]"
+pytest
+```
+
+The suite is organised by what a test needs installed, so it runs — and reports honestly —
+in whichever environment you have. A test whose tier is missing is skipped with a message
+naming the absent module, never an error.
+
+| Selection | Needs | Covers |
+|---|---|---|
+| `pytest -m "not fit and not chem and not deep"` | the base install | the inference path, the ensemble arithmetic, the registry and the CLI surface |
+| `pytest -m "not chem and not deep"` | `.[fit]` | the above, plus fitting, ONNX export and the full pipeline |
+| `pytest` | `.[all]` | everything, including the real descriptors |
+
+The base selection is the contract Ersilia Model Hub templates depend on: it must pass on
+the core dependencies alone — `numpy`, `onnxruntime`, `pandas`, `h5py`, `psutil`, `rich`
+and `loguru` — with no `scikit-learn`, `xgboost` or RDKit anywhere on the path. Add
+`-n auto --dist loadfile` for the heavier tiers, and `--durations=15` to see where the
+time goes.
+
+Test data lives in `tests/data/` and is documented in `tests/data/README.md`.
 
 ## Ersilia Model Hub integration
 

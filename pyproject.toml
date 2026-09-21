@@ -7,7 +7,7 @@ name = "lazyqsar"
 version = "3.5.0"
 description = "A library to quickly build QSAR models"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11,<3.14"
 license = { text = "GPLv3" }
 authors = [
   { name = "Ersilia Open Source Initiative", email = "hello@ersilia.io" },
@@ -35,7 +35,7 @@ dependencies = [
 
 [project.optional-dependencies]
 fit = [
-    "scikit-learn==1.6.1",
+    "scikit-learn==1.9.1",
     "xgboost==3.2.0",
     "scipy",
     "onnxmltools==1.16.0",
@@ -56,6 +56,13 @@ descriptors = [
 all = [
     "lazyqsar[fit,descriptors]",
 ]
+test = [
+    "pytest==9.1.1",
+    "pytest-cov==7.0.0",
+    # pytest-cov 7 requires coverage>=7.10.6; the CI combine job must not pin below it.
+    "coverage[toml]==7.16.1",
+    "pytest-xdist==3.8.0",
+]
 
 [project.urls]
 "Source Code" = "https://github.com/ersilia-os/lazy-qsar"
@@ -64,9 +71,39 @@ all = [
 lazyqsar = "lazyqsar.cli.main:main"
 
 [tool.pytest.ini_options]
-testpaths = ["dev/tests"]
+testpaths = ["tests"]
+# So tests can `from _helpers.stubs import ...` from any subdirectory. The old suite relied
+# on pytest inserting the rootdir, which breaks as soon as tests live in subpackages.
+pythonpath = ["tests"]
+addopts = "-q --strict-markers --strict-config --durations=15"
+markers = [
+  "fit: requires the [fit] extra (scikit-learn, xgboost, skl2onnx, scipy, joblib)",
+  "chem: requires RDKit (the [descriptors] extra)",
+  "deep: requires torch / chemprop / chemeleon",
+  "network: downloads model checkpoints",
+  "slow: takes more than a second or so",
+]
+# No `-m` default: a default deselect is how a whole tier stays broken for a month unnoticed.
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+
+[tool.ruff.lint]
+# Ruff's default rule set, stated explicitly rather than left implicit.
+select = ["E4", "E7", "E9", "F"]
 
 [tool.ruff.lint.per-file-ignores]
-"dev/smoke/*.py" = ["E402"]
-"dev/benchmarks/*.py" = ["E402", "F841"]
-"dev/tests/notebooks/*.ipynb" = ["E402", "E701", "E722"]
+# `pytest.importorskip` and stub installation must run before the imports they guard.
+"tests/*" = ["E402"]
+
+[tool.coverage.run]
+source_pkgs = ["lazyqsar"]
+branch = true
+parallel = true
+# Load-bearing for combining across CI jobs: without it, the same module reached via the
+# source tree and via site-packages are two different files to `coverage combine`.
+relative_files = true
+
+[tool.coverage.paths]
+source = ["lazyqsar", "*/site-packages/lazyqsar"]

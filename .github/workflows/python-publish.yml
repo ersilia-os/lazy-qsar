@@ -1,4 +1,4 @@
-name: Upload Python Package
+name: Publish to PyPI
 
 on:
   release:
@@ -9,38 +9,48 @@ permissions:
   contents: read
 
 jobs:
-  pypi-release:
+  # Runs the full suite inside this same workflow run, so the artifact that gets published
+  # is byte-identical to the one that was tested. Previously a release shipped a wheel that
+  # no job had ever imported.
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  check-version:
+    name: version matches the tag
     runs-on: ubuntu-latest
-
+    timeout-minutes: 5
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install Poetry
-        uses: abatilo/actions-poetry@v4.0.0
-
-      # Extract version from release tag, or fall back to manual input
-      - name: Determine version
-        id: get_version
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      # Assert, do not rewrite. The old workflow ran `poetry version $TAG`, which let
+      # pyproject.toml and what PyPI serves drift apart silently.
+      - name: Tag must match [project].version
+        if: github.event_name == 'release'
         run: |
-          if [ "${{ github.event_name }}" = "release" ]; then
-            VERSION="${GITHUB_REF_NAME#v}"
-          else
-            VERSION=$(poetry version -s)
-          fi
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Publishing version $VERSION"
-      - name: Configure PyPI credentials
-        run: |
-          poetry config pypi-token.pypi "${{ secrets.ALL_PYPI_PROJECTS_API_TOKEN }}"
-      - name: Build and publish to PyPI
-        env:
-          VERSION: ${{ steps.get_version.outputs.version }}
-        run: |
-          poetry version $VERSION
-          poetry publish --build
+          python - <<'PY'
+          import os, tomllib
+          with open("pyproject.toml", "rb") as f:
+              declared = tomllib.load(f)["project"]["version"]
+          tag = os.environ["GITHUB_REF_NAME"].lstrip("v")
+          if declared != tag:
+              raise SystemExit(f"pyproject.toml says {declared}, the tag says {tag}")
+          print("version ok:", declared)
+          PY
+
+  publish:
+    needs: [ci, check-version]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: pypi
+      url: https://pypi.org/p/lazyqsar
+    permissions:
+      # Trusted Publishing, so no long-lived token lives in a workflow that any
+      # workflow_dispatch can trigger.
+      id-token: write
+    steps:
+      # Same run, so the reusable workflow's build artifact is visible here.
+      - uses: actions/download-artifact@v4
+        with: { name: dist, path: dist }
+      - uses: pypa/gh-action-pypi-publish@release/v1
