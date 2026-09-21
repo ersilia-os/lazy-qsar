@@ -17,12 +17,27 @@ rather than the code.
 | File | Rows | Positives | Purpose |
 |---|---|---|---|
 | `reference_binary.csv` | 233 | 54 (23%) | The general-purpose set: descriptors, end-to-end fit and predict, parity between entry points. |
-| `reference_imbalanced.csv` | 432 | 56 (13%) | Low prevalence, to reach the imbalance-batching path in `assemblers/classifier.py` that a synthetic 50/50 label vector never exercises. |
+| `reference_imbalanced.csv` | 432 | 56 (13%) | Low prevalence, which a synthetic 50/50 label vector never produces: skewed enough to exercise the weighting, the applicability domain and the decision cutoffs away from a balanced optimum. |
 | `invalid_smiles.txt` | 10 | — | Strings RDKit must reject. See the note in the file itself. |
 | `golden/combine.npz` | 28 cases | — | Frozen `combine()` output. Regenerate with `dev/tools/regenerate_combine_golden.py`; see that script's docstring before you do. |
 
 Both CSVs are `smiles,bin` with a header, which is exactly the shape `lazyqsar fit --input`
 expects, so they can be used directly as CLI input.
+
+### Neither file reaches the imbalance-batching branch
+
+Worth stating plainly, because this README used to claim `reference_imbalanced.csv` did.
+`_plan_batches` in `assemblers/classifier.py` splits the training set into several batches
+only above **100 negatives per positive**. The committed files are 3.3:1 and 6.7:1, so both
+take the single-batch path, and with one batch `batch_priors == [population_prior]`, which
+makes `_correct_prior` return its input untouched.
+
+`_helpers.smiles.load_severely_imbalanced_dataset` closes that gap without a third file: it
+pools the negatives of both sets, deduplicates them, and keeps two positives, giving 100.5:1
+over 203 molecules — the smallest set that plans two batches. Discarding positives means the
+labels are no longer the measured ones, so it is a structural fixture for the batching
+machinery and nothing to evaluate a model on. Used by `tests/chem/test_imbalanced_batching.py`
+(the only test here that fits a model, ~18s) and by `tests/fit/test_batch_planning.py`.
 
 ## Provenance
 

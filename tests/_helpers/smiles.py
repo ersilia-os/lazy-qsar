@@ -60,3 +60,54 @@ def load_invalid_smiles():
     """
     with open(INVALID_SMILES_FILE) as f:
         return [ln.strip() for ln in f if ln.strip() and not ln.startswith("#")]
+
+
+def load_severely_imbalanced_dataset(n_positives=2, n_negatives=201):
+    """A >100:1 set, built by downsampling the committed ChEMBL files. No new data.
+
+    ``reference_imbalanced.csv`` is low-prevalence at 13% but only 6.7:1, so it takes the
+    single-batch branch exactly as the balanced set does. ``_plan_batches`` splits into
+    several batches only above 100:1, and nothing in the suite reached that — which left
+    the imbalance-batching path, and the per-batch prior correction downstream of it,
+    with no coverage at all.
+
+    Rather than commit a third file, this pools the negatives of both committed sets
+    (deduplicated; the two overlap by 7 molecules) and keeps a handful of positives. The
+    defaults are the smallest set that still trips the branch: 2 positives against 201
+    negatives is 100.5:1, which plans two batches. Real molecules throughout, and no
+    bioactivity source other than ChEMBL.
+
+    The labels are of course no longer the measured ones -- discarding positives makes
+    this a structural fixture for the batching machinery, not a dataset anything should
+    be evaluated on.
+
+    Parameters
+    ----------
+    n_positives, n_negatives : int
+        Kept from the pooled sets. Their ratio must exceed 100 to trip the branch.
+
+    Returns
+    -------
+    (list of str, list of int)
+    """
+    pos_a, y_a = load_reference_dataset()
+    pos_b, y_b = load_imbalanced_dataset()
+    positives = list(
+        dict.fromkeys(
+            [s for s, v in zip(pos_a, y_a) if v == 1]
+            + [s for s, v in zip(pos_b, y_b) if v == 1]
+        )
+    )
+    negatives = list(
+        dict.fromkeys(
+            [s for s, v in zip(pos_a, y_a) if v == 0]
+            + [s for s, v in zip(pos_b, y_b) if v == 0]
+        )
+    )
+    if n_positives > len(positives) or n_negatives > len(negatives):
+        raise ValueError(
+            f"only {len(positives)} positives and {len(negatives)} negatives available"
+        )
+    smiles = positives[:n_positives] + negatives[:n_negatives]
+    y = [1] * n_positives + [0] * n_negatives
+    return smiles, y
