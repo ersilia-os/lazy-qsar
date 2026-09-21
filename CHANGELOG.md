@@ -1,5 +1,80 @@
 # Changelog
 
+## 3.6.0
+
+`predict_rank` now reports a percentile against a fixed reference library of 50,000
+drug-like molecules. `rank = 0.99` means "scores above 99% of drug-like chemical space".
+Before this release it meant "above 99% of this model's own training set", which sounds
+similar and is not.
+
+The old behaviour was not a bug in the ranking arithmetic. A trained model's out-of-fold
+scores are bimodal -- inactives crushed near 0, actives near 1, almost nothing between --
+so real screening compounds land in the empty middle where the training ECDF is flat.
+Measured on a simulated screening library, the entire top decile spanned 0.0014 of rank
+and 53.6% of the library compressed into [0.75, 0.95]: everything came back at roughly 0.9
+and users could not tell their best compounds from their mediocre ones. The training ECDF
+was correct; the training set simply contained nothing in that score range, so no change
+to the interpolation could manufacture resolution there. Two cheaper fixes were measured
+and rejected -- correcting tie handling moved the mean from 0.670 to 0.669, and ranking
+against training negatives made it worse at 0.748.
+
+At fit time the model now scores the reference library and stores the sorted pooled
+probabilities as its knots. Inference is unchanged: still one interpolation against knots
+in `metadata.json`, so deployed models need no new data and inference still requires only
+numpy and onnxruntime.
+
+### Breaking
+
+- **`rank` changes meaning, and old checkpoints refuse to report it.** Checkpoints fitted
+  before 3.6 carry out-of-fold knots, which are indistinguishable from library knots once
+  read -- both monotone, both in [0, 1]. Rather than report a training-set percentile as
+  though it were a library percentile, `predict_rank` and `--predict_type rank` raise and
+  name the fix. **`proba`, `logit`, `lift`, `score` and `binary` are unaffected** and keep
+  working on existing checkpoints; refit to get `rank` back.
+- **The pre-3.5 fallback is gone.** `combine` no longer falls back to the weighted mean of
+  per-descriptor training percentiles. It answered a different question, and keeping it
+  would have meant one `rank` column meaning two different things depending on when the
+  checkpoint was fitted, with nothing in the output to say which.
+- **`decision_cutoff_rank` jumps from ~0.5 to ~0.99** on activity-enriched training sets.
+  This is the correct reading, not a regression: 0.994 means "to be called a hit, beat
+  99.4% of drug-like space". Nothing thresholds on it -- `binary` is still `proba >= 0.5`.
+- **Fitting requires the reference library.** `lazyqsar setup --reference` fetches it, and
+  only the descriptors a model actually uses are downloaded -- 6.5 MB for a `fast` model,
+  267 MB for all five.
+
+### Known limitations
+
+- **A selective model saturates the top of the scale.** Generic chemistry scores low, so
+  the reference library's pooled probability can top out well below 1 -- 0.334 on the
+  antimicrobial model used to validate this. Molecules above that ceiling are extrapolated
+  in log-odds: they still order correctly, but the value means "better than all 50,000"
+  rather than a percentile, and at three decimals a set of actives all print as 1.0. Use
+  `proba` to discriminate among top hits.
+- **A uniform rank says nothing about model skill.** A random model produces perfectly
+  uniform reference ranks, and its "top 0.1%" is 50 random compounds. If the real problem
+  is that top-ranked compounds are not active, this relabels it rather than fixing it.
+- **`proba` remains conditioned on the training prior**, not the screening library's, so
+  this release does not make probabilities real-world-calibrated.
+- **The applicability-domain veto stays train-relative**, so diverse library compounds trip
+  it constantly and the per-sample gating largely degenerates in real screening.
+
+### The reference library
+
+50,000 molecules selected from the 1,355,109-molecule `ersilia_reference_library_v0`, by
+`scripts/select_reference_subset.py`. Two clusterings in two spaces: BitBIRCH on Morgan
+fingerprints collapses near-duplicates, so no two reference molecules are analogues, and
+MiniBatchKMeans on physchem descriptors supplies density strata. Slots per stratum are
+proportional to `size ** 0.5`, which compresses crowded regions without flattening the
+density that the percentile is quoted against -- proportional allocation left 52 of 10,000
+strata unrepresented, and equal allocation would answer "beats 99% of chemotypes" instead.
+
+Every selected molecule is CDDD-calculable by construction, which matters because CDDD
+refuses a dataset failing more than 0.1% of its filters and the library's own rate is
+1.88% -- a random 50,000-molecule slice would have made CDDD inapplicable.
+
+Validated on 965 held-out molecules that never entered the knots: mean rank 0.515,
+P(rank > 0.99) = 0.0145, deciles 0.084 to 0.119.
+
 ## 3.5.0
 
 The CLI and the Python API now share one implementation. Before this release they fitted

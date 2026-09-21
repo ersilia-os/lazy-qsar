@@ -69,12 +69,24 @@ from lazyqsar.qsar import LazyClassifierQSAR
 model = LazyClassifierQSAR(mode="slow") # default is "slow"
 model.fit(smiles_list=smiles_train, y=y_train)
 
-ranks = model.predict_rank(smiles_list=smiles_test)[:, 1]  # percentile within the model's own training distribution
+ranks = model.predict_rank(smiles_list=smiles_test)[:, 1]  # percentile against 50,000 drug-like reference molecules
 ```
 
 Other prediction methods are `predict_proba`, `predict_logit`, `predict_score`, `predict_lift` and `predict` (binary labels). All six share one implementation with the CLI, so a checkpoint gives the same answer through either entry point.
 
-> `predict_rank` is a percentile against the *training* distribution of that model, so ranks are not comparable between models and compress on chemistry unlike the training set. Use `predict_proba` when you need a calibrated value. Within one model `rank` is a monotone view of `proba`: they order molecules identically, so any ordering-only metric (AUROC, AUPRC, BEDROC) gives the same answer from either.
+> `predict_rank` is a percentile against a **fixed reference library** of 50,000 drug-like
+> molecules, so `rank = 0.99` means "scores above 99% of drug-like chemical space". Within
+> one model it is a monotone view of `proba` -- they order molecules identically, so any
+> ordering-only metric (AUROC, AUPRC, BEDROC) gives the same answer from either.
+>
+> Two things to expect. A selective model scores generic chemistry low, so the reference
+> may top out well below 1 (measured: 0.065 to 0.334 on an antimicrobial model). Anything
+> above that ceiling is extrapolated: it still orders molecules, but it means "better than
+> all 50,000" rather than a percentile, and printed at three decimals a set of active
+> compounds will all read as 1.0. Use `predict_proba` to discriminate among your top hits.
+>
+> And a uniform rank says nothing about model skill -- a random model produces perfectly
+> uniform reference ranks. Report `proba`, `lift` and the out-of-fold AUC alongside it.
 
 ### LazyClassifier (custom descriptors)
 
@@ -143,7 +155,7 @@ The output CSV contains one column per task, ordered alphabetically by task name
 | type | meaning |
 |------|---------|
 | `proba` (default) | calibrated probability of the positive class |
-| `rank` | percentile within the model's own training distribution |
+| `rank` | percentile against the 50,000-molecule drug-like reference library |
 | `logit` | log-odds of the calibrated probability |
 | `lift` | probability divided by the training-set positive rate |
 | `score` | the pre-calibration scale, read off the calibrated probability |
