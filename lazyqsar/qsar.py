@@ -343,7 +343,6 @@ class ArtifactWrapper(_EnsemblePredictMixin):
         self._ensemble_cache = {}
 
     def _channels(self, smiles_list):
-
         active_mask = self.active_descriptors or [True] * len(self.descriptors)
         active_indices = [i for i, a in enumerate(active_mask) if a]
         if not active_indices:
@@ -659,7 +658,6 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
         )
 
     def _channels(self, smiles_list):
-
         active_mask = getattr(
             self, "active_descriptors_", [True] * len(self.descriptor_types)
         )
