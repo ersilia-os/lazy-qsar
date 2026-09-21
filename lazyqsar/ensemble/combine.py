@@ -288,7 +288,7 @@ class CombineResult:
     values: dict[str, np.ndarray] = field(default_factory=dict)
     weights: np.ndarray | None = None
     base: np.ndarray | None = None
-    ranks: np.ndarray | None = None
+    oof_percentiles: np.ndarray | None = None
     diagnostics: list[dict] | None = None
 
 
@@ -552,5 +552,9 @@ def combine(Y, R=None, S=None, A=None, *, spec, outputs=OUTPUT_NAMES, cutoff=Non
         values["binary"] = (p1 >= threshold).astype(int)
 
     return CombineResult(
-        values=values, weights=W, base=base, ranks=R, diagnostics=diagnostics
+        values=values,
+        weights=W,
+        base=base,
+        oof_percentiles=R,
+        diagnostics=diagnostics,
     )

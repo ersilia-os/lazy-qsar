@@ -76,7 +76,7 @@ class _BatchArtifact:
         score_1 = (W * R).sum(axis=1)
         return np.column_stack([1 - score_1, score_1])
 
-    def predict_rank(self, X) -> np.ndarray:
+    def _oof_percentile(self, X) -> np.ndarray:
         X_t = self.preprocessor.run(X)
         R = np.column_stack([h.predict_rank(X_t)[:, 1] for h in self.heads])
         W = self.pooler.get_weights(X_t)
@@ -137,7 +137,7 @@ class LazyClassifierArtifact:
         raw_lift = metadata.get("decision_cutoff_lift")
         self._decision_cutoff_lift = float(raw_lift) if raw_lift is not None else None
         knots = (metadata.get("pooled_ranker") or {}).get("knots")
-        self._pooled_rank_prepared = (
+        self._oof_percentile_prepared = (
             prepare_knots(np.asarray(knots, dtype=np.float64))
             if knots is not None and len(knots)
             else None
@@ -207,26 +207,26 @@ class LazyClassifierArtifact:
         proba = R.mean(axis=0)
         return np.column_stack([1 - proba, proba])
 
-    def predict_rank(self, X) -> np.ndarray:
+    def _oof_percentile(self, X) -> np.ndarray:
         """Return the training-set percentile of the pooled probability, shape (n, 2).
 
-        The ONNX twin of :meth:`lazyqsar.assemblers.classifier.LazyClassifier.predict_rank`
+        The ONNX twin of :meth:`lazyqsar.assemblers.classifier.LazyClassifier._oof_percentile`
         -- see there for why this is not an average of the batches' percentiles. Falls
         back to that average for checkpoints saved before the reference existed.
         """
-        rank_1 = self.rank_from_proba(self.predict_proba(X)[:, 1])
+        rank_1 = self._oof_percentile_from_proba(self.predict_proba(X)[:, 1])
         if rank_1 is not None:
             return np.column_stack([1 - rank_1, rank_1])
-        R = np.array([b.predict_rank(X)[:, 1] for b in self._batches])
+        R = np.array([b._oof_percentile(X)[:, 1] for b in self._batches])
         rank_1 = R.mean(axis=0)
         return np.column_stack([1 - rank_1, rank_1])
 
-    def rank_from_proba(self, p1):
+    def _oof_percentile_from_proba(self, p1):
         """Ranks for probabilities the caller already has, or ``None`` if not possible.
 
         On the pooled-reference path a rank is a table lookup against the training
         distribution -- no graph is involved once the probability exists. A caller scoring
-        a chunk has usually just computed that probability, and asking :meth:`predict_rank`
+        a chunk has usually just computed that probability, and asking :meth:`_oof_percentile`
         for the rank would run every preprocessor and every head a second time to arrive at
         the identical number. :mod:`lazyqsar.ensemble.channels` scores a chunk that way, and
         an applicability domain makes it request ranks even for a plain ``proba`` call, so
@@ -235,7 +235,7 @@ class LazyClassifierArtifact:
         ``None`` means this checkpoint predates the pooled reference and its rank really is
         an average over the batches' own percentiles, which does need the graph.
         """
-        prepared = getattr(self, "_pooled_rank_prepared", None)
+        prepared = getattr(self, "_oof_percentile_prepared", None)
         if prepared is None:
             return None
         return rank_from_knots(np.asarray(p1, dtype=np.float64), prepared=prepared)

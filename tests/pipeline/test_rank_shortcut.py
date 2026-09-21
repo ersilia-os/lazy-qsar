@@ -2,7 +2,7 @@
 
 On a pooled-reference checkpoint a rank is the training-set ECDF evaluated at the pooled
 probability — a table lookup, once that probability exists. The scoring loop computes the
-probability for every chunk anyway, so asking ``predict_rank`` for the rank re-ran every
+probability for every chunk anyway, so asking ``_oof_percentile`` for it re-ran every
 preprocessor and every head to arrive at a number already in hand.
 
 That is not a rounding-error saving. ``rank`` is the ``predict_type`` the Ersilia template
@@ -62,19 +62,19 @@ def test_a_cli_checkpoint_carries_the_pooled_reference(pooled_checkpoint):
     artifact = LazyClassifierArtifact.load(
         os.path.join(pooled_checkpoint["models"], "alpha", "morgan")
     )
-    assert artifact._pooled_rank_prepared is not None
+    assert artifact._oof_percentile_prepared is not None
 
 
 def test_the_shortcut_gives_the_graph_s_answer_exactly(scored):
     """Equal, not close. The shortcut is the same computation with the graph skipped.
 
-    ``predict_rank`` interpolates the ECDF at ``predict_proba(X)[:, 1]``; the shortcut
+    ``_oof_percentile`` interpolates the ECDF at ``predict_proba(X)[:, 1]``; the shortcut
     interpolates it at the probability the caller already computed from the same rows. If
     these ever diverge, the ranks LazyQSAR deploys with have changed.
     """
     artifact, X = scored
-    from_proba = artifact.rank_from_proba(artifact.predict_proba(X)[:, 1])
-    from_graph = artifact.predict_rank(X)[:, 1]
+    from_proba = artifact._oof_percentile_from_proba(artifact.predict_proba(X)[:, 1])
+    from_graph = artifact._oof_percentile(X)[:, 1]
     np.testing.assert_array_equal(from_proba, from_graph)
 
 
@@ -100,9 +100,9 @@ def test_asking_for_the_rank_channel_costs_no_extra_onnx_runs(scored, onnx_calls
 def test_a_checkpoint_without_the_reference_still_ranks(scored, monkeypatch):
     """Pre-v3.5.0 checkpoints have no ECDF, so their rank really does need the graph."""
     artifact, X = scored
-    monkeypatch.setattr(artifact, "_pooled_rank_prepared", None)
+    monkeypatch.setattr(artifact, "_oof_percentile_prepared", None)
 
-    assert artifact.rank_from_proba(artifact.predict_proba(X)[:, 1]) is None
+    assert artifact._oof_percentile_from_proba(artifact.predict_proba(X)[:, 1]) is None
     channels = _score_chunks([X], artifact, None, {"y", "r"})
     assert channels.r is not None and channels.r.shape == (len(X),)
 

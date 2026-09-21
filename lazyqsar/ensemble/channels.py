@@ -55,8 +55,6 @@ def required_channels(outputs, has_ad: bool, has_scorer: bool = False) -> set[st
     if has_ad:
         want.add("a")
         want.add("r")
-    if "rank" in outputs:
-        want.add("r")
     if "score" in outputs and not has_scorer:
         want.add("s")
     return want
@@ -98,11 +96,11 @@ def _score_chunks(chunks, artifact, ad_artifact, want, logger=None):
             # every head to reach the identical number -- roughly doubling the ONNX work
             # of the two most common requests, since `rank` is the deployed default and an
             # applicability domain forces ranks on even for plain `proba`.
-            from_proba = getattr(artifact, "rank_from_proba", None)
+            from_proba = getattr(artifact, "_oof_percentile_from_proba", None)
             r = from_proba(y) if from_proba is not None else None
             if r is None:
                 r = _positive_column(
-                    artifact.predict_rank, X_chunk, "predict_rank", logger
+                    artifact._oof_percentile, X_chunk, "_oof_percentile", logger
                 )
             if r is None:
                 unavailable.add("r")

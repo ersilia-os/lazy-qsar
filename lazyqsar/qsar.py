@@ -611,7 +611,7 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
             # reliability signal: high |rank - 0.5| should map to low error.
             try:
                 _p = model.predict_proba(X=X)[:, 1]
-                _r = model.predict_rank(X=X)[:, 1]
+                _r = model._oof_percentile(X=X)[:, 1]
                 _err = np.abs(_p - y.astype(float))
                 _sidx = np.argsort(_r)
                 _rs, _es = _r[_sidx], _err[_sidx]
@@ -1025,7 +1025,7 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
                 score_preds.append(_optional(self.models[i].predict_score, X))
             if self.ad_models:
                 ad_scores.append(self.ad_models[i].score(X))
-            rank_preds.append(_optional(self.models[i].predict_rank, X))
+            rank_preds.append(_optional(self.models[i]._oof_percentile, X))
         return _stack_channels(y_hats, rank_preds, score_preds, ad_scores)
 
     def _channels(self, smiles_list):

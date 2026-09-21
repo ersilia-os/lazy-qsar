@@ -128,7 +128,13 @@ def test_the_h5_path_and_the_array_path_are_the_same_model(data, h5_path):
 
 @pytest.mark.parametrize(
     "method",
-    ["predict_proba", "predict_logit", "predict_score", "predict_lift", "predict_rank"],
+    [
+        "predict_proba",
+        "predict_logit",
+        "predict_score",
+        "predict_lift",
+        "_oof_percentile",
+    ],
 )
 def test_every_predictor_accepts_both_input_forms(data, h5_path, fitted, method):
     X, _ = data
@@ -201,3 +207,19 @@ def test_loading_a_raw_directory_is_explicitly_unsupported(tmp_path):
 def test_regression_is_not_implemented():
     with pytest.raises(NotImplementedError):
         LazyRegressor()
+
+
+def test_predict_rank_is_refused_on_the_agnostic_entry_point(data, fitted):
+    """`rank` is a position against a reference library of drug-like molecules, and this
+    entry point takes a descriptor matrix -- it never sees the molecules, so it has no
+    reference to report against.
+
+    What it used to return was a percentile against the model's own training distribution.
+    That survives as `_oof_percentile`, where it weights the ensemble, and is deliberately
+    not offered as a public rank: it is not comparable with a reference rank and would be
+    read as one.
+    """
+    X, y = data
+    with pytest.raises(ValueError, match="not available on LazyClassifier"):
+        fitted.predict_rank(X=X)
+    assert fitted._oof_percentile(X=X).shape == (len(y), 2)

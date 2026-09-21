@@ -249,10 +249,10 @@ class _BatchLazyClassifier(object):
         score_1 = (W * R).sum(axis=1)
         return np.column_stack([1 - score_1, score_1])
 
-    def predict_rank(self, X):
+    def _oof_percentile(self, X):
         """Return gated rank quantiles (0–1), shape (n, 2)."""
         X_prep = self.prep.transform(X)
-        R = np.column_stack([head.predict_rank(X_prep)[:, 1] for head in self.heads])
+        R = np.column_stack([head._oof_percentile(X_prep)[:, 1] for head in self.heads])
         W = self.pooler.get_weights(X_prep)
         rank_1 = (W * R).sum(axis=1)
         return np.column_stack([1 - rank_1, rank_1])
@@ -395,7 +395,7 @@ class LazyClassifier(object):
             if _prior and _prior > 0
             else None
         )
-        self._build_pooled_rank_reference(X)
+        self._build_oof_percentile(X)
         self.oof_auc_ = self._compute_oof_auc(X, y, batch_indices)
         self.train_auc_ = self._compute_train_auc(X, y)
         logger.success(
@@ -413,20 +413,20 @@ class LazyClassifier(object):
         except Exception:
             return 0.5
 
-    def _build_pooled_rank_reference(self, X):
-        """Learn the out-of-fold probability distribution ``predict_rank`` reports against.
+    def _build_oof_percentile(self, X):
+        """Learn the out-of-fold probability distribution ``_oof_percentile`` reports against.
 
-        Sets ``pooled_rank_knots_``, which is persisted, and its prepared form. Both stay
-        ``None`` when out-of-fold data is unavailable, and ``predict_rank`` then keeps its
+        Sets ``oof_percentile_knots_``, which is persisted, and its prepared form. Both stay
+        ``None`` when out-of-fold data is unavailable, and ``_oof_percentile`` then keeps its
         pre-v3.5.0 behaviour.
         """
-        self.pooled_rank_knots_ = None
-        self._pooled_rank_prepared_ = None
+        self.oof_percentile_knots_ = None
+        self._oof_percentile_prepared_ = None
         pooled = self._oof_accumulate(X)
         if pooled is None:
             return
-        self.pooled_rank_knots_ = subsample_knots(np.sort(pooled[0]))
-        self._pooled_rank_prepared_ = prepare_knots(self.pooled_rank_knots_)
+        self.oof_percentile_knots_ = subsample_knots(np.sort(pooled[0]))
+        self._oof_percentile_prepared_ = prepare_knots(self.oof_percentile_knots_)
 
     def _oof_accumulate(self, X):
         """Pooled out-of-fold ``(proba, score)`` per training row, or None.
@@ -500,7 +500,7 @@ class LazyClassifier(object):
         evaluated at ``proba``, so it is uniform by construction -- which is what makes it
         a usable self-check on the reference rather than a second opinion about it.
         """
-        prepared = getattr(self, "_pooled_rank_prepared_", None)
+        prepared = getattr(self, "_oof_percentile_prepared_", None)
         pooled = self._oof_accumulate(X)
         if pooled is None or prepared is None:
             return None
@@ -561,7 +561,7 @@ class LazyClassifier(object):
         proba = R.mean(axis=0)
         return np.array([1 - proba, proba]).T
 
-    def predict_rank(self, X):
+    def _oof_percentile(self, X):
         """Return the training-set percentile of the pooled probability, shape (n, 2).
 
         Not an average of the batches' percentiles: averaging percentiles does not give
@@ -573,15 +573,15 @@ class LazyClassifier(object):
 
         Falls back to the batch average for models fitted before the reference existed.
         """
-        prepared = getattr(self, "_pooled_rank_prepared_", None)
+        prepared = getattr(self, "_oof_percentile_prepared_", None)
         if prepared is None:
-            knots = getattr(self, "pooled_rank_knots_", None)
+            knots = getattr(self, "oof_percentile_knots_", None)
             if knots is not None and len(knots):
-                prepared = self._pooled_rank_prepared_ = prepare_knots(knots)
+                prepared = self._oof_percentile_prepared_ = prepare_knots(knots)
         if prepared is not None:
             rank_1 = rank_from_knots(self.predict_proba(X)[:, 1], prepared=prepared)
             return np.column_stack([1 - rank_1, rank_1])
-        R = np.array([model.predict_rank(X)[:, 1] for model in self.models])
+        R = np.array([model._oof_percentile(X)[:, 1] for model in self.models])
         rank_1 = R.mean(axis=0)
         return np.column_stack([1 - rank_1, rank_1])
 
@@ -608,7 +608,7 @@ class LazyClassifier(object):
             "decision_cutoff_logit": self.decision_cutoff_logit_,
             "decision_cutoff_lift": self.decision_cutoff_lift_,
         }
-        knots = getattr(self, "pooled_rank_knots_", None)
+        knots = getattr(self, "oof_percentile_knots_", None)
         if knots is not None and len(knots):
             # The distribution `predict_rank` reports against. Without it a loaded
             # checkpoint would fall back to averaging the batches' percentiles and stop

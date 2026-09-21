@@ -111,11 +111,40 @@ class LazyClassifier:
             X = _load_h5(h5_file, h5_idxs)
         return self._model.predict_score(X)
 
-    def predict_rank(self, X=None, h5_file=None, h5_idxs=None) -> np.ndarray:
-        """Return rank quantiles relative to the training OOF distribution, shape (n, 2)."""
+    def _oof_percentile(self, X=None, h5_file=None, h5_idxs=None) -> np.ndarray:
+        """Percentile against this model's own out-of-fold distribution, shape (n, 2).
+
+        Internal. This is the weighting signal -- ``LazyClassifierQSAR`` blends descriptors
+        by how reliable each one looks at a given percentile -- and it is deliberately not a
+        public rank: it is relative to this model's training data, so it is not comparable
+        with a position against the reference library, and would be read as one.
+        """
         if X is None:
             X = _load_h5(h5_file, h5_idxs)
-        return self._model.predict_rank(X)
+        return self._model._oof_percentile(X)
+
+    def predict_rank(self, X=None, h5_file=None, h5_idxs=None) -> np.ndarray:
+        """Not available on this entry point. Raises ``ValueError``.
+
+        ``rank`` is a position against a fixed library of drug-like molecules. This entry
+        point takes a caller-supplied descriptor matrix, so LazyQSAR cannot featurize that
+        library and has no reference to report against.
+
+        What it used to return was a percentile against *this model's own training
+        distribution* -- a different quantity that is not comparable with a reference rank,
+        and which would be read as one. It survives internally as ``_oof_percentile``, where
+        it weights the ensemble, and is deliberately not offered as a public rank.
+
+        Use :meth:`predict_proba`, or fit through
+        :class:`lazyqsar.qsar.LazyClassifierQSAR`, which resolves the reference itself.
+        """
+        raise ValueError(
+            "predict_rank is not available on LazyClassifier. `rank` is a position "
+            "against a fixed reference library of drug-like molecules, and this entry "
+            "point has no reference because it never sees the molecules. Use "
+            "predict_proba, or fit through LazyClassifierQSAR, which resolves the "
+            "reference itself."
+        )
 
     def oof_channels(self, X=None, h5_file=None, h5_idxs=None):
         """Out-of-fold ``(proba, rank, score)`` on the training rows, or None.
