@@ -34,7 +34,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from ..utils.ranking import prepare_knots, rank_from_knots
+from ..utils.ranking import prepare_knots, rank_from_knots, score_from_knots
 
 OUTPUT_NAMES = ("proba", "logit", "rank", "score", "lift", "binary")
 
@@ -42,6 +42,7 @@ _DEFAULT_CUTOFF = 0.5
 _EPS = 1e-7
 
 POOLED_RANKER_KEY = "pooled_ranker"
+POOLED_SCORER_KEY = "pooled_scorer"
 
 
 def read_pooled_rank_knots(metadata):
@@ -66,6 +67,22 @@ def read_pooled_rank_knots(metadata):
     if knots is None or len(knots) == 0:
         return None
     return np.asarray(knots, dtype=np.float64)
+
+
+def read_pooled_score_knots(metadata):
+    """Pull the pooled score map out of a task-level ``metadata.json``, or None.
+
+    Returns
+    -------
+    tuple of (ndarray, ndarray), or None
+        ``(probability, score)`` knots, or ``None`` when the key is absent, empty or
+        malformed -- in which case ``score`` keeps its pre-3.5.0 independent pooling.
+    """
+    block = (metadata or {}).get(POOLED_SCORER_KEY) or {}
+    x, y = block.get("knots_x"), block.get("knots_y")
+    if x is None or y is None or len(x) == 0 or len(x) != len(y):
+        return None
+    return np.asarray(x, dtype=np.float64), np.asarray(y, dtype=np.float64)
 
 
 @dataclass(frozen=True)
@@ -111,6 +128,7 @@ class EnsembleSpec:
     population_prior: float = 0.5
     decision_cutoff: float = _DEFAULT_CUTOFF
     pooled_rank_knots: np.ndarray | None = None
+    pooled_score_knots: tuple[np.ndarray, np.ndarray] | None = None
 
     @classmethod
     def from_metadata(
@@ -163,6 +181,7 @@ class EnsembleSpec:
 
         prior = metadata.get("population_prior", 0.5)
         pooled_knots = read_pooled_rank_knots(metadata)
+        pooled_score = read_pooled_score_knots(metadata)
         # decision_cutoff is deliberately NOT read from metadata["decision_cutoff_proba"].
         # That learned, balanced-accuracy-optimal threshold exists in every checkpoint but
         # has never been used by either prediction path, and adopting it would move the
@@ -184,6 +203,7 @@ class EnsembleSpec:
                 ),
                 population_prior=float(prior if prior is not None else 0.5),
                 pooled_rank_knots=pooled_knots,
+                pooled_score_knots=pooled_score,
             ),
             active_names,
         )
@@ -410,10 +430,20 @@ def combine(Y, R=None, S=None, A=None, *, spec, outputs=OUTPUT_NAMES, cutoff=Non
     # unbound.
     pooled_knots = getattr(spec, "pooled_rank_knots", None)
     pooled_rank = "rank" in wanted and pooled_knots is not None and len(pooled_knots)
+    # `score` is the pooled probability read back onto the pre-calibration scale, for the
+    # same reason `rank` is read off the pooled reference: pooling raw scores
+    # independently is not a monotone view of the pooled probability, so the two could
+    # order the same pair of molecules differently. Needs the log-odds sum too.
+    score_knots = getattr(spec, "pooled_score_knots", None)
+    pooled_score = "score" in wanted and score_knots is not None
 
     # proba, logit, lift and binary all derive from one weighted log-odds sum; computing
     # it once is what makes asking for several outputs cost no more than asking for one.
-    needs_logit = bool(wanted & {"proba", "logit", "lift", "binary"}) or pooled_rank
+    needs_logit = (
+        bool(wanted & {"proba", "logit", "lift", "binary"})
+        or pooled_rank
+        or pooled_score
+    )
     if needs_logit:
         logits = np.log(np.clip(Y, _EPS, 1 - _EPS) / np.clip(1 - Y, _EPS, 1 - _EPS))
         l1 = (W * logits).sum(axis=1)
@@ -433,13 +463,18 @@ def combine(Y, R=None, S=None, A=None, *, spec, outputs=OUTPUT_NAMES, cutoff=Non
             r1 = (W * R).sum(axis=1)
         values["rank"] = np.vstack((1 - r1, r1)).T
     if "score" in wanted:
-        # `S is None` means at least one descriptor could not supply a raw score, and the
-        # documented fallback is to use the calibrated one. Resolved here rather than with
-        # an `S = Y.copy()` beside the other upcasts, because that copy ran for every call
-        # -- a full (n_samples, n_descriptors) float64 array allocated and never read
-        # unless `score` was among the outputs, which for the default `proba` request it
-        # never is.
-        s1 = (W * (Y if S is None else S)).sum(axis=1)
+        if pooled_score:
+            s1 = score_from_knots(p1, score_knots)
+        else:
+            # Pre-3.5.0 checkpoints carry no score map, so they keep the independent
+            # pooling and the ordering that comes with it. `S is None` on top of that
+            # means at least one descriptor could not supply a raw score, and the
+            # documented fallback is the calibrated one. Resolved here rather than with an
+            # `S = Y.copy()` beside the other upcasts, because that copy ran for every
+            # call -- a full (n_samples, n_descriptors) float64 array allocated and never
+            # read unless `score` was among the outputs, which for the default `proba`
+            # request it never is.
+            s1 = (W * (Y if S is None else S)).sum(axis=1)
         values["score"] = np.vstack((1 - s1, s1)).T
     if "lift" in wanted:
         prior = spec.population_prior

@@ -8,6 +8,7 @@ from .ensemble import (
     OUTPUT_NAMES,
     EnsembleSpec,
     build_pooled_rank_knots,
+    build_pooled_score_knots,
     combine,
     mask_rows,
 )
@@ -18,7 +19,7 @@ from .registry import (  # noqa: F401  (re-exported for backwards compatibility)
     DESCRIPTORS_MODE,
     get_descriptor_type,
 )
-from .ensemble.combine import read_pooled_rank_knots
+from .ensemble.combine import read_pooled_rank_knots, read_pooled_score_knots
 from .utils.logging import logger
 from .utils.ranking import prepare_knots, rank_from_knots
 
@@ -203,13 +204,14 @@ def _spec_from_attributes(
     cutoffs,
     prior,
     pooled_knots=None,
+    pooled_score_knots=None,
 ):
     """Build an :class:`EnsembleSpec` from the per-descriptor attribute lists.
 
     The lists are indexed by *full* descriptor position; the spec is sliced down to the
-    active ones so the weighting code never has to re-index. *pooled_knots* is the one
-    argument that is not per-descriptor: it describes the pooled probability of the
-    active set as a whole, and is passed through unsliced.
+    active ones so the weighting code never has to re-index. *pooled_knots* and
+    *pooled_score_knots* are the arguments that are not per-descriptor: each describes the
+    pooled probability of the active set as a whole, so both pass through unsliced.
     """
 
     def sliced(seq):
@@ -223,6 +225,7 @@ def _spec_from_attributes(
         ad_hard_cutoffs=sliced(cutoffs),
         population_prior=prior,
         pooled_rank_knots=pooled_knots,
+        pooled_score_knots=pooled_score_knots,
     )
 
 
@@ -323,6 +326,7 @@ class ArtifactWrapper(_EnsemblePredictMixin):
         population_prior=0.5,
         descriptor_types=None,
         pooled_rank_knots=None,
+        pooled_score_knots=None,
     ):
         self.descriptors = descriptors
         self.artifacts = artifacts
@@ -335,6 +339,7 @@ class ArtifactWrapper(_EnsemblePredictMixin):
         self.population_prior = population_prior
         self.descriptor_types = descriptor_types  # list[str] or None
         self.pooled_rank_knots = pooled_rank_knots  # ndarray or None
+        self.pooled_score_knots = pooled_score_knots  # (ndarray, ndarray) or None
         self._ensemble_cache = {}
 
     def _channels(self, smiles_list):
@@ -361,7 +366,12 @@ class ArtifactWrapper(_EnsemblePredictMixin):
                 ad,
                 smiles_list,
                 chunk_size,
-                want={"y", "r", "s", "a"},
+                # `s` only when this checkpoint has no pooled score map. With one, `score`
+                # is read off the pooled probability, so asking for the raw channel would
+                # run every graph a second time for a value nothing reads.
+                want={"y", "r", "a"}
+                if getattr(self, "pooled_score_knots", None) is not None
+                else {"y", "r", "s", "a"},
                 logger=logger,
             )
             y_hats.append(channels.y)
@@ -380,6 +390,7 @@ class ArtifactWrapper(_EnsemblePredictMixin):
             self.ad_hard_cutoffs,
             self.population_prior,
             getattr(self, "pooled_rank_knots", None),
+            getattr(self, "pooled_score_knots", None),
         )
         return _stack_channels(y_hats, rank_preds, score_preds, ad_scores) + (spec,)
 
@@ -592,8 +603,8 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
         self.active_descriptors_ = active_mask
         self.ad_hard_cutoffs_ = _ad_hard_cutoffs_raw
 
-        self.pooled_rank_knots_ = self._build_pooled_rank_reference(
-            _oof_channels, _train_ad
+        self.pooled_rank_knots_, self.pooled_score_knots_ = (
+            self._build_pooled_references(_oof_channels, _train_ad)
         )
 
         for row, active in zip(desc_rows, active_mask):
@@ -602,8 +613,8 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
         logger.rule()
         logger.descriptor_table(desc_rows)
 
-    def _build_pooled_rank_reference(self, oof_channels, train_ad):
-        """Learn the pooled out-of-fold distribution the ensemble's ``rank`` reports against.
+    def _build_pooled_references(self, oof_channels, train_ad):
+        """Learn the pooled out-of-fold references ``rank`` and ``score`` report against.
 
         Must run after the active set is settled: the reference describes the pooled
         probability of exactly the descriptors that will be scored, and a reference built
@@ -616,14 +627,14 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
         """
         active_indices = [i for i, a in enumerate(self.active_descriptors_) if a]
         if not active_indices:
-            return None
+            return None, None
         cols = [oof_channels[i] for i in active_indices]
         if any(c is None for c in cols):
             logger.debug(
-                "No pooled rank reference: at least one active descriptor has no "
+                "No pooled references: at least one active descriptor has no "
                 "out-of-fold predictions."
             )
-            return None
+            return None, None
 
         Y = np.column_stack([c[0] for c in cols])
         R = np.column_stack([c[1] for c in cols])
@@ -642,7 +653,10 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
             self.ad_hard_cutoffs_,
             self.population_prior_,
         )
-        return build_pooled_rank_knots(Y, R, S, A, spec)
+        return (
+            build_pooled_rank_knots(Y, R, S, A, spec),
+            build_pooled_score_knots(Y, R, S, A, spec),
+        )
 
     def _channels(self, smiles_list):
 
@@ -677,6 +691,7 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
             getattr(self, "ad_hard_cutoffs_", None),
             getattr(self, "population_prior_", 0.5),
             getattr(self, "pooled_rank_knots_", None),
+            getattr(self, "pooled_score_knots_", None),
         )
         return _stack_channels(y_hats, rank_preds, score_preds, ad_scores) + (spec,)
 
@@ -775,6 +790,16 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
         else:
             meta["decision_cutoff_logit"] = None
             meta["decision_cutoff_lift"] = None
+
+        _score_knots = getattr(self, "pooled_score_knots_", None)
+        if _score_knots is not None:
+            _sx, _sy = _score_knots
+            meta["pooled_scorer"] = {
+                "knots_x": np.asarray(_sx, dtype=np.float64).tolist(),
+                "knots_y": np.asarray(_sy, dtype=np.float64).tolist(),
+                "n_train": int(len(_sx)),
+                "source": "oof",
+            }
 
         _knots = getattr(self, "pooled_rank_knots_", None)
         if _knots is not None and len(_knots):
@@ -888,6 +913,7 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
                 for d in descriptor_types
             ]
             obj.pooled_rank_knots_ = read_pooled_rank_knots(meta)
+            obj.pooled_score_knots_ = read_pooled_score_knots(meta)
         else:
             obj.population_prior_ = 0.5
             obj.oof_aucs_ = [1.0] * len(descriptor_types)
@@ -898,6 +924,7 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
             obj.ad_hard_cutoffs_ = None
             obj._rank_error_curves_ = [None] * len(descriptor_types)
             obj.pooled_rank_knots_ = None
+            obj.pooled_score_knots_ = None
         return obj
 
     def save_onnx(self, model_dir: str, clean: bool = True):
@@ -922,6 +949,7 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
         rank_error_curves = None
         population_prior = 0.5
         pooled_rank_knots = None
+        pooled_score_knots = None
         if os.path.isfile(meta_path):
             with open(meta_path) as f:
                 meta = json.load(f)
@@ -957,6 +985,7 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
                 else None
             )
             pooled_rank_knots = read_pooled_rank_knots(meta)
+            pooled_score_knots = read_pooled_score_knots(meta)
 
         descriptors, artifacts, ad_artifacts = _load_descriptor_stack(
             model_dir,
@@ -977,6 +1006,7 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
             population_prior=population_prior,
             descriptor_types=descriptor_types,
             pooled_rank_knots=pooled_rank_knots,
+            pooled_score_knots=pooled_score_knots,
         )
 
     def save(self, model_dir: str):

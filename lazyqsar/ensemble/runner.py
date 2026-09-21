@@ -344,7 +344,11 @@ def predict_tasks(
                     ad,
                     x_path,
                     chunk_size,
-                    required_channels(outputs, plan.has_ad),
+                    required_channels(
+                        outputs,
+                        plan.has_ad,
+                        has_scorer=plan.spec.pooled_score_knots is not None,
+                    ),
                     logger=logger,
                 )
                 del artifact, ad

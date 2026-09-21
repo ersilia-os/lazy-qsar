@@ -146,8 +146,15 @@ The output CSV contains one column per task, ordered alphabetically by task name
 | `rank` | percentile within the model's own training distribution |
 | `logit` | log-odds of the calibrated probability |
 | `lift` | probability divided by the training-set positive rate |
-| `score` | raw, pre-calibration score |
+| `score` | the pre-calibration scale, read off the calibrated probability |
 | `binary` | 0/1 label, thresholded at probability 0.5 |
+
+All six rank molecules identically — they are different scales on one quantity, so sorting
+by any of them gives the same order. `score` reports what the model looked like before
+calibration; it reaches that scale through a monotone map stored in the checkpoint rather
+than by pooling the raw per-descriptor scores, which would not agree with `proba` about the
+order. Checkpoints fitted before v3.5.0 carry no map and keep the older behaviour, where
+`score` could disagree.
 
 ## How it works
 

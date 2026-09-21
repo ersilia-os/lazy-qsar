@@ -35,8 +35,27 @@ This release removes an inconsistency, it does not claim a better model.
   produced, so an absolute cutoff such as `rank > 0.8` selects a different set than
   before. Checkpoints fitted by earlier versions carry no reference and keep their
   previous behaviour exactly; refit to get the new one.
-- **`score` is unchanged on checkpoints without an applicability domain** (2e-08). With
-  uniform weights a weighted mean is the arithmetic mean, so it was already correct.
+- **`score` is now a monotone view of `proba` too.** It was a weighted mean of the raw
+  per-descriptor scores, which -- exactly like the old `rank` -- is not a monotone
+  transform of the pooled probability, so `score` and `proba` could order the same two
+  molecules differently. Measured on the ChEMBL fixtures they disagreed about 581 of
+  79,800 pairs, moving 151 of 233 molecules to a different position.
+
+  The cause is not calibration reordering anything: every head's calibrator is monotone
+  and never moves that head's own molecules. It is that the heads carry *different*
+  curves, so calibration changes how far apart each head's opinions sit -- how loudly it
+  votes -- and a weighted average of differently-stretched monotone curves is not a
+  monotone function of the weighted average of the originals. No way of pooling raw
+  values fixes it; four were measured and the best still left 550 flipped pairs.
+
+  `score` is now the pooled probability read back onto the pre-calibration scale through
+  a monotone map stored in the checkpoint, the same shape of fix the pooled rank
+  reference is. Zero inverted pairs against `proba` by construction, and the values stay
+  where they were: mean shift 0.0012, maximum 0.0318 on a scale spanning 0.06 to 0.96.
+  Checkpoints fitted by earlier versions carry no map and keep their previous behaviour
+  exactly; refit to get the new one.
+
+  All six `predict_type` values now rank molecules identically.
 - **New CLI checkpoints differ from old ones.** `lazyqsar fit` now applies the descriptor
   portfolio and fits an applicability domain, so it keeps 2–3 descriptors instead of all
   5 and writes `applicability_domain/` per descriptor. Predictions differ from checkpoints
@@ -90,6 +109,19 @@ This release removes an inconsistency, it does not claim a better model.
 - Every requested output now comes from a single featurization pass. Asking for `proba` and
   `rank` used to featurize twice, and featurization is ~93% of inference wall clock.
 - `predict()` accepts both `threshold=` and `cutoff=` for the binary threshold.
+- **`predict_type="score"` costs what every other output costs.** Deriving it from the
+  pooled probability means the raw per-descriptor channel is never requested, and that
+  channel was the last thing making any request run every preprocessor and every head
+  twice. Measured end to end on real Morgan fingerprints, 8,000 molecules: `score` fell
+  from 3.29s to 2.30s, matching `proba` at 2.32s, and `LazyClassifierQSAR.load(...)
+  .predict_proba` -- which asks for every channel -- from 3.96s to 2.99s.
+- `XGBoostArtifact.predict_score` normalises a one-column probability output to two
+  columns, which `run` always did and it did not. On a legacy export -- onnxmltools
+  annotating `probabilities` with `dim_value=2` while onnxruntime infers `{N,1}`, the case
+  `_build_xgb_session` exists to repair -- the caller's `[:, 1]` raised, the scoring loop
+  swallowed it as "channel unavailable", and `predict_type="score"` silently fell back to
+  pooling the *calibrated* probabilities: a wrong number with no error anywhere. Every
+  head shipped today emits two columns and is unaffected.
 - **Prediction is bounded in memory.** Molecules are scored in blocks whose working set is
   released before the next block starts, so peak memory no longer grows with the size of
   the input. It used to: the accumulated per-task channels and the combined results were
@@ -140,6 +172,10 @@ This release removes an inconsistency, it does not claim a better model.
   is still in cache, and `predict_tasks` takes an optional `scan` dict reporting those rows
   and the descriptors that ran. An out-parameter rather than a changed return type, so
   existing callers are untouched; only the CSV-writing layer wants it.
+- `lazyqsar/ensemble/reference.py` gained `build_pooled_score_knots`, the score map's
+  counterpart to the pooled rank reference, and `utils/ranking.py` gained
+  `score_from_knots` beside `rank_from_knots`. The map is stored under `pooled_scorer` in
+  the task-level `metadata.json`, next to `pooled_ranker`.
 - No ONNX converter, opset or graph was changed, and nothing under `lazyqsar/base/` was
   modified beyond one import. `lazyqsar/artifacts/classifier.py` gained one method,
   `rank_from_proba`, which reads a rank off a probability the caller already has; it runs

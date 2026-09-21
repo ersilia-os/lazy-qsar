@@ -126,3 +126,13 @@ def rank_from_knots(scores, knots=None, prepared=None):
     ranks = np.where(scores < vals[0], 0.0, ranks)
     ranks = np.where(scores > vals[-1], 1.0, ranks)
     return ranks
+
+
+def score_from_knots(p1, knots):
+    """Map pooled probabilities onto the pre-calibration scale through *knots*.
+
+    Linear interpolation, clamped at both ends, so the result is monotone in *p1* and
+    therefore orders molecules exactly as ``proba`` does.
+    """
+    x, y = knots
+    return np.interp(np.asarray(p1, dtype=np.float64), x, y)

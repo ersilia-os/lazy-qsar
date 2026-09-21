@@ -182,3 +182,57 @@ def test_tree_heads_amplify_a_rounding_difference(fitted):
         f"expected a tree head to amplify a {perturbation:.1e} input difference; "
         f"got {amplified}"
     )
+
+
+@pytest.mark.parametrize("raw_shape", ["two_column", "one_column", "flat"])
+def test_xgboost_predict_score_normalises_shape_like_run(fitted, raw_shape):
+    """`predict_score` must return (n, 2) whatever the graph emits, as `run` always did.
+
+    It used not to. On a legacy export -- onnxmltools annotating `probabilities` with
+    dim_value=2 while ORT infers {N,1} from a missing n_targets, the case
+    `_build_xgb_session` exists to repair -- `run` returned (n, 2) and `predict_score`
+    returned (n, 1). The caller's `[:, 1]` then raised, the scoring loop swallowed it as
+    "channel unavailable", and `predict_type="score"` silently fell back to pooling the
+    *calibrated* probabilities. A wrong number with no error anywhere.
+
+    Every head shipped today emits two columns, so this is driven by substituting the
+    session rather than by finding a checkpoint that still does it.
+    """
+    _, loaded, X = fitted
+    heads = {type(h).__name__: h for b in loaded._batches for h in b.heads}
+    head = next((h for n, h in heads.items() if "XGBoost" in n), None)
+    if head is None:
+        pytest.skip("this dataset's portfolio has no xgboost head")
+
+    prep = loaded._batches[0].preprocessor.run(X)
+    two_col = np.asarray(head.predict_score(prep), dtype=np.float64)
+    assert two_col.shape == (len(X), 2), "baseline is not two columns"
+
+    p1 = two_col[:, 1]
+    substitute = {
+        "two_column": two_col,
+        "one_column": p1.reshape(-1, 1),
+        "flat": p1,
+    }[raw_shape]
+
+    class _Stub:
+        def run(self, _outputs, _feed):
+            return [None, substitute]
+
+        def get_outputs(self):
+            return [
+                type("M", (), {"name": "label"})(),
+                type("M", (), {"name": "probabilities"})(),
+            ]
+
+    real, head._session = head._session, _Stub()
+    try:
+        out = head.predict_score(prep)
+    finally:
+        head._session = real
+
+    assert out.shape == (len(X), 2), (
+        f"a {raw_shape} graph output gave predict_score shape {out.shape}; "
+        "run() normalises it to (n, 2) and predict_score must agree"
+    )
+    np.testing.assert_allclose(out[:, 1], p1, rtol=0, atol=0)

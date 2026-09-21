@@ -35,12 +35,17 @@ class Channels:
     a: np.ndarray | None = None
 
 
-def required_channels(outputs, has_ad: bool) -> set[str]:
+def required_channels(outputs, has_ad: bool, has_scorer: bool = False) -> set[str]:
     """Return the channel letters needed to produce *outputs*.
 
     ``y`` is always needed. ``r`` is needed for the ``rank`` output, and also whenever
     applicability-domain scores are available, because the weighting derives its
-    per-sample reliability term from the ranks. ``s`` is needed only for ``score``.
+    per-sample reliability term from the ranks.
+
+    ``s`` is needed only for ``score``, and only on a checkpoint with no pooled score map.
+    With one, ``score`` is read off the pooled probability, so the raw channel is never
+    looked at -- which is what takes ``predict_type="score"`` from two passes over every
+    graph down to one, the same cost as every other output.
 
     Skipping a channel is purely an optimisation — it saves ONNX calls and memory — so
     getting this wrong shows up as different numbers, not just slower ones. The runner's
@@ -52,7 +57,7 @@ def required_channels(outputs, has_ad: bool) -> set[str]:
         want.add("r")
     if "rank" in outputs:
         want.add("r")
-    if "score" in outputs:
+    if "score" in outputs and not has_scorer:
         want.add("s")
     return want
 
