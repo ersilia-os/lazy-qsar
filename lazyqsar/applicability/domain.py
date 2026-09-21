@@ -53,6 +53,9 @@ from .artifact import (  # noqa: F401  (re-exported; moved to keep it sklearn-fr
 
 _N_CAL_KNOTS = 200
 
+# Matches the seed used throughout the package (assemblers, portfolios, base estimators).
+_RANDOM_STATE = 42
+
 
 def _to_dense(X) -> np.ndarray:
     if hasattr(X, "toarray"):
@@ -104,7 +107,16 @@ class ApplicabilityDomain:
         )
         k = max(1, k)
 
-        self.pca_ = PCA(n_components=k, whiten=False)
+        # random_state is load-bearing here, not hygiene. At the shapes this sees --
+        # p runs from 768 (CLAMP) to 2048 (Morgan, Chemeleon) -- sklearn's
+        # svd_solver="auto" resolves to "randomized", which draws its projection from
+        # global numpy state. Left unseeded, two fits of identical X return different
+        # components, so the Mahalanobis distances differ, the AD scores differ, and
+        # build_weight_matrix vetoes a different set of descriptors per sample. The
+        # effect is invisible on held-out folds -- the veto only fires out of domain --
+        # and surfaces as a model that ranks a screening library differently each time
+        # it is trained.
+        self.pca_ = PCA(n_components=k, whiten=False, random_state=_RANDOM_STATE)
         X_pca = self.pca_.fit_transform(X)  # (n, k)
 
         self.centroid_ = X_pca.mean(axis=0)  # (k,)

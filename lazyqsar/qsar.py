@@ -4,7 +4,7 @@ import os
 import shutil
 import numpy as np
 
-from .ensemble import OUTPUT_NAMES, EnsembleSpec, combine
+from .ensemble import OUTPUT_NAMES, EnsembleSpec, combine, mask_rows
 from .ensemble.channels import score_smiles_chunkwise
 from .ensemble.runner import get_chunk_size
 from .registry import (  # noqa: F401  (re-exported for backwards compatibility)
@@ -43,6 +43,17 @@ def validate_smiles(smiles_list):
     from .descriptors._validate import validate_smiles as _validate
 
     return _validate(smiles_list)
+
+
+def invalid_smiles_indices(smiles_list):
+    """Positions RDKit cannot parse, importing RDKit only when actually called.
+
+    The predict counterpart to :func:`validate_smiles`: prediction reports the gap rather
+    than refusing the batch, so a single malformed row cannot abort a library screen.
+    """
+    from .descriptors._validate import invalid_smiles_indices as _indices
+
+    return _indices(smiles_list)
 
 
 def _optional(fn, X):
@@ -114,8 +125,21 @@ class _EnsemblePredictMixin:
         cache_key = _smiles_md5(smiles_list)
         result = self._ensemble_cache.get(cache_key)
         if result is None:
+            # Unparseable SMILES are scored like any other row -- their descriptors come
+            # back all-NaN and the exported preprocessor imputes them -- and then blanked.
+            # The positions are taken up front rather than inferred from the NaN pattern
+            # afterwards, because an all-NaN descriptor row is not proof the SMILES was
+            # bad: a descriptor can fail on a molecule that parses perfectly well, and
+            # that row should keep its score from the descriptors that did work.
+            bad = invalid_smiles_indices(smiles_list)
             Y, R, S, A, spec = self._channels(smiles_list)
             result = combine(Y, R, S, A, spec=spec, outputs=OUTPUT_NAMES)
+            if bad:
+                logger.warning(
+                    f"{len(bad)} SMILES could not be parsed; their predictions are NaN "
+                    f"(positions: {bad[:10]}{' ...' if len(bad) > 10 else ''})"
+                )
+                mask_rows(result.values, bad)
             if result.diagnostics:
                 logger.ad_weights_table(result.diagnostics, n_samples=len(smiles_list))
             self._ensemble_cache[cache_key] = result
@@ -149,9 +173,17 @@ class _EnsemblePredictMixin:
         """
         if cutoff is not None:
             threshold = cutoff
-        return (self._combined(smiles_list).values["proba"][:, 1] >= threshold).astype(
-            int
-        )
+        p1 = self._combined(smiles_list).values["proba"][:, 1]
+        labels = p1 >= threshold
+        # NaN >= threshold is False, which would quietly turn an unparseable molecule into
+        # a confident negative -- the one outcome this path must not produce. Promote to
+        # float and carry the NaN through, exactly as ensemble.combine.mask_rows does, and
+        # only when there is something to carry, so the usual return stays integer.
+        if np.isnan(p1).any():
+            out = labels.astype(float)
+            out[np.isnan(p1)] = np.nan
+            return out
+        return labels.astype(int)
 
 
 def _spec_from_attributes(
@@ -234,7 +266,6 @@ class ArtifactWrapper(_EnsemblePredictMixin):
         self._ensemble_cache = {}
 
     def _channels(self, smiles_list):
-        validate_smiles(smiles_list)
 
         active_mask = self.active_descriptors or [True] * len(self.descriptors)
         active_indices = [i for i, a in enumerate(active_mask) if a]
@@ -490,7 +521,6 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
         logger.descriptor_table(desc_rows)
 
     def _channels(self, smiles_list):
-        validate_smiles(smiles_list)
 
         active_mask = getattr(
             self, "active_descriptors_", [True] * len(self.descriptor_types)

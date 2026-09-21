@@ -16,7 +16,7 @@ import tempfile
 import numpy as np
 import pandas as pd
 
-from ..ensemble.combine import OUTPUT_NAMES
+from ..ensemble.combine import OUTPUT_NAMES, mask_rows
 from ..ensemble.runner import (
     get_chunk_size,
     new_progress,
@@ -25,6 +25,7 @@ from ..ensemble.runner import (
     sources_from_mapping,
     sources_from_parent,
 )
+from ..qsar import invalid_smiles_indices
 from ..registry import get_descriptor_type
 from ..utils.logging import logger
 
@@ -190,6 +191,20 @@ def predict(
         chunk_size=get_chunk_size(),
         show_progress=True,
     )
+
+    # Molecules RDKit cannot parse are blanked rather than dropped or imputed. Their
+    # descriptor rows are all-NaN, which the preprocessor's imputer would otherwise fill
+    # with the training median -- returning an ordinary-looking score for a string that is
+    # not a molecule. Row count and order are untouched, so the output still aligns with
+    # the input; the gap is simply visible.
+    bad = invalid_smiles_indices(smiles_list)
+    if bad:
+        logger.warning(
+            f"{len(bad)} SMILES could not be parsed; their predictions are NaN "
+            f"(positions: {bad[:10]}{' ...' if len(bad) > 10 else ''})"
+        )
+        for r in results:
+            mask_rows(r.values, bad)
 
     header = [s.column_name for s in sources]
     R = np.column_stack([_as_column(r.values[predict_type]) for r in results])

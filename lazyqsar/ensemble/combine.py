@@ -237,6 +237,30 @@ def build_weight_matrix(Y, R, A, spec: EnsembleSpec):
     return W, base
 
 
+def mask_rows(values: dict, rows) -> dict:
+    """Overwrite *rows* with NaN in every output array, in place.
+
+    Used for molecules that could not be parsed. Their descriptor row is all-NaN, and the
+    imputer inside the exported preprocessor would otherwise replace it with the training
+    median -- turning an unparseable string into an ordinary-looking score. Writing NaN
+    keeps the row aligned with the input while making the gap unmissable.
+
+    ``binary`` is integer-valued and cannot hold NaN, so it is promoted to float. That is
+    the intended trade: a caller checking ``== 1`` still behaves correctly, and a NaN is
+    visible where a 0 would have been silently wrong.
+    """
+    rows = np.asarray(rows, dtype=int)
+    if rows.size == 0:
+        return values
+    for name, arr in list(values.items()):
+        arr = np.asarray(arr)
+        if not np.issubdtype(arr.dtype, np.floating):
+            arr = arr.astype(np.float64)
+        arr[rows] = np.nan
+        values[name] = arr
+    return values
+
+
 def _as_2d(X, name):
     if X is None:
         return None
@@ -276,8 +300,15 @@ def combine(Y, R=None, S=None, A=None, *, spec, outputs=OUTPUT_NAMES, cutoff=Non
 
     Notes
     -----
-    Inputs are upcast to float64 before any arithmetic, so a caller may accumulate the
-    per-descriptor channels in float32 to save memory without changing the result.
+    Inputs are upcast to float64 before any arithmetic, so the combination itself is
+    exact regardless of how the caller stored the channels. The upcast does not recover
+    precision the caller has already spent: ``ensemble.channels`` accumulates in float32
+    to halve peak memory, and that rounding does change the result. Measured across the
+    28 scenarios in ``tests/_helpers/combine_cases.py``, float32 channels move ``logit``
+    by up to 9.4e-07, ``lift`` by 6.7e-07, ``proba`` by 1.5e-07 and ``rank``/``score`` by
+    3e-08, leaving ``binary`` identical. That is the accepted trade, and it is an order
+    of magnitude below the ONNX export gap the same pipeline already carries -- but it is
+    a real difference, not a free one.
     """
     unknown = set(outputs) - set(OUTPUT_NAMES)
     if unknown:

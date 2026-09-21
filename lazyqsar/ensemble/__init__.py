@@ -15,6 +15,7 @@ from .combine import (
     EnsembleSpec,
     build_weight_matrix,
     combine,
+    mask_rows,
 )
 
 __all__ = [
@@ -23,4 +24,5 @@ __all__ = [
     "EnsembleSpec",
     "build_weight_matrix",
     "combine",
+    "mask_rows",
 ]
