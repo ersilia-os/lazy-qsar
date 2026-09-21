@@ -65,6 +65,47 @@ def test_a_cli_checkpoint_carries_the_pooled_reference(pooled_checkpoint):
     assert artifact._oof_percentile_prepared is not None
 
 
+def test_the_descriptor_level_percentile_has_its_own_key(pooled_checkpoint):
+    """`pooled_ranker` means the reference library, and only at the task level.
+
+    The descriptor level stores the out-of-fold percentile the weighting uses, under
+    `oof_percentile`. Both were once called `pooled_ranker`, which is how one gets read as
+    the other.
+    """
+    path = os.path.join(pooled_checkpoint["models"], "alpha", "morgan", "metadata.json")
+    with open(path) as f:
+        meta = json.load(f)
+    assert (meta.get("oof_percentile") or {}).get("knots")
+    assert "pooled_ranker" not in meta
+    assert "decision_cutoff_oof_percentile" in meta
+
+
+def test_a_v35_descriptor_checkpoint_is_ignored_rather_than_misread(
+    pooled_checkpoint, tmp_path
+):
+    """The reason the key was minted new instead of redefined.
+
+    v3.5.x wrote out-of-fold knots under `pooled_ranker` at this level. Reusing that name
+    would have let them be read as the reference library -- monotone, in [0, 1], and wrong
+    in a way nothing downstream could detect. Under the new name they are simply absent, and
+    the artifact falls back to the graph, which is correct.
+    """
+    import shutil
+
+    source = os.path.join(pooled_checkpoint["models"], "alpha", "morgan")
+    legacy = str(tmp_path / "legacy")
+    shutil.copytree(source, legacy)
+    path = os.path.join(legacy, "metadata.json")
+    with open(path) as f:
+        meta = json.load(f)
+    meta["pooled_ranker"] = meta.pop("oof_percentile")
+    with open(path, "w") as f:
+        json.dump(meta, f)
+
+    artifact = LazyClassifierArtifact.load(legacy)
+    assert artifact._oof_percentile_prepared is None
+
+
 def test_the_shortcut_gives_the_graph_s_answer_exactly(scored):
     """Equal, not close. The shortcut is the same computation with the graph skipped.
 

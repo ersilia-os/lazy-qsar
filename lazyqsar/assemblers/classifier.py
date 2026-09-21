@@ -604,19 +604,23 @@ class LazyClassifier(object):
             "batch_priors": self.batch_priors_,
             "decision_cutoff_raw": self.decision_cutoff_raw_,
             "decision_cutoff_proba": self.decision_cutoff_proba_,
-            "decision_cutoff_rank": self.decision_cutoff_rank_,
+            # Named for what it is: a percentile against this model's own out-of-fold
+            # scores, not a position against the reference library. The task-level
+            # `decision_cutoff_rank` is the latter, and the two must not be confused.
+            "decision_cutoff_oof_percentile": self.decision_cutoff_rank_,
             "decision_cutoff_logit": self.decision_cutoff_logit_,
             "decision_cutoff_lift": self.decision_cutoff_lift_,
         }
         knots = getattr(self, "oof_percentile_knots_", None)
         if knots is not None and len(knots):
-            # The distribution `predict_rank` reports against. Without it a loaded
-            # checkpoint would fall back to averaging the batches' percentiles and stop
-            # agreeing with the model it came from.
-            metadata["pooled_ranker"] = {
+            # A new key, not a redefinition of `pooled_ranker`. That name means the
+            # reference library at the task level, and a v3.5.x descriptor checkpoint
+            # carries out-of-fold knots under it -- so reusing it here would let the two be
+            # read as the same thing. Under the new name an old checkpoint simply has none,
+            # and falls back to the graph, which is correct.
+            metadata["oof_percentile"] = {
                 "knots": np.asarray(knots, dtype=np.float64).tolist(),
                 "n_train": int(len(knots)),
-                "source": "oof",
             }
         with open(f"{directory}/metadata.json", "w") as f:
             json.dump(metadata, f, indent=4)

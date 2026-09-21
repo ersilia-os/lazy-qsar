@@ -68,6 +68,36 @@ numpy and onnxruntime.
   numbers keep that signal: on shuffled labels the actives' band collapses onto the
   inactives' instead of being pinned high.
 
+### Renamed
+
+- **The out-of-fold percentile is no longer called a rank.** It is a different quantity from
+  `rank`: relative to a model's own training data, not comparable across models, and not
+  comparable with a position against the reference library. Both were `predict_rank`, which
+  is how one gets believed to be the other. It is now `_oof_percentile` throughout the
+  pipeline, where it serves its only real purpose -- weighting descriptors by how reliable
+  each looks at a given percentile.
+
+  The leaf estimators under `lazyqsar/base/` keep `predict_rank`. They are documented as
+  usable independently, each owns its own ECDF, and a percentile is a reasonable thing for a
+  standalone estimator to offer; the rename stops at the wrappers above them.
+
+- **`LazyClassifier.predict_rank` raises.** That entry point takes a descriptor matrix and
+  never sees the molecules, so it cannot resolve a reference library. It used to return the
+  training-relative percentile under a name that promised otherwise. Use `predict_proba`, or
+  fit through `LazyClassifierQSAR`.
+
+- **Descriptor-level metadata keys.** `pooled_ranker` becomes `oof_percentile` and
+  `decision_cutoff_rank` becomes `decision_cutoff_oof_percentile`. The first is a new key
+  rather than a redefinition: `pooled_ranker` means the reference library at the task level,
+  and a v3.5.x descriptor checkpoint carries out-of-fold knots under it, so reusing the name
+  would let the two be read as the same thing. An older checkpoint is therefore treated as
+  having no descriptor-level percentile and falls back to the graph, which is correct. The
+  cutoff's meaning did not change, so its old value is still read.
+
+- **`--predict_type rank` costs one pass, not two**, on a checkpoint without an
+  applicability domain. `required_channels` no longer requests the percentile channel for a
+  rank output, because a reference rank is read off the pooled probability.
+
 ### Known limitations
 
 - **The tails are anchored on known molecules.** `0.95` is the 95th percentile of the

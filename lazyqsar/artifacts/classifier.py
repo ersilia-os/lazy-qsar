@@ -132,11 +132,18 @@ class LazyClassifierArtifact:
                 float(np.mean(all_cutoffs)) if all_cutoffs else 0.5
             )
         self._decision_cutoff_proba = float(metadata.get("decision_cutoff_proba", 0.5))
-        self._decision_cutoff_rank = float(metadata.get("decision_cutoff_rank", 0.5))
+        # The name changed; the quantity did not, so an older checkpoint's value is
+        # still read rather than discarded.
+        self._decision_cutoff_oof_percentile = float(
+            metadata.get(
+                "decision_cutoff_oof_percentile",
+                metadata.get("decision_cutoff_rank", 0.5),
+            )
+        )
         self._decision_cutoff_logit = float(metadata.get("decision_cutoff_logit", 0.0))
         raw_lift = metadata.get("decision_cutoff_lift")
         self._decision_cutoff_lift = float(raw_lift) if raw_lift is not None else None
-        knots = (metadata.get("pooled_ranker") or {}).get("knots")
+        knots = (metadata.get("oof_percentile") or {}).get("knots")
         self._oof_percentile_prepared = (
             prepare_knots(np.asarray(knots, dtype=np.float64))
             if knots is not None and len(knots)
@@ -164,9 +171,10 @@ class LazyClassifierArtifact:
         return self._decision_cutoff_proba
 
     @property
-    def decision_cutoff_rank(self) -> float:
-        """Threshold to apply against predict_rank() output for binary predictions."""
-        return self._decision_cutoff_rank
+    def decision_cutoff_oof_percentile(self) -> float:
+        """The learned cutoff as an out-of-fold percentile. Advisory: nothing thresholds
+        on it -- `binary` is `proba >= 0.5`."""
+        return self._decision_cutoff_oof_percentile
 
     @property
     def decision_cutoff_logit(self) -> float:
