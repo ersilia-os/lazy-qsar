@@ -152,7 +152,13 @@ def main() -> int:
         log(f"ERROR: only {len(final):,} of {args.n:,} could be selected")
         return 1
 
+    # Every candidate, not just the first N. The descriptor stage needs the surplus: a
+    # molecule that fails featurization there has to be replaced by the next candidate, and
+    # `ordering.npy` alone indexes a list that only exists inside this process.
     np.save(out / "ordering.npy", np.asarray(picked, dtype=np.int64))
+    (out / "candidates.csv").write_text(
+        "smiles\n" + "\n".join(canonical[i] for i in picked) + "\n"
+    )
     smiles_path = out / config.smiles_filename(args.n)
     smiles_path.write_text("smiles\n" + "\n".join(canonical[i] for i in final) + "\n")
     (out / "stage_report.json").write_text(json.dumps(report, indent=2))
