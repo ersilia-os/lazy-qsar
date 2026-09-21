@@ -9,9 +9,13 @@ removed in Python 3.12 — the version CI pins — so a blocker defining only th
 never consulted and the whole test silently passes no matter what gets imported.
 """
 
+import ast
+import os
 import subprocess
 import sys
 import textwrap
+
+import lazyqsar
 
 _BLOCKER = """
     import sys
@@ -90,3 +94,37 @@ def test_artifacts_import_without_training_dependencies():
 
 def test_predict_api_imports_without_training_dependencies():
     _run(_PREDICT_API)
+
+
+# lazyqsar/registry.py claims "standard library only, no RDKit, no scikit-learn, no NumPy".
+#
+# That claim is about the module's own code, and it has to be checked as such: importing
+# `lazyqsar.registry` runs `lazyqsar/__init__.py`, which imports `utils/logging.py`, which
+# imports numpy -- so an import-based test would fail for a reason that has nothing to do
+# with the registry. Reading its imports statically tests exactly what the docstring
+# promises, which is that this module can stay the shared descriptor lookup for code that
+# must not drag in a featurizer.
+_STDLIB = set(sys.stdlib_module_names)
+
+
+def _module_level_imports(path):
+    tree = ast.parse(open(path).read())
+    names = set()
+    for (
+        node
+    ) in tree.body:  # module level only; lazy imports inside functions are the point
+        if isinstance(node, ast.Import):
+            names.update(a.name.split(".")[0] for a in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            names.add(node.module.split(".")[0])
+    return names
+
+
+def test_registry_imports_nothing_outside_the_standard_library():
+    path = os.path.join(os.path.dirname(lazyqsar.__file__), "registry.py")
+    third_party = _module_level_imports(path) - _STDLIB
+    assert not third_party, (
+        f"lazyqsar/registry.py imports {sorted(third_party)} at module level. It is the one "
+        "module the inference stack reads to learn which descriptors a checkpoint uses "
+        "without importing any of them, so it has to stay dependency-free."
+    )

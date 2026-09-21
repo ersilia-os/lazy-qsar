@@ -26,7 +26,8 @@ import os
 
 import numpy as np
 import pytest
-from conftest import build_checkpoint, make_smiles
+from _helpers.checkpoints import build_checkpoint
+from _helpers.smiles import make_smiles
 
 from lazyqsar.api.classifier_predict import predict
 

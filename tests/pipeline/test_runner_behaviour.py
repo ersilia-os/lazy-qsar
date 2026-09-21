@@ -10,7 +10,8 @@ import os
 
 import numpy as np
 import pytest
-from conftest import build_checkpoint, make_smiles
+from _helpers.checkpoints import build_checkpoint
+from _helpers.smiles import make_smiles
 
 from lazyqsar.ensemble.channels import required_channels
 from lazyqsar.ensemble.combine import OUTPUT_NAMES
