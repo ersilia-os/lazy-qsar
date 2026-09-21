@@ -70,6 +70,17 @@ numpy and onnxruntime.
 
 ### Known limitations
 
+- **The tails are anchored on known molecules.** `0.95` is the 95th percentile of the
+  model's out-of-fold actives and `0.05` the 5th percentile of its inactives. Scaling
+  straight to 1.0 assumed a model can reach probability 1.0; many cannot, so a model topping
+  out at p = 0.40 could never exceed rank 0.838 and a sixth of the scale was unreachable.
+  Because that ceiling tracks prevalence as much as skill, a perfect model on a rare target
+  read lower than a mediocre one on an easy target -- anchoring makes ranks comparable across
+  tasks. An anchor that does not sit outside its quartile is dropped for that side, which
+  then behaves as before; `anchor_low_used` / `anchor_high_used` record which branch was
+  taken. The cost is that every model's top actives read 0.95 by construction, so the top of
+  the scale no longer distinguishes model quality -- `oof_diagnostics.screening_auc` carries
+  that instead.
 - **Above 0.75 the scale is not a percentile.** A molecule at `rank = 0.9` beats far more
   than 90% of drug-like space. This is deliberate. A selective model scores generic
   chemistry into a narrow band -- measured 0.065 to 0.334, while its actives sat at 0.4 to

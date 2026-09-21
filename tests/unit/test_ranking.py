@@ -172,3 +172,114 @@ def test_a_degenerate_reference_does_not_divide_by_zero():
     r = rank_from_reference(np.array([0.1, 0.4, 0.9]), knots=np.full(16, 0.4))
     assert np.all(np.diff(r) >= 0)
     assert r.min() >= 0.0 and r.max() <= 1.0
+
+
+# ------------------------------------------------------------------ tail anchors
+
+
+def test_the_anchors_land_exactly_on_their_ranks():
+    """`p05` of the inactives is 0.05 and `p95` of the actives is 0.95, by construction."""
+    ref = _reference()
+    prep = prepare_knots(ref)
+    low, high = 0.03, 0.40
+    assert float(rank_from_reference(low, prepared=prep, anchors=(low, high))) == (
+        pytest.approx(0.05)
+    )
+    assert float(rank_from_reference(high, prepared=prep, anchors=(low, high))) == (
+        pytest.approx(0.95)
+    )
+
+
+def test_anchoring_leaves_the_reference_quartiles_alone():
+    """The middle of the scale still means the quartiles of drug-like chemical space."""
+    ref = _reference()
+    prep = prepare_knots(ref)
+    q1, med, q3 = np.percentile(ref, [25, 50, 75])
+    anchors = (0.03, 0.40)
+    for value, expected in ((q1, 0.25), (med, 0.50), (q3, 0.75)):
+        assert float(
+            rank_from_reference(value, prepared=prep, anchors=anchors)
+        ) == pytest.approx(expected, abs=1e-3)
+
+
+def test_no_anchors_reproduces_the_unanchored_scale_exactly():
+    """A checkpoint fitted before anchoring must rank bit-for-bit as it always did."""
+    ref = _reference()
+    prep = prepare_knots(ref)
+    grid = np.linspace(1e-9, 1.0, 5_000)
+    assert np.array_equal(
+        rank_from_reference(grid, prepared=prep),
+        rank_from_reference(grid, prepared=prep, anchors=None),
+    )
+
+
+def test_the_anchors_make_the_top_of_the_scale_reachable():
+    """The reason they exist.
+
+    A model whose probabilities stop at 0.45 could otherwise never exceed rank 0.85, so a
+    sixth of the scale was unreachable -- and the ceiling moves with prevalence as much as
+    with skill, so a perfect model on a rare target read lower than a mediocre one on an
+    easy target.
+    """
+    ref = _reference()
+    prep = prepare_knots(ref)
+    ceiling = 0.45
+    unanchored = float(rank_from_reference(ceiling, prepared=prep))
+    anchored = float(rank_from_reference(ceiling, prepared=prep, anchors=(0.03, 0.42)))
+    assert unanchored < 0.87
+    assert anchored > 0.95
+
+
+@pytest.mark.parametrize(
+    "anchors",
+    [
+        (None, 0.05),  # high anchor below Q3
+        (0.5, None),  # low anchor above Q1
+        (0.5, 0.05),  # both incompatible
+    ],
+)
+def test_an_incompatible_anchor_falls_back_to_the_plain_segment(anchors):
+    """It must never produce a non-monotone scale, and must match the unanchored result on
+    the side that fell back."""
+    ref = _reference()
+    prep = prepare_knots(ref)
+    grid = np.linspace(1e-9, 1.0, 5_000)
+    got = rank_from_reference(grid, prepared=prep, anchors=anchors)
+    assert np.array_equal(got, rank_from_reference(grid, prepared=prep))
+
+
+def test_one_side_can_anchor_while_the_other_falls_back():
+    ref = _reference()
+    prep = prepare_knots(ref)
+    q1 = float(np.percentile(ref, 25))
+    # Low anchor is above Q1 and therefore unusable; the high one still applies.
+    got = rank_from_reference(np.array([0.40]), prepared=prep, anchors=(q1 * 2, 0.40))
+    assert float(got[0]) == pytest.approx(0.95)
+
+
+def test_the_anchored_scale_is_monotone_and_continuous():
+    ref = _reference()
+    prep = prepare_knots(ref)
+    low, high = 0.03, 0.40
+    grid = np.linspace(1e-9, 1.0, 50_000)
+    r = rank_from_reference(grid, prepared=prep, anchors=(low, high))
+    assert np.all(np.diff(r) >= 0)
+    assert r.min() >= 0.0 and r.max() <= 1.0
+    q1, q3 = np.percentile(ref, [25, 75])
+    for join in (low, q1, q3, high):
+        below = float(
+            rank_from_reference(join - 1e-9, prepared=prep, anchors=(low, high))
+        )
+        above = float(
+            rank_from_reference(join + 1e-9, prepared=prep, anchors=(low, high))
+        )
+        assert below == pytest.approx(above, abs=1e-6)
+
+
+def test_anchored_ranks_accept_a_scalar():
+    prep = prepare_knots(_reference())
+    assert (
+        0.0
+        <= float(rank_from_reference(0.9, prepared=prep, anchors=(0.03, 0.40)))
+        <= 1.0
+    )

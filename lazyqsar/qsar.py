@@ -18,7 +18,11 @@ from .registry import (  # noqa: F401  (re-exported for backwards compatibility)
     DESCRIPTORS_MODE,
     get_descriptor_type,
 )
-from .ensemble.combine import read_pooled_rank_knots, read_pooled_score_knots
+from .ensemble.combine import (
+    read_pooled_rank_anchors,
+    read_pooled_rank_knots,
+    read_pooled_score_knots,
+)
 from .utils.logging import logger
 from .utils.ranking import prepare_knots, rank_from_reference, subsample_knots
 
@@ -228,6 +232,37 @@ def _rank_band(ranks):
     return {"n": int(ranks.size), "rank_p25": p25, "rank_p50": p50, "rank_p75": p75}
 
 
+def _anchors_from_metadata(meta):
+    """The stored anchor record, in the shape a fitted model holds it."""
+    block = (meta or {}).get("pooled_ranker") or {}
+    if block.get("anchor_low") is None and block.get("anchor_high") is None:
+        return None
+    return {
+        k: block.get(k)
+        for k in (
+            "anchor_low",
+            "anchor_high",
+            "anchor_low_used",
+            "anchor_high_used",
+            "n_actives",
+            "n_inactives",
+        )
+    }
+
+
+def _anchor_pair(anchors):
+    """``(low, high)`` from the stored anchor record, honouring the per-side fallbacks.
+
+    An anchor that was not usable -- it did not sit outside the quartile it belongs to -- is
+    passed as ``None``, so that side behaves exactly as it did before anchoring existed.
+    """
+    if not anchors:
+        return None
+    low = anchors.get("anchor_low") if anchors.get("anchor_low_used") else None
+    high = anchors.get("anchor_high") if anchors.get("anchor_high_used") else None
+    return None if low is None and high is None else (low, high)
+
+
 def _spec_from_attributes(
     names,
     active_indices,
@@ -238,13 +273,15 @@ def _spec_from_attributes(
     prior,
     pooled_knots=None,
     pooled_score_knots=None,
+    pooled_anchors=None,
 ):
     """Build an :class:`EnsembleSpec` from the per-descriptor attribute lists.
 
     The lists are indexed by *full* descriptor position; the spec is sliced down to the
     active ones so the weighting code never has to re-index. *pooled_knots* and
     *pooled_score_knots* are the arguments that are not per-descriptor: each describes the
-    pooled probability of the active set as a whole, so both pass through unsliced.
+    pooled probability of the active set as a whole, so they pass through unsliced -- as
+    do *pooled_anchors*, which pin the scale's tails.
     """
 
     def sliced(seq):
@@ -259,6 +296,7 @@ def _spec_from_attributes(
         population_prior=prior,
         pooled_rank_knots=pooled_knots,
         pooled_score_knots=pooled_score_knots,
+        pooled_rank_anchors=pooled_anchors,
     )
 
 
@@ -360,6 +398,7 @@ class ArtifactWrapper(_EnsemblePredictMixin):
         descriptor_types=None,
         pooled_rank_knots=None,
         pooled_score_knots=None,
+        pooled_rank_anchors=None,
     ):
         self.descriptors = descriptors
         self.artifacts = artifacts
@@ -373,6 +412,7 @@ class ArtifactWrapper(_EnsemblePredictMixin):
         self.descriptor_types = descriptor_types  # list[str] or None
         self.pooled_rank_knots = pooled_rank_knots  # ndarray or None
         self.pooled_score_knots = pooled_score_knots  # (ndarray, ndarray) or None
+        self.pooled_rank_anchors = pooled_rank_anchors  # (low, high) or None
         self._ensemble_cache = {}
 
     def _channels(self, smiles_list):
@@ -423,6 +463,7 @@ class ArtifactWrapper(_EnsemblePredictMixin):
             self.population_prior,
             getattr(self, "pooled_rank_knots", None),
             getattr(self, "pooled_score_knots", None),
+            getattr(self, "pooled_rank_anchors", None),
         )
         return _stack_channels(y_hats, rank_preds, score_preds, ad_scores) + (spec,)
 
@@ -645,7 +686,9 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
         self.pooled_rank_knots_, self.reference_meta_ = (
             self._build_reference_rank_knots()
         )
-        # After the knots, because the band is expressed on the scale they define.
+        # Before the diagnostics, because the band is expressed on the scale the anchors
+        # help define.
+        self.pooled_rank_anchors_ = self._build_rank_anchors(_stacked, y)
         self.oof_diagnostics_ = self._build_oof_diagnostics(_stacked, y)
 
         for row, active in zip(desc_rows, active_mask):
@@ -736,6 +779,67 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
             return None
         return build_pooled_score_knots(*stacked)
 
+    def _build_rank_anchors(self, stacked, y):
+        """Where the rank scale's tails are pinned: the model's own known molecules.
+
+        ``p95`` of the out-of-fold actives becomes rank 0.95 and ``p05`` of the inactives
+        becomes 0.05, so the top of the scale is reachable whatever the model's probability
+        ceiling. Without them the scale runs straight from Q3 to 1.0, which assumes a model
+        can reach certainty -- and a model topping out at p=0.40 could then never exceed
+        rank 0.838, with the ceiling moving as much with prevalence as with skill.
+
+        An anchor that does not sit outside the quartile it belongs to is dropped for that
+        side, which then behaves exactly as it did before anchoring existed. Recorded, never
+        silent: a rank must not quietly mean two different things.
+        """
+        knots = getattr(self, "pooled_rank_knots_", None)
+        if stacked is None or knots is None or not len(knots):
+            return None
+
+        p1 = combine(*stacked[:4], spec=stacked[4], outputs=("proba",)).values["proba"][
+            :, 1
+        ]
+        y = np.asarray(y).ravel()
+        if len(y) != len(p1):
+            return None
+
+        vals, midranks = prepare_knots(knots)
+        q1 = float(np.interp(0.25, midranks, vals))
+        q3 = float(np.interp(0.75, midranks, vals))
+
+        act, inact = p1[y == 1], p1[y == 0]
+        high = float(np.percentile(act, 95)) if act.size else None
+        low = float(np.percentile(inact, 5)) if inact.size else None
+
+        high_used = high is not None and q3 < high < 1.0
+        low_used = low is not None and 0.0 < low < q1
+        if high is not None and not high_used:
+            logger.warning(
+                f"Upper rank anchor unused: p95 of the out-of-fold actives ({high:.3f}) "
+                f"does not exceed the reference's third quartile ({q3:.3f}). The top of "
+                "the scale falls back to a straight line to certainty."
+            )
+        if low is not None and not low_used:
+            logger.warning(
+                f"Lower rank anchor unused: p05 of the out-of-fold inactives ({low:.3f}) "
+                f"is not below the reference's first quartile ({q1:.3f}). The bottom of "
+                "the scale falls back to a straight line to zero."
+            )
+        if act.size and act.size < 20:
+            logger.warning(
+                f"Only {act.size} out-of-fold actives anchor the top of the rank scale; "
+                "it will move noticeably if the model is refitted."
+            )
+
+        return {
+            "anchor_low": low,
+            "anchor_high": high,
+            "anchor_low_used": bool(low_used),
+            "anchor_high_used": bool(high_used),
+            "n_actives": int(act.size),
+            "n_inactives": int(inact.size),
+        }
+
     def _build_oof_diagnostics(self, stacked, y):
         """Advisory numbers describing how this model treats molecules with known labels.
 
@@ -779,7 +883,12 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
             return None
 
         prepared = prepare_knots(knots)
-        ranks = rank_from_reference(p1, prepared=prepared)
+        # Anchored, so the band is in the units `predict_rank` actually returns.
+        ranks = rank_from_reference(
+            p1,
+            prepared=prepared,
+            anchors=_anchor_pair(getattr(self, "pooled_rank_anchors_", None)),
+        )
         out = {
             "actives": _rank_band(ranks[y == 1]),
             "inactives": _rank_band(ranks[y == 0]),
@@ -940,6 +1049,7 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
             getattr(self, "population_prior_", 0.5),
             getattr(self, "pooled_rank_knots_", None),
             getattr(self, "pooled_score_knots_", None),
+            _anchor_pair(getattr(self, "pooled_rank_anchors_", None)),
         )
         return Y, R, S, A, spec
 
@@ -1074,6 +1184,11 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
                 "descriptors": _ref.get("descriptors"),
                 "saturation": _ref.get("saturation"),
             }
+            # The tails are pinned on out-of-fold molecules, which do not travel in the
+            # checkpoint, so the anchors themselves have to.
+            _anchors = getattr(self, "pooled_rank_anchors_", None)
+            if _anchors:
+                meta["pooled_ranker"].update(_anchors)
             # decision_cutoff_raw/proba/logit/lift are one learned threshold in four
             # units. Its rank image used to be a mean of the per-descriptor rank cutoffs,
             # which after the pooled reference lands on a scale nothing emits. Nothing in
@@ -1082,7 +1197,13 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
             _cut_p = meta.get("decision_cutoff_proba")
             if _cut_p is not None:
                 meta["decision_cutoff_rank"] = float(
-                    rank_from_reference(float(_cut_p), prepared=prepare_knots(_knots))
+                    rank_from_reference(
+                        float(_cut_p),
+                        prepared=prepare_knots(_knots),
+                        anchors=_anchor_pair(
+                            getattr(self, "pooled_rank_anchors_", None)
+                        ),
+                    )
                 )
 
         with open(os.path.join(model_dir, "metadata.json"), "w") as f:
@@ -1179,6 +1300,7 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
                 for d in descriptor_types
             ]
             obj.pooled_rank_knots_ = read_pooled_rank_knots(meta)
+            obj.pooled_rank_anchors_ = _anchors_from_metadata(meta)
             obj.pooled_score_knots_ = read_pooled_score_knots(meta)
         else:
             obj.population_prior_ = 0.5
@@ -1251,6 +1373,7 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
                 else None
             )
             pooled_rank_knots = read_pooled_rank_knots(meta)
+            pooled_rank_anchors = read_pooled_rank_anchors(meta)
             pooled_score_knots = read_pooled_score_knots(meta)
 
         descriptors, artifacts, ad_artifacts = _load_descriptor_stack(
@@ -1272,6 +1395,7 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
             population_prior=population_prior,
             descriptor_types=descriptor_types,
             pooled_rank_knots=pooled_rank_knots,
+            pooled_rank_anchors=pooled_rank_anchors,
             pooled_score_knots=pooled_score_knots,
         )
 

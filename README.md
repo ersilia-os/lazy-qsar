@@ -81,12 +81,23 @@ Other prediction methods are `predict_proba`, `predict_logit`, `predict_score`, 
 > identically, so any ordering-only metric (AUROC, AUPRC, BEDROC) gives the same answer
 > from either.
 >
-> **Above 0.75 it is not a percentile.** A molecule at `rank = 0.9` beats far more than 90%
-> of drug-like space. The scale is deliberately not calibrated out there: a selective model
-> scores generic chemistry into a narrow band -- measured 0.065 to 0.334 on an antimicrobial
-> model, while its actives sat at 0.4 to 0.95 -- so any calibrated scale pins every active
-> at 1.0 and a hit list becomes an undifferentiated wall. Outside the quartiles `rank` is a
-> bounded linear function of probability instead, reaching 1.0 only at certainty.
+> **Outside the quartiles it is not a percentile.** The tails are pinned on molecules whose
+> labels are known: `0.95` is the 95th percentile of the model's out-of-fold actives and
+> `0.05` the 5th percentile of its inactives, with straight lines between the anchors. So a
+> molecule at `rank = 0.9` beats far more than 90% of drug-like space, and `rank = 0.95`
+> means "at the top of what this model's known actives reach".
+>
+> The tails are anchored because scaling straight to 1.0 assumes a model can reach
+> probability 1.0, and many cannot -- calibrators clip to the range seen in training, and a
+> calibrated probability is bounded by how rare actives are. A model topping out at p = 0.40
+> could never exceed rank 0.838, and since that ceiling moves with prevalence as much as
+> with skill, a *perfect* model on a rare target read lower than a mediocre one on an easy
+> target. Anchoring removes that, so ranks are comparable across tasks of different
+> prevalence.
+>
+> The cost: the top of the scale no longer distinguishes a strong model from a weak one --
+> every model's top actives read 0.95 by construction. That signal lives in
+> `oof_diagnostics.screening_auc` instead, which is reported in every checkpoint.
 >
 > One consequence: roughly a quarter of a generic screening library lands just above 0.75,
 > because the top quartile of generic chemistry is still generic.
@@ -162,7 +173,7 @@ The output CSV contains one column per task, ordered alphabetically by task name
 | type | meaning |
 |------|---------|
 | `proba` (default) | calibrated probability of the positive class |
-| `rank` | position against the 50,000-molecule drug-like reference library, anchored on its quartiles |
+| `rank` | position against the 50,000-molecule reference library (quartiles) with tails anchored on known actives and inactives |
 | `logit` | log-odds of the calibrated probability |
 | `lift` | probability divided by the training-set positive rate |
 | `score` | the pre-calibration scale, read off the calibrated probability |

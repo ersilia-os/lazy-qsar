@@ -201,10 +201,19 @@ def test_the_checkpoint_carries_the_reference_and_a_matching_cutoff(scored):
     assert len(knots) > 0
     assert knots == sorted(knots), "knots must be stored ascending"
     # decision_cutoff_rank is reported, never thresholded on, but it should still be the
-    # learned probability cutoff expressed in the units `rank` now uses.
+    # learned probability cutoff expressed in the units `rank` now uses -- which means
+    # through the tail anchors as well, not just the reference knots. Recomputing it
+    # without them is how a checkpoint ends up disagreeing with its own scale.
+    block = meta["pooled_ranker"]
+    anchors = (
+        block.get("anchor_low") if block.get("anchor_low_used") else None,
+        block.get("anchor_high") if block.get("anchor_high_used") else None,
+    )
     expected = float(
         rank_from_reference(
-            meta["decision_cutoff_proba"], prepared=prepare_knots(np.asarray(knots))
+            meta["decision_cutoff_proba"],
+            prepared=prepare_knots(np.asarray(knots)),
+            anchors=anchors if any(a is not None for a in anchors) else None,
         )
     )
     assert meta["decision_cutoff_rank"] == pytest.approx(expected)

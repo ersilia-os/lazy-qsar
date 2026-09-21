@@ -138,37 +138,34 @@ def score_from_knots(p1, knots):
     return np.interp(np.asarray(p1, dtype=np.float64), x, y)
 
 
-def rank_from_reference(scores, knots=None, prepared=None):
-    """Position against a reference library, anchored on its quartiles.
+def rank_from_reference(scores, knots=None, prepared=None, anchors=None):
+    """Position against a reference library, with tails anchored on known molecules.
 
-    Between the reference's first and third quartiles this **is** the exact percentile, so
-    0.25, 0.50 and 0.75 are precisely the quartiles of drug-like chemical space. Outside
-    that range it continues as a bounded linear function of probability::
+    Five segments. The middle says where a molecule sits in drug-like chemical space; the
+    ends say how it compares to what this model already knows::
 
-        Q1 <= p <= Q3   ECDF(p)                        (runs 0.25 -> 0.75 by definition)
-        p > Q3          0.75 + 0.25 * (p - Q3)/(1 - Q3)
-        p < Q1          0.25 * p / Q1
+        p < p05            0.05 * p / p05                      -> 0.00 .. 0.05
+        p05 -> Q1          linear                              -> 0.05 .. 0.25
+        Q1 <= p <= Q3      ECDF(p), the exact percentile        -> 0.25 .. 0.75
+        Q3 -> p95          linear                              -> 0.75 .. 0.95
+        p > p95            linear                              -> 0.95 .. 1.00
 
-    Above Q3 the value is therefore **not** a percentile: a molecule at 0.95 beats far more
-    than 95% of drug-like space. It is a readable, bounded, order-preserving scale.
+    Q1 and Q3 are the reference library's own quartiles, recovered from the knots, so 0.25,
+    0.50 and 0.75 are exactly the quartiles of drug-like chemical space and between them the
+    value is the true percentile. ``p05``/``p95`` are the 5th and 95th percentiles of this
+    model's out-of-fold inactives and actives.
 
-    Why not the plain ECDF everywhere. A selective model scores generic chemistry low --
-    measured on an antimicrobial model, the 50,000 reference molecules spanned a pooled
-    probability of only 0.065 to 0.334, while its actives sat at 0.4 to 0.95, which is two
-    to eight reference-IQRs above the reference median. An ECDF pins every one of them at
-    exactly 1.0, and so does any other scale calibrated to the reference's spread: a
-    logistic fitted to its quartiles only moves from 0.9916 to 0.99999999 across that whole
-    range. Being eight IQRs outside generic chemistry *is* the model working, so a
-    calibrated measure has no choice but to say "at the top" -- which leaves a hit list as
-    an undifferentiated wall of 1.000 and stops `rank` ordering molecules at the one end
-    anyone looks at.
+    Why the tails are anchored at all. Scaling straight from Q3 to 1.0 assumes a model can
+    reach probability 1.0, and many cannot: calibrators clip to the range seen in training,
+    ensemble averaging pulls extremes inward, and a calibrated probability is bounded by how
+    rare actives are. A model topping out at p=0.40 could then never exceed rank 0.838, so a
+    sixth of the scale was unreachable -- and since the ceiling moves with prevalence as much
+    as with skill, a *perfect* model on a 1%-prevalence task read lower than a mediocre one
+    on an easy task. Anchoring removes that.
 
-    Why the quartiles and not the range. Q1 and Q3 barely move under resampling or a refit.
-    The minimum and maximum of a 50,000-sample are order statistics, the least reproducible
-    numbers in the distribution, so anchoring on them would put the scale's boundaries
-    somewhere different for every model. They are deliberately unused, which also leaves
-    this construction with no free parameter: `proba` is already bounded, so the outer
-    segments have a natural endpoint.
+    What it costs: every model's top actives read 0.95 by construction, so the top of the
+    scale no longer distinguishes a strong model from a weak one. That signal lives in
+    ``oof_diagnostics.screening_auc`` instead, where it is explicit and testable.
 
     Parameters
     ----------
@@ -177,6 +174,11 @@ def rank_from_reference(scores, knots=None, prepared=None):
         rank through this function.
     knots, prepared
         The reference, as raw knots or as the output of :func:`prepare_knots`.
+    anchors : tuple, optional
+        ``(p05_inactives, p95_actives)``. Either may be ``None``. An anchor that is absent,
+        or that does not sit outside the quartile it belongs to, falls back to a single
+        linear segment to the corresponding extreme -- the behaviour when no anchors exist
+        at all. The two sides are independent.
 
     Returns
     -------
@@ -190,24 +192,36 @@ def rank_from_reference(scores, knots=None, prepared=None):
         # One distinct value carries no interior at all. Fall back to the two outer
         # segments meeting at it, which still says which side of it a molecule falls on.
         q1 = q3 = float(vals[0])
-        interior = np.full(scores.shape, 0.5)
+        ranks = np.full(scores.shape, 0.5)
     else:
         # Inverse interpolation: the probabilities at which the reference's own ECDF
         # crosses 0.25 and 0.75.
         q1 = float(np.interp(0.25, midranks, vals))
         q3 = float(np.interp(0.75, midranks, vals))
-        interior = np.interp(scores, vals, midranks)
+        ranks = np.interp(scores, vals, midranks)
+
+    low, high = anchors or (None, None)
 
     # `np.where`, never boolean assignment: `np.interp` of a scalar returns a numpy scalar,
-    # which has no item assignment.
-    ranks = interior
+    # which has no item assignment. Both branches are evaluated, so every denominator is
+    # proven non-zero by the guard before it is used.
+    if q3 >= q1 and q3 < 1.0:
+        if high is not None and q3 < high < 1.0:
+            near = 0.75 + 0.20 * (scores - q3) / (high - q3)
+            far = 0.95 + 0.05 * (scores - high) / (1.0 - high)
+            ranks = np.where(scores > q3, np.where(scores > high, far, near), ranks)
+        else:
+            # No usable upper anchor: one segment to certainty, as before anchoring.
+            ranks = np.where(
+                scores > q3, 0.75 + 0.25 * (scores - q3) / (1.0 - q3), ranks
+            )
 
-    if q3 < 1.0 and q3 >= q1:
-        upper = 0.75 + 0.25 * (scores - q3) / (1.0 - q3)
-        ranks = np.where(scores > q3, upper, ranks)
-
-    if q1 > 0.0 and q3 >= q1:
-        lower = 0.25 * scores / q1
-        ranks = np.where(scores < q1, lower, ranks)
+    if q3 >= q1 and q1 > 0.0:
+        if low is not None and 0.0 < low < q1:
+            near = 0.05 + 0.20 * (scores - low) / (q1 - low)
+            far = 0.05 * scores / low
+            ranks = np.where(scores < q1, np.where(scores < low, far, near), ranks)
+        else:
+            ranks = np.where(scores < q1, 0.25 * scores / q1, ranks)
 
     return np.clip(ranks, 0.0, 1.0)

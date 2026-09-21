@@ -97,3 +97,44 @@ def test_a_worthless_model_says_so(tmp_path):
     assert diag["actives"]["rank_p50"] < 0.85, "its actives must not look like actives"
     # The two classes must be indistinguishable, which is what "learned nothing" means.
     assert diag["actives"]["rank_p25"] < diag["inactives"]["rank_p75"]
+
+
+def test_the_checkpoint_carries_the_rank_anchors(real):
+    """The tails are pinned on out-of-fold molecules, which do not travel in a checkpoint,
+    so the anchors themselves must."""
+    _, _, meta = real
+    block = meta["pooled_ranker"]
+    assert block["anchor_high"] is not None and block["anchor_low"] is not None
+    assert block["anchor_high_used"] and block["anchor_low_used"]
+    assert block["n_actives"] == 54 and block["n_inactives"] == 179
+
+
+def test_the_anchors_put_the_actives_p95_at_the_top_of_the_scale(real):
+    model, smiles, _ = real
+    _, y = load_reference_dataset()
+    ranks = model.predict_rank(smiles_list=smiles)[:, 1]
+    actives = ranks[np.asarray(y) == 1]
+    assert float(np.percentile(actives, 95)) == pytest.approx(0.95, abs=0.01)
+
+
+def test_a_reloaded_checkpoint_ranks_like_the_model_it_came_from(real, tmp_path):
+    """The regression this exists for.
+
+    `ArtifactWrapper` -- the ONNX path, which is what the Ersilia Model Hub deploys --
+    built its spec through a different call site than the fitted estimator, and silently
+    dropped the anchors. Probabilities still agreed to 9e-09 while ranks moved by 0.096,
+    because the unanchored fallback is a different function, not a rounding difference.
+    Nothing in the output would have shown it.
+    """
+    model, smiles, _ = real
+    directory = str(tmp_path / "roundtrip")
+    model.save_raw(directory)
+    loaded = LazyClassifierQSAR.load(directory)
+
+    query = smiles[:60]
+    fitted_rank = model.predict_rank(smiles_list=query)[:, 1]
+    loaded_rank = loaded.predict_rank(smiles_list=query)[:, 1]
+    assert np.allclose(fitted_rank, loaded_rank, atol=1e-4)
+    assert loaded.pooled_rank_anchors is not None, (
+        "the ONNX path must carry the anchors"
+    )

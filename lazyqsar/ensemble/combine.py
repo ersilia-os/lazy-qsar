@@ -100,6 +100,28 @@ def read_pooled_rank_knots(metadata):
     return np.asarray(knots, dtype=np.float64)
 
 
+def read_pooled_rank_anchors(metadata):
+    """Pull the rank scale's tail anchors out of a task-level ``metadata.json``.
+
+    ``(p05_inactives, p95_actives)`` in probability units, either of which may be ``None``.
+    They cannot be derived at predict time -- only the reference knots travel in the
+    checkpoint, not the out-of-fold molecules -- so they have to be stored.
+
+    A checkpoint without them ranks exactly as one fitted before anchoring existed, because
+    :func:`lazyqsar.utils.ranking.rank_from_reference` falls back per side.
+    """
+    block = (metadata or {}).get(POOLED_RANKER_KEY) or {}
+    if block.get("source") != REFERENCE_SOURCE:
+        return None
+    low, high = block.get("anchor_low"), block.get("anchor_high")
+    if low is None and high is None:
+        return None
+    return (
+        None if low is None else float(low),
+        None if high is None else float(high),
+    )
+
+
 def read_pooled_score_knots(metadata):
     """Pull the pooled score map out of a task-level ``metadata.json``, or None.
 
@@ -159,6 +181,7 @@ class EnsembleSpec:
     population_prior: float = 0.5
     decision_cutoff: float = _DEFAULT_CUTOFF
     pooled_rank_knots: np.ndarray | None = None
+    pooled_rank_anchors: tuple | None = None
     pooled_score_knots: tuple[np.ndarray, np.ndarray] | None = None
 
     @classmethod
@@ -212,6 +235,7 @@ class EnsembleSpec:
 
         prior = metadata.get("population_prior", 0.5)
         pooled_knots = read_pooled_rank_knots(metadata)
+        pooled_anchors = read_pooled_rank_anchors(metadata)
         pooled_score = read_pooled_score_knots(metadata)
         # decision_cutoff is deliberately NOT read from metadata["decision_cutoff_proba"].
         # That learned, balanced-accuracy-optimal threshold exists in every checkpoint but
@@ -234,6 +258,7 @@ class EnsembleSpec:
                 ),
                 population_prior=float(prior if prior is not None else 0.5),
                 pooled_rank_knots=pooled_knots,
+                pooled_rank_anchors=pooled_anchors,
                 pooled_score_knots=pooled_score,
             ),
             active_names,
@@ -497,7 +522,11 @@ def combine(Y, R=None, S=None, A=None, *, spec, outputs=OUTPUT_NAMES, cutoff=Non
         # library, whose pooled probabilities stop well below 1 for any selective model
         # (measured: 0.065 to 0.334). Clamping would tie every active at exactly 1.0 and
         # break the invariant that rank orders molecules exactly as proba does.
-        r1 = rank_from_reference(p1, prepared=prepare_knots(pooled_knots))
+        r1 = rank_from_reference(
+            p1,
+            prepared=prepare_knots(pooled_knots),
+            anchors=getattr(spec, "pooled_rank_anchors", None),
+        )
         values["rank"] = np.vstack((1 - r1, r1)).T
     if "score" in wanted:
         if pooled_score:
