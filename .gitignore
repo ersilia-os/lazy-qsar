@@ -162,3 +162,6 @@ dmypy.json
 # rebuilds. Outside data/ on purpose, so `eosvc upload --path data` cannot sweep 2.1 GB of
 # it into an immutable published prefix.
 /build/
+
+# Written by eosvc when it resolves this repo; derived from access.json, not authored.
+.eosvc/
