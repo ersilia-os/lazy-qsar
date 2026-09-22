@@ -20,7 +20,12 @@ import lazyqsar
 _BLOCKER = """
     import sys
 
-    BANNED = {"sklearn", "xgboost", "rdkit", "torch", "chemprop", "scipy", "joblib"}
+    BANNED = {
+        "sklearn", "xgboost", "rdkit", "torch", "chemprop", "scipy", "joblib",
+        # Fetching the reference library is fit-time work. A deployed model carries its
+        # knots in metadata.json, so an inference container must never inherit an S3 stack.
+        "eosvc", "boto3", "botocore", "s3transfer",
+    }
     # Dotted, because the offence is not "something heavy loaded" but "a module that
     # opens sockets and wants hundreds of megabytes of cache reached the path an Ersilia
     # template runs". A top-level check can never catch a submodule of lazyqsar itself.
