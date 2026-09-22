@@ -28,6 +28,7 @@ descriptor values, recomputed at fit time and compared.
 from __future__ import annotations
 
 import hashlib
+import importlib.metadata
 import json
 import platform
 import sys
@@ -69,10 +70,17 @@ def _versions() -> dict:
         ("chemeleon", "chemeleon"),
         ("h5py", "h5py"),
     ):
+        # importlib.metadata first: `chemeleon` ships no `__version__`, so importing and
+        # reading the attribute recorded None for a package that was installed and whose
+        # version was knowable -- a silent hole in the drift record for one of the five
+        # descriptors.
         try:
-            out[name] = __import__(module).__version__
+            out[name] = importlib.metadata.version(name)
         except Exception:
-            out[name] = None
+            try:
+                out[name] = __import__(module).__version__
+            except Exception:
+                out[name] = None
     try:
         from rdkit.Chem import rdBase
 
