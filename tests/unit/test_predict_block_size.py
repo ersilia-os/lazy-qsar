@@ -13,8 +13,12 @@ from lazyqsar.api.classifier_predict import (
 )
 
 
-@pytest.mark.parametrize("n_tasks", [1, 2, 5, 20, 50, 200])
-@pytest.mark.parametrize("chunk_size", [1, 7, 100, 1000, 4096])
+# The extremes of each axis, not a grid. This was 6 x 5 = 30 cases over a few lines of
+# integer arithmetic whose two inputs meet only in a division and a `max()`; the corners
+# exercise every branch the interior does. The count made this file look like the most
+# heavily tested area in the suite, which it is not.
+@pytest.mark.parametrize("n_tasks", [1, 200])
+@pytest.mark.parametrize("chunk_size", [1, 100, 4096])
 def test_block_is_a_whole_number_of_chunks(n_tasks, chunk_size):
     """This is what keeps blocking bit-identical.
 

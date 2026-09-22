@@ -192,7 +192,7 @@ def test_the_checkpoint_carries_the_reference_and_a_matching_cutoff(scored):
     """Without the stored reference a loaded model silently reverts to the old rank."""
     import json
 
-    from lazyqsar.utils.ranking import prepare_knots, rank_from_knots
+    from lazyqsar.utils.ranking import prepare_knots, rank_from_reference
 
     with open(os.path.join(scored["task_dir"], "metadata.json")) as f:
         meta = json.load(f)
@@ -201,13 +201,24 @@ def test_the_checkpoint_carries_the_reference_and_a_matching_cutoff(scored):
     assert len(knots) > 0
     assert knots == sorted(knots), "knots must be stored ascending"
     # decision_cutoff_rank is reported, never thresholded on, but it should still be the
-    # learned probability cutoff expressed in the units `rank` now uses.
+    # learned probability cutoff expressed in the units `rank` now uses -- which means
+    # through the tail anchors as well, not just the reference knots. Recomputing it
+    # without them is how a checkpoint ends up disagreeing with its own scale.
+    block = meta["pooled_ranker"]
+    anchors = (
+        block.get("anchor_low") if block.get("anchor_low_used") else None,
+        block.get("anchor_high") if block.get("anchor_high_used") else None,
+    )
     expected = float(
-        rank_from_knots(
-            meta["decision_cutoff_proba"], prepared=prepare_knots(np.asarray(knots))
+        rank_from_reference(
+            meta["decision_cutoff_proba"],
+            prepared=prepare_knots(np.asarray(knots)),
+            anchors=anchors if any(a is not None for a in anchors) else None,
         )
     )
     assert meta["decision_cutoff_rank"] == pytest.approx(expected)
+    assert meta["pooled_ranker"]["source"] == "reference_library"
+    assert meta["pooled_ranker"]["descriptors"]
 
 
 def test_every_load_route_carries_the_reference(scored):
@@ -271,18 +282,16 @@ def test_every_load_route_agrees_on_rank(scored):
     )
 
 
-def test_a_checkpoint_without_the_reference_falls_back_to_the_old_rank(
-    scored, tmp_path
-):
-    """Backward compatibility, on a real checkpoint rather than a synthetic spec.
+def test_a_checkpoint_without_the_reference_refuses_to_rank(scored, tmp_path):
+    """Strip the reference and `rank` must refuse, while everything else keeps working.
 
-    Strip the key and the model must reproduce the pre-v3.5.0 weighted mean of
-    per-descriptor percentiles exactly -- that is what every published checkpoint does.
+    Every checkpoint published before v3.6 is in this state. Its `pooled_ranker` holds
+    out-of-fold knots, which are indistinguishable from library knots once read, so
+    reporting them would answer "beats 99% of drug-like space" with a training-set
+    percentile. The other five outputs did not change meaning and are not withheld.
     """
     import json
     import shutil
-
-    from lazyqsar.ensemble import combine
 
     legacy_dir = str(tmp_path / "legacy")
     shutil.copytree(scored["task_dir"], legacy_dir)
@@ -295,16 +304,11 @@ def test_a_checkpoint_without_the_reference_falls_back_to_the_old_rank(
 
     with contextlib.redirect_stdout(io.StringIO()):
         legacy = LazyClassifierQSAR.load(legacy_dir)
-        Y, R, S, A, spec = legacy._channels(scored["query"])
-        got = legacy.predict_rank(scored["query"])[:, 1]
+        proba = legacy.predict_proba(scored["query"])[:, 1]
+        legacy.predict_logit(scored["query"])
+        legacy.predict_lift(scored["query"])
+        legacy.predict(scored["query"])
+        with pytest.raises(ValueError, match="no reference-library rank"):
+            legacy.predict_rank(scored["query"])
 
-    assert spec.pooled_rank_knots is None
-    expected = (combine(Y, R, S, A, spec=spec, outputs=("rank",)).weights * R).sum(
-        axis=1
-    )
-    np.testing.assert_array_equal(got, expected)
-    # Deliberately no assertion that this differs from the pooled answer. On a
-    # single-descriptor model the weighted mean has one term and the two poolings
-    # coincide to ~4e-06, so such an assertion would pass on noise and say nothing. The
-    # case where they genuinely diverge needs more than one descriptor, and is pinned in
-    # tests/unit/test_pooled_rank_reference.py.
+    assert np.all(np.isfinite(proba)), "proba must survive a missing reference"

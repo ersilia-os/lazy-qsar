@@ -7,7 +7,6 @@ import numpy as np
 from .ensemble import (
     OUTPUT_NAMES,
     EnsembleSpec,
-    build_pooled_rank_knots,
     build_pooled_score_knots,
     combine,
     mask_rows,
@@ -19,9 +18,13 @@ from .registry import (  # noqa: F401  (re-exported for backwards compatibility)
     DESCRIPTORS_MODE,
     get_descriptor_type,
 )
-from .ensemble.combine import read_pooled_rank_knots, read_pooled_score_knots
+from .ensemble.combine import (
+    read_pooled_rank_anchors,
+    read_pooled_rank_knots,
+    read_pooled_score_knots,
+)
 from .utils.logging import logger
-from .utils.ranking import prepare_knots, rank_from_knots
+from .utils.ranking import prepare_knots, rank_from_reference, subsample_knots
 
 
 def _smiles_md5(smiles_list):
@@ -142,7 +145,14 @@ class _EnsemblePredictMixin:
             # that row should keep its score from the descriptors that did work.
             bad = invalid_smiles_indices(smiles_list)
             Y, R, S, A, spec = self._channels(smiles_list)
-            result = combine(Y, R, S, A, spec=spec, outputs=OUTPUT_NAMES)
+            # Narrowed, not blanket. `combine` raises for `rank` on a checkpoint with no
+            # reference library, and this call asks for every output at once -- so without
+            # this the raise would take `predict_proba` down with it on every checkpoint
+            # fitted before v3.6. `predict_rank` raises it deliberately instead.
+            wanted = OUTPUT_NAMES
+            if getattr(spec, "pooled_rank_knots", None) is None:
+                wanted = tuple(n for n in OUTPUT_NAMES if n != "rank")
+            result = combine(Y, R, S, A, spec=spec, outputs=wanted)
             if bad:
                 logger.warning(
                     f"{len(bad)} SMILES could not be parsed; their predictions are NaN "
@@ -163,8 +173,21 @@ class _EnsemblePredictMixin:
         return self._combined(smiles_list).values["logit"]
 
     def predict_rank(self, smiles_list):
-        """Weighted quantile ranks in [0, 1], shape (n_samples, 2)."""
-        return self._combined(smiles_list).values["rank"]
+        """Percentile against the reference library, shape (n_samples, 2).
+
+        ``0.99`` means the molecule scores above 99% of a fixed 50,000-molecule sample of
+        drug-like chemical space -- not above 99% of this model's training set, which is
+        what versions before 3.6 reported.
+
+        Raises ``ValueError`` on a checkpoint that carries no reference library. The other
+        five outputs still work; only this one changed meaning.
+        """
+        values = self._combined(smiles_list).values
+        if "rank" not in values:
+            from .ensemble.combine import NO_REFERENCE_MESSAGE
+
+            raise ValueError(NO_REFERENCE_MESSAGE)
+        return values["rank"]
 
     def predict_score(self, smiles_list):
         """Weighted raw (pre-calibration) scores, shape (n_samples, 2)."""
@@ -195,6 +218,51 @@ class _EnsemblePredictMixin:
         return labels.astype(int)
 
 
+def _rank_band(ranks):
+    """Quartiles of a set of ranks, or ``None`` when the class is empty.
+
+    Quartiles rather than a mean: the point is to say where known molecules *sit*, and a
+    band a user can compare a single compound against is more useful than a centre.
+    """
+    ranks = np.asarray(ranks, dtype=np.float64)
+    ranks = ranks[np.isfinite(ranks)]
+    if ranks.size == 0:
+        return None
+    p25, p50, p75 = (float(v) for v in np.percentile(ranks, [25, 50, 75]))
+    return {"n": int(ranks.size), "rank_p25": p25, "rank_p50": p50, "rank_p75": p75}
+
+
+def _anchors_from_metadata(meta):
+    """The stored anchor record, in the shape a fitted model holds it."""
+    block = (meta or {}).get("pooled_ranker") or {}
+    if block.get("anchor_low") is None and block.get("anchor_high") is None:
+        return None
+    return {
+        k: block.get(k)
+        for k in (
+            "anchor_low",
+            "anchor_high",
+            "anchor_low_used",
+            "anchor_high_used",
+            "n_actives",
+            "n_inactives",
+        )
+    }
+
+
+def _anchor_pair(anchors):
+    """``(low, high)`` from the stored anchor record, honouring the per-side fallbacks.
+
+    An anchor that was not usable -- it did not sit outside the quartile it belongs to -- is
+    passed as ``None``, so that side behaves exactly as it did before anchoring existed.
+    """
+    if not anchors:
+        return None
+    low = anchors.get("anchor_low") if anchors.get("anchor_low_used") else None
+    high = anchors.get("anchor_high") if anchors.get("anchor_high_used") else None
+    return None if low is None and high is None else (low, high)
+
+
 def _spec_from_attributes(
     names,
     active_indices,
@@ -205,13 +273,15 @@ def _spec_from_attributes(
     prior,
     pooled_knots=None,
     pooled_score_knots=None,
+    pooled_anchors=None,
 ):
     """Build an :class:`EnsembleSpec` from the per-descriptor attribute lists.
 
     The lists are indexed by *full* descriptor position; the spec is sliced down to the
     active ones so the weighting code never has to re-index. *pooled_knots* and
     *pooled_score_knots* are the arguments that are not per-descriptor: each describes the
-    pooled probability of the active set as a whole, so both pass through unsliced.
+    pooled probability of the active set as a whole, so they pass through unsliced -- as
+    do *pooled_anchors*, which pin the scale's tails.
     """
 
     def sliced(seq):
@@ -226,6 +296,7 @@ def _spec_from_attributes(
         population_prior=prior,
         pooled_rank_knots=pooled_knots,
         pooled_score_knots=pooled_score_knots,
+        pooled_rank_anchors=pooled_anchors,
     )
 
 
@@ -327,6 +398,7 @@ class ArtifactWrapper(_EnsemblePredictMixin):
         descriptor_types=None,
         pooled_rank_knots=None,
         pooled_score_knots=None,
+        pooled_rank_anchors=None,
     ):
         self.descriptors = descriptors
         self.artifacts = artifacts
@@ -340,6 +412,7 @@ class ArtifactWrapper(_EnsemblePredictMixin):
         self.descriptor_types = descriptor_types  # list[str] or None
         self.pooled_rank_knots = pooled_rank_knots  # ndarray or None
         self.pooled_score_knots = pooled_score_knots  # (ndarray, ndarray) or None
+        self.pooled_rank_anchors = pooled_rank_anchors  # (low, high) or None
         self._ensemble_cache = {}
 
     def _channels(self, smiles_list):
@@ -390,6 +463,7 @@ class ArtifactWrapper(_EnsemblePredictMixin):
             self.population_prior,
             getattr(self, "pooled_rank_knots", None),
             getattr(self, "pooled_score_knots", None),
+            getattr(self, "pooled_rank_anchors", None),
         )
         return _stack_channels(y_hats, rank_preds, score_preds, ad_scores) + (spec,)
 
@@ -537,7 +611,7 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
             # reliability signal: high |rank - 0.5| should map to low error.
             try:
                 _p = model.predict_proba(X=X)[:, 1]
-                _r = model.predict_rank(X=X)[:, 1]
+                _r = model._oof_percentile(X=X)[:, 1]
                 _err = np.abs(_p - y.astype(float))
                 _sidx = np.argsort(_r)
                 _rs, _es = _r[_sidx], _err[_sidx]
@@ -602,38 +676,77 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
         self.active_descriptors_ = active_mask
         self.ad_hard_cutoffs_ = _ad_hard_cutoffs_raw
 
-        self.pooled_rank_knots_, self.pooled_score_knots_ = (
-            self._build_pooled_references(_oof_channels, _train_ad)
+        # Cleared before the build, not after: `_channels` passes `pooled_rank_knots_`
+        # into the spec, so a refit that reused the attribute would calibrate the new
+        # reference against the previous fit's knots.
+        self.pooled_rank_knots_ = None
+        self.reference_meta_ = None
+        _stacked = self._oof_channels_stacked(_oof_channels, _train_ad)
+        self.pooled_score_knots_ = self._build_pooled_score_map(_stacked)
+        self.pooled_rank_knots_, self.reference_meta_ = (
+            self._build_reference_rank_knots()
         )
+        # Before the diagnostics, because the band is expressed on the scale the anchors
+        # help define.
+        self.pooled_rank_anchors_ = self._build_rank_anchors(_stacked, y)
+        self.oof_diagnostics_ = self._build_oof_diagnostics(_stacked, y)
 
         for row, active in zip(desc_rows, active_mask):
             row["active"] = active
 
         logger.rule()
         logger.descriptor_table(desc_rows)
+        self._log_oof_diagnostics()
 
-    def _build_pooled_references(self, oof_channels, train_ad):
-        """Learn the pooled out-of-fold references ``rank`` and ``score`` report against.
+    def _log_oof_diagnostics(self):
+        """Print the advisory numbers where the person who can act on them is watching."""
+        diag = getattr(self, "oof_diagnostics_", None)
+        if not diag:
+            return
+        for label in ("actives", "inactives"):
+            band = diag.get(label)
+            if band:
+                logger.info(
+                    f"{label:>9} (n={band['n']}) rank "
+                    f"{band['rank_p25']:.3f} / {band['rank_p50']:.3f} / "
+                    f"{band['rank_p75']:.3f}  (p25/p50/p75)"
+                )
+        auc = diag.get("screening_auc")
+        if auc is not None:
+            logger.info(
+                f"  screening AUC {auc:.3f}  (actives vs the reference library -- "
+                "whether actives rise above generic chemistry, which oof_auc does not ask)"
+            )
+        hit = diag.get("generic_hit_rate")
+        if hit is not None:
+            logger.info(
+                f"  this model would call {hit:.2%} of drug-like chemical space active"
+            )
 
-        Must run after the active set is settled: the reference describes the pooled
-        probability of exactly the descriptors that will be scored, and a reference built
-        over three descriptors does not describe the pooled probability of two.
+    def _oof_channels_stacked(self, oof_channels, train_ad):
+        """Stack the per-descriptor out-of-fold channels into ``(Y, R, S, A, spec)``.
 
-        Returns ``None`` -- and ``rank`` keeps its pre-v3.5.0 behaviour -- unless every
-        active descriptor supplied out-of-fold channels. A reference assembled from a
-        subset would still be monotone and still lie in [0, 1], so nothing downstream
-        could tell it was calibrated against the wrong distribution.
+        Extracted because two things need it -- the ``score`` map and the out-of-fold
+        diagnostics -- and the stacking has to match what :meth:`_channels` does exactly.
+        Two copies of it would be two chances to drift.
+
+        Must run after the active set is settled: a stack over three descriptors does not
+        describe the pooled probability of two.
+
+        Returns ``None`` unless *every* active descriptor supplied out-of-fold channels.
+        Anything assembled from a subset would still be monotone and still lie in range, so
+        nothing downstream could tell it had been built against the wrong distribution.
         """
         active_indices = [i for i, a in enumerate(self.active_descriptors_) if a]
         if not active_indices:
-            return None, None
+            return None
         cols = [oof_channels[i] for i in active_indices]
         if any(c is None for c in cols):
             logger.debug(
-                "No pooled references: at least one active descriptor has no "
+                "No pooled out-of-fold stack: at least one active descriptor has no "
                 "out-of-fold predictions."
             )
-            return None, None
+            return None
 
         Y = np.column_stack([c[0] for c in cols])
         R = np.column_stack([c[1] for c in cols])
@@ -652,27 +765,273 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
             self.ad_hard_cutoffs_,
             self.population_prior_,
         )
-        return (
-            build_pooled_rank_knots(Y, R, S, A, spec),
-            build_pooled_score_knots(Y, R, S, A, spec),
+        return Y, R, S, A, spec
+
+    def _build_pooled_score_map(self, stacked):
+        """Learn the pooled out-of-fold map ``score`` is read back through.
+
+        Out-of-fold, not reference-library, and deliberately so: this is a
+        probability-to-raw-score map, a property of *this model's* calibrators rather than
+        of any population, and the training data covers the high-probability region a
+        generic library barely reaches.
+        """
+        if stacked is None:
+            return None
+        return build_pooled_score_knots(*stacked)
+
+    def _build_rank_anchors(self, stacked, y):
+        """Where the rank scale's tails are pinned: the model's own known molecules.
+
+        ``p95`` of the out-of-fold actives becomes rank 0.95 and ``p05`` of the inactives
+        becomes 0.05, so the top of the scale is reachable whatever the model's probability
+        ceiling. Without them the scale runs straight from Q3 to 1.0, which assumes a model
+        can reach certainty -- and a model topping out at p=0.40 could then never exceed
+        rank 0.838, with the ceiling moving as much with prevalence as with skill.
+
+        An anchor that does not sit outside the quartile it belongs to is dropped for that
+        side, which then behaves exactly as it did before anchoring existed. Recorded, never
+        silent: a rank must not quietly mean two different things.
+        """
+        knots = getattr(self, "pooled_rank_knots_", None)
+        if stacked is None or knots is None or not len(knots):
+            return None
+
+        p1 = combine(*stacked[:4], spec=stacked[4], outputs=("proba",)).values["proba"][
+            :, 1
+        ]
+        y = np.asarray(y).ravel()
+        if len(y) != len(p1):
+            return None
+
+        vals, midranks = prepare_knots(knots)
+        q1 = float(np.interp(0.25, midranks, vals))
+        q3 = float(np.interp(0.75, midranks, vals))
+
+        act, inact = p1[y == 1], p1[y == 0]
+        high = float(np.percentile(act, 95)) if act.size else None
+        low = float(np.percentile(inact, 5)) if inact.size else None
+
+        high_used = high is not None and q3 < high < 1.0
+        low_used = low is not None and 0.0 < low < q1
+        if high is not None and not high_used:
+            logger.warning(
+                f"Upper rank anchor unused: p95 of the out-of-fold actives ({high:.3f}) "
+                f"does not exceed the reference's third quartile ({q3:.3f}). The top of "
+                "the scale falls back to a straight line to certainty."
+            )
+        if low is not None and not low_used:
+            logger.warning(
+                f"Lower rank anchor unused: p05 of the out-of-fold inactives ({low:.3f}) "
+                f"is not below the reference's first quartile ({q1:.3f}). The bottom of "
+                "the scale falls back to a straight line to zero."
+            )
+        if act.size and act.size < 20:
+            logger.warning(
+                f"Only {act.size} out-of-fold actives anchor the top of the rank scale; "
+                "it will move noticeably if the model is refitted."
+            )
+
+        return {
+            "anchor_low": low,
+            "anchor_high": high,
+            "anchor_low_used": bool(low_used),
+            "anchor_high_used": bool(high_used),
+            "n_actives": int(act.size),
+            "n_inactives": int(inact.size),
+        }
+
+    def _build_oof_diagnostics(self, stacked, y):
+        """Advisory numbers describing how this model treats molecules with known labels.
+
+        None of this enters the rank scale, and that is the design. Anchoring the scale on
+        the out-of-fold actives -- so that "0.95 means looks like a known active" -- was
+        considered and rejected, because it would put *every* model's median active at 0.95
+        by construction and make a model with AUC 0.95 indistinguishable from one with 0.55.
+        Reporting the same numbers instead keeps the signal: measured on simulated strong,
+        moderate and no-skill models, the median active reads 0.937, 0.826 and 0.230, and
+        that spread is the useful part.
+
+        Three things, each ``None`` rather than an exception when it cannot be computed --
+        these are advisory and must never be able to fail a fit:
+
+        ``actives`` / ``inactives``
+            Where known molecules land on the rank scale the user actually sees. This is
+            what turns a rank into a decision: "known actives here score 0.85 to 0.95, and
+            your compound scored 0.94". For a weak model the band comes out low and says so.
+
+        ``screening_auc``
+            Out-of-fold actives against the reference library. ``oof_auc`` separates actives
+            from *measured inactives for this target*, which are usually close analogues
+            from the same assay; a screen instead asks whether actives rise above generic
+            chemical space. A model can do the first well and the second badly, and then a
+            real screen drowns in false positives.
+
+        ``generic_hit_rate``
+            The share of drug-like chemical space this model would call active. A model
+            calling 20% of a generic library a hit is a more actionable finding than any
+            rank rescale.
+        """
+        knots = getattr(self, "pooled_rank_knots_", None)
+        if stacked is None or knots is None or not len(knots):
+            return None
+
+        p1 = combine(*stacked[:4], spec=stacked[4], outputs=("proba",)).values["proba"][
+            :, 1
+        ]
+        y = np.asarray(y).ravel()
+        if len(y) != len(p1):
+            return None
+
+        prepared = prepare_knots(knots)
+        # Anchored, so the band is in the units `predict_rank` actually returns.
+        ranks = rank_from_reference(
+            p1,
+            prepared=prepared,
+            anchors=_anchor_pair(getattr(self, "pooled_rank_anchors_", None)),
+        )
+        out = {
+            "actives": _rank_band(ranks[y == 1]),
+            "inactives": _rank_band(ranks[y == 0]),
+            "screening_auc": None,
+            "generic_hit_rate": None,
+        }
+
+        # The knots are a uniform subsample of the reference's pooled probabilities, so a
+        # quantile, an AUROC or a tail fraction taken from them is unbiased and nothing
+        # extra has to be held in memory.
+        reference = np.asarray(knots, dtype=np.float64)
+        act = p1[y == 1]
+        if act.size and reference.size:
+            from sklearn.metrics import roc_auc_score
+
+            try:
+                labels = np.concatenate(
+                    [np.ones(act.size, dtype=int), np.zeros(reference.size, dtype=int)]
+                )
+                out["screening_auc"] = float(
+                    roc_auc_score(labels, np.concatenate([act, reference]))
+                )
+            except Exception:  # pragma: no cover - degenerate label vectors only
+                pass
+
+        cutoffs = [
+            m._model.decision_cutoff_proba_
+            for m in self.models
+            if hasattr(getattr(m, "_model", None), "decision_cutoff_proba_")
+        ]
+        if cutoffs and reference.size:
+            out["generic_hit_rate"] = float(
+                (reference >= float(np.mean(cutoffs))).mean()
+            )
+        return out
+
+    def _build_reference_rank_knots(self):
+        """Score the reference library and keep the sorted pooled probabilities as knots.
+
+        This is what makes ``rank`` mean "beats this fraction of drug-like chemical space"
+        rather than "beats this fraction of my own training set". A trained model's
+        out-of-fold scores are bimodal -- inactives crushed near 0, actives near 1 -- so
+        screening compounds land in the empty middle where the training ECDF is flat and
+        every one of them comes back around 0.9.
+
+        The reference molecules go through exactly the path a query takes: same models,
+        same pooling, same weighting. That identity is the whole design. It is what makes
+        the result uniform on the library by construction, instead of uniform only while
+        two code paths happen to agree.
+
+        Streamed in chunks. Materialising three 50,000-row matrices at once would cost
+        about 1.2 GB for a value that is consumed row by row.
+        """
+        from .reference import ReferenceUnavailable, iter_chunks
+        from .reference.identity import DEFAULT_N, REFERENCE_ID
+
+        active_indices = self._active_indices()
+        names = [self.descriptor_types[i] for i in active_indices]
+        spec = _spec_from_attributes(
+            self.descriptor_types,
+            active_indices,
+            self.quality_aucs_,
+            self.proxy_aucs_,
+            self._rank_error_curves_,
+            self.ad_hard_cutoffs_,
+            self.population_prior_,
         )
 
-    def _channels(self, smiles_list):
+        # Positional against `active_indices`, so index by name -- never by whatever order
+        # a mapping iterates in.
+        streams = [
+            iter_chunks(name, expected_dim=self.descriptors[i].n_dim)
+            for i, name in zip(active_indices, names)
+        ]
+        pooled = []
+        for chunk_set in zip(*streams):
+            Y, R, S, A = self._channels_from_matrices(
+                list(chunk_set), active_indices, want_score=False
+            )
+            out = combine(Y, R, S, A, spec=spec, outputs=("proba",))
+            pooled.append(out.values["proba"][:, 1].copy())
+
+        p1 = np.concatenate(pooled) if pooled else np.empty(0)
+        p1 = p1[np.isfinite(p1)]
+        if p1.size == 0:
+            raise ReferenceUnavailable(
+                "The reference library produced no finite pooled probabilities; "
+                "`predict_rank` would have nothing to report against."
+            )
+
+        knots = subsample_knots(np.sort(p1))
+        meta = {
+            "library": {"id": REFERENCE_ID, "n": DEFAULT_N},
+            "descriptors": list(names),
+            "saturation": {"p_max": float(p1.max())},
+        }
+        logger.info(
+            f"Reference library scored: {p1.size:,} molecules, "
+            f"pooled probability max {p1.max():.3f}"
+        )
+        return knots, meta
+
+    def _active_indices(self):
         active_mask = getattr(
             self, "active_descriptors_", [True] * len(self.descriptor_types)
         )
         active_indices = [i for i, a in enumerate(active_mask) if a]
-        if not active_indices:
-            active_indices = list(range(len(self.descriptor_types)))
+        return active_indices or list(range(len(self.descriptor_types)))
 
+    def _channels_from_matrices(self, matrices, active_indices, want_score=True):
+        """Channels for feature matrices the caller already has.
+
+        Split out of :meth:`_channels` so the reference library can be scored through
+        exactly the path a query takes -- same models, same pooling, same weighting. That
+        identity is what makes the resulting percentiles uniform on the reference set by
+        construction, rather than uniform only if two code paths happen to agree.
+
+        *matrices* is positional against *active_indices*, so callers building it from a
+        name-keyed source must index by ``self.descriptor_types[i]``, never by the order a
+        dict happens to iterate in.
+
+        ``want_score=False`` skips ``predict_score``. Nothing in the ``proba`` branch or in
+        the weighting reads ``S``; computing it on a 50,000-row reference would be a second
+        full pass through every preprocessor and head for a value that is discarded.
+        """
+        if len(matrices) != len(active_indices):
+            raise ValueError(
+                f"{len(matrices)} matrices for {len(active_indices)} active descriptors"
+            )
         y_hats, score_preds, rank_preds, ad_scores = [], [], [], []
-        for i in active_indices:
-            X = self._transform_cached(i, smiles_list)
+        for i, X in zip(active_indices, matrices):
             y_hats.append(self.models[i].predict_proba(X=X)[:, 1])
-            score_preds.append(_optional(self.models[i].predict_score, X))
+            if want_score:
+                score_preds.append(_optional(self.models[i].predict_score, X))
             if self.ad_models:
                 ad_scores.append(self.ad_models[i].score(X))
-            rank_preds.append(_optional(self.models[i].predict_rank, X))
+            rank_preds.append(_optional(self.models[i]._oof_percentile, X))
+        return _stack_channels(y_hats, rank_preds, score_preds, ad_scores)
+
+    def _channels(self, smiles_list):
+        active_indices = self._active_indices()
+        matrices = [self._transform_cached(i, smiles_list) for i in active_indices]
+        Y, R, S, A = self._channels_from_matrices(matrices, active_indices)
 
         # Weight by quality (= 2*oof - train), not plain OOF AUC. Both loaders and
         # `EnsembleSpec.from_metadata` have always used quality, so passing `oof_aucs_`
@@ -690,8 +1049,9 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
             getattr(self, "population_prior_", 0.5),
             getattr(self, "pooled_rank_knots_", None),
             getattr(self, "pooled_score_knots_", None),
+            _anchor_pair(getattr(self, "pooled_rank_anchors_", None)),
         )
-        return _stack_channels(y_hats, rank_preds, score_preds, ad_scores) + (spec,)
+        return Y, R, S, A, spec
 
     def save_raw(self, model_dir: str):
         os.makedirs(model_dir, exist_ok=True)
@@ -799,13 +1159,36 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
                 "source": "oof",
             }
 
+        _diag = getattr(self, "oof_diagnostics_", None)
+        if _diag is not None:
+            # Top level, not inside `pooled_ranker`: these describe the model, not the
+            # scale, and nothing may read them as part of the reference.
+            meta["oof_diagnostics"] = _diag
+
         _knots = getattr(self, "pooled_rank_knots_", None)
         if _knots is not None and len(_knots):
+            _ref = getattr(self, "reference_meta_", None) or {}
             meta["pooled_ranker"] = {
                 "knots": np.asarray(_knots, dtype=np.float64).tolist(),
                 "n_train": int(len(_knots)),
-                "source": "oof",
+                # Readers gate on this. An out-of-fold reference and a library reference
+                # are both monotone and both land in [0, 1], so without it a checkpoint
+                # from an older version would be read as a library percentile and be
+                # wrong in a way nothing downstream could detect.
+                "source": "reference_library",
+                "library": _ref.get("library"),
+                # The knots describe the pooled probability of exactly this descriptor
+                # set. The runner builds its active set from whichever sub-directories
+                # exist on disk, so a checkpoint missing one would otherwise rank against
+                # a distribution it never had.
+                "descriptors": _ref.get("descriptors"),
+                "saturation": _ref.get("saturation"),
             }
+            # The tails are pinned on out-of-fold molecules, which do not travel in the
+            # checkpoint, so the anchors themselves have to.
+            _anchors = getattr(self, "pooled_rank_anchors_", None)
+            if _anchors:
+                meta["pooled_ranker"].update(_anchors)
             # decision_cutoff_raw/proba/logit/lift are one learned threshold in four
             # units. Its rank image used to be a mean of the per-descriptor rank cutoffs,
             # which after the pooled reference lands on a scale nothing emits. Nothing in
@@ -814,7 +1197,13 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
             _cut_p = meta.get("decision_cutoff_proba")
             if _cut_p is not None:
                 meta["decision_cutoff_rank"] = float(
-                    rank_from_knots(float(_cut_p), prepared=prepare_knots(_knots))
+                    rank_from_reference(
+                        float(_cut_p),
+                        prepared=prepare_knots(_knots),
+                        anchors=_anchor_pair(
+                            getattr(self, "pooled_rank_anchors_", None)
+                        ),
+                    )
                 )
 
         with open(os.path.join(model_dir, "metadata.json"), "w") as f:
@@ -911,6 +1300,7 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
                 for d in descriptor_types
             ]
             obj.pooled_rank_knots_ = read_pooled_rank_knots(meta)
+            obj.pooled_rank_anchors_ = _anchors_from_metadata(meta)
             obj.pooled_score_knots_ = read_pooled_score_knots(meta)
         else:
             obj.population_prior_ = 0.5
@@ -983,6 +1373,7 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
                 else None
             )
             pooled_rank_knots = read_pooled_rank_knots(meta)
+            pooled_rank_anchors = read_pooled_rank_anchors(meta)
             pooled_score_knots = read_pooled_score_knots(meta)
 
         descriptors, artifacts, ad_artifacts = _load_descriptor_stack(
@@ -1004,6 +1395,7 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
             population_prior=population_prior,
             descriptor_types=descriptor_types,
             pooled_rank_knots=pooled_rank_knots,
+            pooled_rank_anchors=pooled_rank_anchors,
             pooled_score_knots=pooled_score_knots,
         )
 

@@ -22,20 +22,31 @@ import os
 import pytest
 
 
+# Every shared checkpoint fixture, by the attribute its value exposes its root under.
+# `pruned_checkpoint` joined this list when it went module-scoped: a shared fixture only
+# stays safe while the guard knows about it.
+_SHARED_ROOTS = {
+    "checkpoint": lambda v: v.root,
+    "pruned_checkpoint": lambda v: v["root"],
+}
+
+
 @pytest.fixture(autouse=True)
 def _checkpoint_is_readonly(request):
-    if "checkpoint" not in request.fixturenames:
+    shared = [n for n in _SHARED_ROOTS if n in request.fixturenames]
+    if not shared:
         yield
         return
-    root = request.getfixturevalue("checkpoint").root
+    roots = [_SHARED_ROOTS[n](request.getfixturevalue(n)) for n in shared]
 
     def snapshot():
         out = {}
-        for dirpath, _, filenames in os.walk(root):
-            for name in filenames:
-                path = os.path.join(dirpath, name)
-                st = os.stat(path)
-                out[path] = (st.st_size, st.st_mtime_ns)
+        for root in roots:
+            for dirpath, _, filenames in os.walk(root):
+                for name in filenames:
+                    path = os.path.join(dirpath, name)
+                    st = os.stat(path)
+                    out[path] = (st.st_size, st.st_mtime_ns)
         return out
 
     before = snapshot()
@@ -46,5 +57,5 @@ def _checkpoint_is_readonly(request):
             p for p in before if after.get(p) != before[p]
         ]
         raise AssertionError(
-            f"test mutated the shared checkpoint under {root}: {changed[:5]}"
+            f"test mutated a shared checkpoint under {roots}: {changed[:5]}"
         )

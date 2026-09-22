@@ -20,12 +20,23 @@ import lazyqsar
 _BLOCKER = """
     import sys
 
-    BANNED = {"sklearn", "xgboost", "rdkit", "torch", "chemprop", "scipy", "joblib"}
+    BANNED = {
+        "sklearn", "xgboost", "rdkit", "torch", "chemprop", "scipy", "joblib",
+        # Fetching the reference library is fit-time work. A deployed model carries its
+        # knots in metadata.json, so an inference container must never inherit an S3 stack.
+        "eosvc", "boto3", "botocore", "s3transfer",
+    }
+    # Dotted, because the offence is not "something heavy loaded" but "a module that
+    # opens sockets and wants hundreds of megabytes of cache reached the path an Ersilia
+    # template runs". A top-level check can never catch a submodule of lazyqsar itself.
+    BANNED_PREFIXES = ("lazyqsar.reference",)
 
     class Blocker:
         # find_spec, not find_module: the latter is not an import hook on 3.12+.
         def find_spec(self, name, path=None, target=None):
             if name.split(".")[0] in BANNED:
+                raise ImportError(f"banned import at inference time: {name}")
+            if any(name == p or name.startswith(p + ".") for p in BANNED_PREFIXES):
                 raise ImportError(f"banned import at inference time: {name}")
             return None
 
@@ -68,9 +79,18 @@ _SELF_TEST = textwrap.dedent(
     try:
         import sklearn  # noqa: F401
     except ImportError:
+        pass
+    else:
+        raise AssertionError("blocker did not block a banned top-level import")
+
+    # The dotted arm needs its own proof. An untested arm makes every assertion behind
+    # it vacuous, which is exactly what this file exists to prevent.
+    try:
+        import lazyqsar.reference  # noqa: F401
+    except ImportError:
         print("OK")
     else:
-        raise AssertionError("blocker did not block a banned import")
+        raise AssertionError("blocker did not block a banned dotted import")
     """
 )
 

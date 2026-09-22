@@ -19,7 +19,12 @@ TIER_MODULES = {
 }
 
 # Which directories carry which tier. Anything not listed is base tier.
-TIER_DIRS = {"fit": ("fit", "pipeline"), "chem": ("chem",)}
+# ``chem`` is listed under BOTH tiers on purpose: those tests use real RDKit *and* fit
+# real models, so they need the fit stack too. Gating them on rdkit alone meant an install
+# with rdkit but without [fit] -- which `lazyqsar[descriptors]` produces, because chemprop
+# pulls scikit-learn in unconditionally -- collected them and then failed 55 of them with
+# "Training requires xgboost and scikit-learn" instead of skipping.
+TIER_DIRS = {"fit": ("fit", "pipeline", "chem"), "chem": ("chem",)}
 
 
 def missing_for_tier(tier):
@@ -27,7 +32,7 @@ def missing_for_tier(tier):
     return [m for m in TIER_MODULES[tier] if importlib.util.find_spec(m) is None]
 
 
-def skip_directory_if_tier_unavailable(tier):
+def skip_directory_if_tier_unavailable(*tiers):
     """``(collect_ignore_glob, missing)`` for a tiered directory's ``conftest.py``.
 
     Markers alone are not enough. ``pytest_collection_modifyitems`` runs *after* a module is
@@ -39,5 +44,9 @@ def skip_directory_if_tier_unavailable(tier):
     Gating collection makes the tier boundary a property of the layout instead. Inside an
     environment that does have the dependencies, the markers still drive ``-m`` selection.
     """
-    missing = missing_for_tier(tier)
+    missing = []
+    for tier in tiers:
+        for mod in missing_for_tier(tier):
+            if mod not in missing:
+                missing.append(mod)
     return (["*"] if missing else []), missing

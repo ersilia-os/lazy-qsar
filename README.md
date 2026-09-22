@@ -52,6 +52,27 @@ The first time you use deep-learning descriptors (Chemeleon, CLAMP, CDDD), their
 lazyqsar setup --descriptors
 ```
 
+Fitting also needs the reference library that `rank` is reported against. It is fetched on
+first use, or in advance:
+
+```bash
+lazyqsar setup --reference                    # all five descriptors, 267 MB
+lazyqsar setup --reference --only morgan      # fast mode needs only this, 6.5 MB
+```
+
+It is deliberately **not** included in `--descriptors`. Inspect or manage it with:
+
+| command | |
+|---|---|
+| `lazyqsar reference status` | what is cached, and how big |
+| `lazyqsar reference fetch [--only LIST] [--force]` | download it |
+| `lazyqsar reference verify` | check what is cached is well formed |
+| `lazyqsar reference smiles --output ref.csv` | the molecule list, which is all a bring-your-own-descriptor caller needs |
+
+`LAZYQSAR_HOME` moves the cache (checkpoints and reference together);
+`LAZYQSAR_REFERENCE_DIR` points at a prepared copy; `LAZYQSAR_REFERENCE_OFFLINE=1` refuses
+to fetch rather than reaching for the network.
+
 ## Python API
 
 ### LazyClassifierQSAR (SMILES)
@@ -69,12 +90,42 @@ from lazyqsar.qsar import LazyClassifierQSAR
 model = LazyClassifierQSAR(mode="slow") # default is "slow"
 model.fit(smiles_list=smiles_train, y=y_train)
 
-ranks = model.predict_rank(smiles_list=smiles_test)[:, 1]  # percentile within the model's own training distribution
+ranks = model.predict_rank(smiles_list=smiles_test)[:, 1]  # position against 50,000 drug-like reference molecules
 ```
 
 Other prediction methods are `predict_proba`, `predict_logit`, `predict_score`, `predict_lift` and `predict` (binary labels). All six share one implementation with the CLI, so a checkpoint gives the same answer through either entry point.
 
-> `predict_rank` is a percentile against the *training* distribution of that model, so ranks are not comparable between models and compress on chemistry unlike the training set. Use `predict_proba` when you need a calibrated value. Within one model `rank` is a monotone view of `proba`: they order molecules identically, so any ordering-only metric (AUROC, AUPRC, BEDROC) gives the same answer from either.
+> `predict_rank` positions a molecule against a **fixed reference library** of 50,000
+> drug-like molecules, anchored on that library's quartiles: **0.25, 0.50 and 0.75 are
+> exactly the quartiles of drug-like chemical space**, and between them `rank` is the true
+> percentile. Within one model it is a monotone view of `proba` -- they order molecules
+> identically, so any ordering-only metric (AUROC, AUPRC, BEDROC) gives the same answer
+> from either.
+>
+> **Outside the quartiles it is not a percentile.** The tails are pinned on molecules whose
+> labels are known: `0.95` is the 95th percentile of the model's out-of-fold actives and
+> `0.05` the 5th percentile of its inactives, with straight lines between the anchors. So a
+> molecule at `rank = 0.9` beats far more than 90% of drug-like space, and `rank = 0.95`
+> means "at the top of what this model's known actives reach".
+>
+> The tails are anchored because scaling straight to 1.0 assumes a model can reach
+> probability 1.0, and many cannot -- calibrators clip to the range seen in training, and a
+> calibrated probability is bounded by how rare actives are. A model topping out at p = 0.40
+> could never exceed rank 0.838, and since that ceiling moves with prevalence as much as
+> with skill, a *perfect* model on a rare target read lower than a mediocre one on an easy
+> target. Anchoring removes that, so ranks are comparable across tasks of different
+> prevalence.
+>
+> The cost: the top of the scale no longer distinguishes a strong model from a weak one --
+> every model's top actives read 0.95 by construction. That signal lives in
+> `oof_diagnostics.screening_auc` instead, which is reported in every checkpoint.
+>
+> One consequence: roughly a quarter of a generic screening library lands just above 0.75,
+> because the top quartile of generic chemistry is still generic.
+>
+> And a rank says nothing on its own about model skill -- a random model still puts a
+> quarter of the reference above 0.75. Report `proba`, `lift` and the out-of-fold AUC
+> alongside it.
 
 ### LazyClassifier (custom descriptors)
 
@@ -87,6 +138,14 @@ from lazyqsar.agnostic import LazyClassifier
 model = LazyClassifier()
 model.fit(X=X_train, y=y_train)
 y_hat = model.predict_proba(X=X_test)[:, 1]
+
+# `rank` needs a reference library. This entry point never sees the molecules, so it
+# cannot featurize one -- pass the descriptors of the reference set yourself:
+from lazyqsar.reference import reference_smiles
+
+X_ref = my_featurizer(reference_smiles())        # same featurizer, same order
+model.fit(X=X_train, y=y_train, reference_X=X_ref)   # or reference_h5_file="ref.h5"
+ranks = model.predict_rank(X=X_test)[:, 1]
 
 # From an Ersilia .h5 file
 model.fit(h5_file="descriptors.h5", y=y_train)
@@ -143,7 +202,7 @@ The output CSV contains one column per task, ordered alphabetically by task name
 | type | meaning |
 |------|---------|
 | `proba` (default) | calibrated probability of the positive class |
-| `rank` | percentile within the model's own training distribution |
+| `rank` | position against the 50,000-molecule reference library (quartiles) with tails anchored on known actives and inactives |
 | `logit` | log-odds of the calibrated probability |
 | `lift` | probability divided by the training-set positive rate |
 | `score` | the pre-calibration scale, read off the calibrated probability |

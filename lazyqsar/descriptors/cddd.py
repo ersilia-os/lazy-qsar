@@ -13,11 +13,12 @@ from rdkit.Chem import Descriptors
 from rdkit import RDLogger
 from rdkit import __version__ as rdkit_version
 
-from urllib.request import urlretrieve
 
+from ..utils.fetch import fetch, is_cached
 from ..utils.logging import logger
 from ..utils.checkpoints import (
-    CHECKPOINT_DIR,
+    CHECKPOINT_SHA256,
+    checkpoint_dir,
     CDDD_CHECKPOINTS,
     CDDD_ENCODER_FILENAME,
     CDDD_FPSIM_FILENAME,
@@ -48,7 +49,7 @@ class ChemblNearestNeighbour(object):
         from FPSim2 import FPSim2Engine
 
         self.similarity_threshold = similarity_threshold
-        ckpt_dir = CHECKPOINT_DIR
+        ckpt_dir = checkpoint_dir()
         ckpt_dir.mkdir(exist_ok=True)
         cddd_fpsim_path = ckpt_dir / CDDD_FPSIM_FILENAME
         self.fp_database = cddd_fpsim_path
@@ -63,7 +64,7 @@ class ChemblNearestNeighbour(object):
 
 
 def load_smiles_indexed():
-    ckpt_dir = CHECKPOINT_DIR
+    ckpt_dir = checkpoint_dir()
     cddd_encoder_smiles = ckpt_dir / CDDD_SMILES_FILENAME
     smiles_indexed = []
     with open(cddd_encoder_smiles, "r") as f:
@@ -349,7 +350,7 @@ class InferenceModel:
         """Initialize the inference model."""
         self.hparams = HParams()
 
-        ckpt_dir = CHECKPOINT_DIR
+        ckpt_dir = checkpoint_dir()
         ckpt_dir.mkdir(exist_ok=True)
 
         # Lazy fallback: fetch any CDDD checkpoint still missing. Normally these
@@ -358,9 +359,14 @@ class InferenceModel:
         # nodes. The URLs/filenames are centralized in utils/checkpoints.py.
         for url, filename in CDDD_CHECKPOINTS:
             dest = ckpt_dir / filename
-            if not dest.exists():
-                logger.info(f"Downloading CDDD checkpoint into ~/.lazyqsar/{filename}")
-                urlretrieve(url, dest)
+            if not is_cached(dest, CHECKPOINT_SHA256.get(filename)):
+                logger.info(f"Downloading CDDD checkpoint into {ckpt_dir}/{filename}")
+                fetch(
+                    url,
+                    dest,
+                    sha256=CHECKPOINT_SHA256.get(filename),
+                    description=filename,
+                )
 
         cddd_path = ckpt_dir / CDDD_ENCODER_FILENAME
         encoder_path = str(cddd_path)

@@ -97,3 +97,43 @@ def test_the_two_checks_agree(good, bad):
         validate_smiles(mixed)
     for i in positions:
         assert f"[{i}]" in str(exc.value)
+
+
+# Only the descriptors this tier can actually build. `chemeleon` needs torch and
+# `cddd` needs FPSim2 plus a 431 MB checkpoint download, and the chem tier requires
+# neither -- it is gated on rdkit alone. Instantiating them here is what made the `full`
+# CI job fail: it installs no torch, and no FPSim2 on the stated grounds that "nothing in
+# the suite reaches cddd".
+#
+# Covering those three means restoring the `deep` tier that `_helpers/tiers.py` describes,
+# *together with a CI job that runs it* -- which is the rule that file sets out, and the
+# reason it was removed. Widening this list without that job would assert a boundary
+# around coverage that does not exist.
+LOCAL_DESCRIPTORS = ("morgan", "rdkit")
+
+
+@pytest.mark.parametrize("name", LOCAL_DESCRIPTORS)
+def test_every_descriptor_reports_its_width_the_same_way(name):
+    """`n_dim` is what callers read, and RDKit's was missing.
+
+    `LazyClassifierQSAR` asks the reference library for a matrix of the right width via
+    `descriptors[i].n_dim`, so a slow-mode fit with RDKit active raised AttributeError the
+    moment it reached the reference. Nothing caught it because the fitting tests run in fast
+    mode; the bundle verification gate did, by comparing the published dimension against the
+    installed descriptor's.
+
+    RDKit's count is not a constant -- it is however many descriptors the installed version
+    defines -- so this asserts the attribute agrees with `features`, not a number.
+    """
+    from lazyqsar.registry import get_descriptor_type
+
+    descriptor = get_descriptor_type(name)()
+    n_dim = getattr(descriptor, "n_dim", None)
+    assert isinstance(n_dim, int) and n_dim > 0, f"{name} has no usable n_dim"
+    # `features` is not universal -- CDDD has none -- so it is only cross-checked
+    # where it exists, which is where the two could disagree.
+    features = getattr(descriptor, "features", None)
+    if features is not None:
+        assert n_dim == len(features), (
+            f"{name}: n_dim {n_dim} disagrees with {len(features)} features"
+        )

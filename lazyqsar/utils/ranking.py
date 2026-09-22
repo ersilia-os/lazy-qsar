@@ -136,3 +136,92 @@ def score_from_knots(p1, knots):
     """
     x, y = knots
     return np.interp(np.asarray(p1, dtype=np.float64), x, y)
+
+
+def rank_from_reference(scores, knots=None, prepared=None, anchors=None):
+    """Position against a reference library, with tails anchored on known molecules.
+
+    Five segments. The middle says where a molecule sits in drug-like chemical space; the
+    ends say how it compares to what this model already knows::
+
+        p < p05            0.05 * p / p05                      -> 0.00 .. 0.05
+        p05 -> Q1          linear                              -> 0.05 .. 0.25
+        Q1 <= p <= Q3      ECDF(p), the exact percentile        -> 0.25 .. 0.75
+        Q3 -> p95          linear                              -> 0.75 .. 0.95
+        p > p95            linear                              -> 0.95 .. 1.00
+
+    Q1 and Q3 are the reference library's own quartiles, recovered from the knots, so 0.25,
+    0.50 and 0.75 are exactly the quartiles of drug-like chemical space and between them the
+    value is the true percentile. ``p05``/``p95`` are the 5th and 95th percentiles of this
+    model's out-of-fold inactives and actives.
+
+    Why the tails are anchored at all. Scaling straight from Q3 to 1.0 assumes a model can
+    reach probability 1.0, and many cannot: calibrators clip to the range seen in training,
+    ensemble averaging pulls extremes inward, and a calibrated probability is bounded by how
+    rare actives are. A model topping out at p=0.40 could then never exceed rank 0.838, so a
+    sixth of the scale was unreachable -- and since the ceiling moves with prevalence as much
+    as with skill, a *perfect* model on a 1%-prevalence task read lower than a mediocre one
+    on an easy task. Anchoring removes that.
+
+    What it costs: every model's top actives read 0.95 by construction, so the top of the
+    scale no longer distinguishes a strong model from a weak one. That signal lives in
+    ``oof_diagnostics.screening_auc`` instead, where it is explicit and testable.
+
+    Parameters
+    ----------
+    scores : array_like or float
+        Pooled probabilities. A scalar is accepted -- the decision cutoff is expressed as a
+        rank through this function.
+    knots, prepared
+        The reference, as raw knots or as the output of :func:`prepare_knots`.
+    anchors : tuple, optional
+        ``(p05_inactives, p95_actives)``. Either may be ``None``. An anchor that is absent,
+        or that does not sit outside the quartile it belongs to, falls back to a single
+        linear segment to the corresponding extreme -- the behaviour when no anchors exist
+        at all. The two sides are independent.
+
+    Returns
+    -------
+    ndarray
+        Ranks in [0, 1], monotone in *scores*, reaching 1.0 only as the probability does.
+    """
+    vals, midranks = prepare_knots(knots) if prepared is None else prepared
+    scores = np.asarray(scores, dtype=np.float64)
+
+    if len(vals) == 1:
+        # One distinct value carries no interior at all. Fall back to the two outer
+        # segments meeting at it, which still says which side of it a molecule falls on.
+        q1 = q3 = float(vals[0])
+        ranks = np.full(scores.shape, 0.5)
+    else:
+        # Inverse interpolation: the probabilities at which the reference's own ECDF
+        # crosses 0.25 and 0.75.
+        q1 = float(np.interp(0.25, midranks, vals))
+        q3 = float(np.interp(0.75, midranks, vals))
+        ranks = np.interp(scores, vals, midranks)
+
+    low, high = anchors or (None, None)
+
+    # `np.where`, never boolean assignment: `np.interp` of a scalar returns a numpy scalar,
+    # which has no item assignment. Both branches are evaluated, so every denominator is
+    # proven non-zero by the guard before it is used.
+    if q3 >= q1 and q3 < 1.0:
+        if high is not None and q3 < high < 1.0:
+            near = 0.75 + 0.20 * (scores - q3) / (high - q3)
+            far = 0.95 + 0.05 * (scores - high) / (1.0 - high)
+            ranks = np.where(scores > q3, np.where(scores > high, far, near), ranks)
+        else:
+            # No usable upper anchor: one segment to certainty, as before anchoring.
+            ranks = np.where(
+                scores > q3, 0.75 + 0.25 * (scores - q3) / (1.0 - q3), ranks
+            )
+
+    if q3 >= q1 and q1 > 0.0:
+        if low is not None and 0.0 < low < q1:
+            near = 0.05 + 0.20 * (scores - low) / (q1 - low)
+            far = 0.05 * scores / low
+            ranks = np.where(scores < q1, np.where(scores < low, far, near), ranks)
+        else:
+            ranks = np.where(scores < q1, 0.25 * scores / q1, ranks)
+
+    return np.clip(ranks, 0.0, 1.0)

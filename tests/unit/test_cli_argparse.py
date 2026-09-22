@@ -165,28 +165,13 @@ def test_setup_warns_when_descriptor_flags_have_no_effect(monkeypatch, capsys):
 def option_choices(subcommand, option):
     """The `choices` argparse actually enforces, read off the live parser.
 
-    Built by letting ``main()`` construct its parser and intercepting it at ``parse_args``,
-    so the guard sees the real thing rather than a copy that could itself drift.
+    Shares ``_build_parser`` below rather than repeating the capture: the two were
+    near-identical twenty-line copies of the same trick, which is one place too many for
+    something whose whole purpose is to avoid working against a drifting copy.
     """
     import argparse
 
-    captured = {}
-    real = argparse.ArgumentParser.parse_args
-
-    def capture(self, *a, **k):
-        captured.setdefault("parser", self)
-        raise SystemExit(0)
-
-    argparse.ArgumentParser.parse_args = capture
-    try:
-        try:
-            cli.main()
-        except SystemExit:
-            pass
-    finally:
-        argparse.ArgumentParser.parse_args = real
-
-    parser = captured["parser"]
+    parser = _build_parser()
     sub = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
     action = next(
         a for a in sub.choices[subcommand]._actions if option in a.option_strings
@@ -242,3 +227,65 @@ def test_predict_type_offers_exactly_the_library_outputs():
 
 def test_mode_offers_exactly_the_registered_modes():
     assert option_choices("fit", "--mode") == set(DESCRIPTORS_MODE)
+
+
+# --------------------------------------------------------------- reference command
+
+
+def _build_parser():
+    """The live parser, captured from ``main()`` rather than rebuilt.
+
+    Same reason as ``_choices_for`` above: a copy could drift from what ships.
+    """
+    import argparse
+
+    captured = {}
+    real = argparse.ArgumentParser.parse_args
+
+    def capture(self, *a, **k):
+        captured.setdefault("parser", self)
+        raise SystemExit(0)
+
+    argparse.ArgumentParser.parse_args = capture
+    try:
+        try:
+            cli.main()
+        except SystemExit:
+            pass
+    finally:
+        argparse.ArgumentParser.parse_args = real
+    return captured["parser"]
+
+
+def test_reference_subcommand_exists_with_its_four_actions():
+    """The errors raised elsewhere name these commands, so they have to exist.
+
+    `store.descriptor_path` tells a user to run `lazyqsar setup --reference`, and the
+    agnostic entry point tells them to run `lazyqsar reference smiles`. Both were written
+    against the intended design before it existed.
+    """
+    parser = _build_parser()
+    for action in ("status", "fetch", "verify", "smiles"):
+        args = parser.parse_args(["reference", action])
+        assert args.command == "reference"
+        assert args.action == action
+
+
+def test_reference_rejects_an_unknown_action():
+    parser = _build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["reference", "publish"])
+
+
+def test_setup_accepts_reference_and_it_is_not_implied_by_descriptors():
+    """A fast-mode model needs one 6.5 MB matrix; the bundle is 267 MB. Opting in is the
+    point."""
+    parser = _build_parser()
+    assert parser.parse_args(["setup", "--reference"]).reference is True
+    assert parser.parse_args(["setup", "--descriptors"]).reference is False
+
+
+def test_reference_fetch_takes_only_and_force():
+    parser = _build_parser()
+    args = parser.parse_args(["reference", "fetch", "--only", "morgan", "--force"])
+    assert args.only == "morgan" and args.force is True

@@ -31,6 +31,21 @@ from lazyqsar.registry import DESCRIPTOR_TYPES as _LIVE_DESCRIPTOR_TYPES  # noqa
 
 PRISTINE_DESCRIPTOR_TYPES = dict(_LIVE_DESCRIPTOR_TYPES)
 
+# Reference bundles built during the session, keyed by descriptor shape. Module level
+# because both the autouse fixture and `stubbed_registry` -- a context manager, which has
+# no fixture to draw from -- have to reach the same cache.
+_REFERENCE_CACHE: dict = {}
+_REFERENCE_ROOT: list = []
+
+
+def _reference_root():
+    if not _REFERENCE_ROOT:
+        import tempfile
+
+        _REFERENCE_ROOT.append(pathlib.Path(tempfile.mkdtemp(prefix="lazyqsar-ref-")))
+    return _REFERENCE_ROOT[0]
+
+
 from _helpers.tiers import TIER_DIRS, TIER_MODULES, missing_for_tier  # noqa: F401
 
 
@@ -62,6 +77,75 @@ def shipped_descriptor_types():
     return PRISTINE_DESCRIPTOR_TYPES
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _session_reference():
+    """Forbid the session from fetching a reference, and build the one real tests need.
+
+    Session scope is deliberate and was the one part of the original design that held up:
+    ``test_oof_diagnostics.py`` builds its model in a *module*-scoped fixture, and pytest
+    sets higher-scoped fixtures up first, so a function-scoped env var arrives too late.
+
+    What changed is what gets built. This used to sweep ``DESCRIPTOR_TYPES`` and
+    instantiate every registered descriptor to size it -- five matrices, of which the suite
+    ever read one, at the cost of importing torch and downloading 431 MB of cddd
+    checkpoints. Where those dependencies were absent it raised instead, and a
+    session-scoped autouse fixture that raises errors every test in the run rather than
+    failing one: that is how the base tier came to report 308 errors.
+
+    Now it builds ``mode="fast"`` only -- ``["morgan"]``, one rdkit matrix, no downloads --
+    and only when rdkit is actually installed. ``missing_for_tier("chem")`` is the existing
+    answer to that question, so nothing here restates which descriptor needs what.
+
+    Stub tests install their own matching reference when they register, which happens after
+    this and so takes precedence.
+    """
+    mp = pytest.MonkeyPatch()
+    mp.setenv("LAZYQSAR_REFERENCE_OFFLINE", "1")
+    try:
+        if not missing_for_tier("chem"):
+            from lazyqsar.registry import DESCRIPTORS_MODE
+
+            _install_reference(
+                mp, _REFERENCE_CACHE, _reference_root(), DESCRIPTORS_MODE["fast"]
+            )
+        yield
+    finally:
+        mp.undo()
+
+
+def _install_reference(monkeypatch, cache, root, names):
+    """Build (or reuse) a reference covering exactly *names*, and point the env at it.
+
+    *names* is passed in rather than read off ``DESCRIPTOR_TYPES`` because the registry is
+    not the same thing as what a test will score with. ``install_stub_registry`` replaces
+    entries one at a time with ``setitem``, so after ``register("morgan")`` the four real
+    descriptors are still registered -- and sweeping the registry meant instantiating them.
+    Instantiating is neither free nor local: it imports the heavy dependency and, for cddd,
+    downloads 431 MB of checkpoints. Four of the five matrices it built were never read.
+
+    Keyed by the resulting shapes, because the stubs mutate ``DESCRIPTOR_TYPES`` globally
+    and a `morgan` producing 24 features in one test produces 2048 in another. The loader
+    checks that a reference matrix matches the descriptor it will be scored with, and that
+    check is load-bearing -- so the reference has to follow the stubbing, not precede it.
+    """
+    from _helpers.reference import build_reference
+
+    from lazyqsar.registry import get_descriptor_type
+
+    names = sorted(names)
+    if not names:
+        return
+    signature = tuple(
+        (name, getattr(get_descriptor_type(name)(), "n_dim", None)) for name in names
+    )
+    if signature not in cache:
+        directory = root / f"sig{len(cache)}"
+        cache[signature] = (directory, build_reference(directory, names))
+    directory, n = cache[signature]
+    monkeypatch.setenv("LAZYQSAR_REFERENCE_DIR", str(directory))
+    monkeypatch.setenv("LAZYQSAR_REFERENCE_N", str(n))
+
+
 @contextlib.contextmanager
 def stubbed_registry():
     """Install the stub descriptors for the duration of the block, then restore.
@@ -77,18 +161,44 @@ def stubbed_registry():
 
     mp = pytest.MonkeyPatch()
     try:
-        yield install_stub_registry(mp)
+        register = install_stub_registry(mp)
+        stubbed = []
+
+        def register_and_refresh(*args, **kwargs):
+            # After the stubs are in, not before. `install_stub_registry` only hands back
+            # a callable; nothing is registered until it is invoked, so refreshing any
+            # earlier builds a reference for the descriptors being replaced.
+            out = register(*args, **kwargs)
+            stubbed.extend(n for n in args if n not in stubbed)
+            _install_reference(mp, _REFERENCE_CACHE, _reference_root(), stubbed)
+            return out
+
+        yield register_and_refresh
     finally:
         mp.undo()
 
 
 @pytest.fixture
 def stub_descriptors(monkeypatch):
-    """Function-scoped stub registry, for tests that register their own descriptor names."""
+    """Function-scoped stub registry, for tests that register their own descriptor names.
+
+    Yields a ``register`` callable. Each call installs a descriptor *and* refreshes the
+    reference library to match it, because a test that registers a 24-feature `morgan`
+    then fits against a 2048-feature reference is rejected by the loader -- correctly, and
+    that rejection is the whole point of the shape check.
+    """
     from _helpers.stubs import install_stub_registry
 
     register = install_stub_registry(monkeypatch)
-    yield register
+    stubbed = []
+
+    def register_and_refresh(*args, **kwargs):
+        out = register(*args, **kwargs)
+        stubbed.extend(n for n in args if n not in stubbed)
+        _install_reference(monkeypatch, _REFERENCE_CACHE, _reference_root(), stubbed)
+        return out
+
+    yield register_and_refresh
     CountingStub.reset()
 
 
@@ -189,6 +299,55 @@ def _pooled_build(tmp_path_factory):
     return {"models": str(models), "smiles": smiles, "tasks": ["alpha", "beta"]}
 
 
+@pytest.fixture(scope="module")
+def pruned_checkpoint(tmp_path_factory):
+    """A three-descriptor checkpoint with one marked inactive, as a fit would leave it.
+
+    Module-scoped because nothing that reads it writes to it. It used to be function-scoped
+    and was rebuilt for all five tests in
+    ``tests/pipeline/test_inactive_descriptors_are_not_loaded.py`` at ~1.8 s each -- the
+    single largest piece of avoidable work in the suite. The two tests there that *do*
+    rewrite a mask still build their own checkpoint in ``tmp_path``.
+
+    The ``stubbed_registry`` block stays open across the yield: the tests load this
+    checkpoint and score through it, so the stub descriptors have to still be registered
+    while they run.
+    """
+    import json
+    import os
+
+    from _helpers.checkpoints import build_checkpoint
+    from _helpers.smiles import make_smiles
+
+    descriptors = ["morgan", "rdkit", "cddd"]
+    inactive = "rdkit"
+
+    with stubbed_registry() as register:
+        register(*descriptors)
+        rng = np.random.default_rng(7)
+        smiles = make_smiles(70)
+        y = rng.integers(0, 2, len(smiles))
+        y[:8] = 1
+        y[-8:] = 0
+
+        root = str(tmp_path_factory.mktemp("pruned") / "models")
+        task_dir = build_checkpoint(root, "task", descriptors, smiles, y)
+        meta_path = os.path.join(task_dir, "metadata.json")
+        with open(meta_path) as handle:
+            meta = json.load(handle)
+        meta["active_descriptors"] = {d: d != inactive for d in descriptors}
+        with open(meta_path, "w") as handle:
+            json.dump(meta, handle)
+
+        yield {
+            "root": root,
+            "task_dir": task_dir,
+            "smiles": smiles,
+            "descriptors": descriptors,
+            "inactive": inactive,
+        }
+
+
 @pytest.fixture
 def pooled_checkpoint(_pooled_build, stub_descriptors):
     """Two tasks over one descriptor, fitted so that they carry a pooled rank reference."""
@@ -223,6 +382,19 @@ def _clean_env(monkeypatch):
     """A leaked env var from one test must not change another test's numbers."""
     for var in ("LAZYQSAR_PREDICT_CHUNK", "LAZYQSAR_FIT_SCRATCH"):
         monkeypatch.delenv(var, raising=False)
+
+
+@pytest.fixture(scope="session")
+def _reference_cache(tmp_path_factory):
+    """Reference bundles, one per distinct descriptor signature.
+
+    Not a single session-scoped bundle: the stub fixtures replace the registry per test, so
+    a `morgan` producing 24 features in one test produces 2048 in another. A reference
+    matrix has to match the descriptor the model was fitted with -- the loader checks, and
+    that check is load-bearing -- so bundles are keyed by what the live registry emits.
+    Built at most once per shape, so the cost lands once rather than per test.
+    """
+    return {}, tmp_path_factory.mktemp("references")
 
 
 @pytest.fixture(autouse=True)

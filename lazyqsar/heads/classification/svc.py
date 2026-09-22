@@ -20,7 +20,7 @@ class Head(object):
     def predict_score(self, X):
         return self.model.predict_score(X)
 
-    def predict_rank(self, X):
+    def _oof_percentile(self, X):
         return self.model.predict_rank(X)
 
     def predict(self, X, cutoff=None):

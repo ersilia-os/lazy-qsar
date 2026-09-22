@@ -106,8 +106,8 @@ def test_the_export_ranks_the_same_compounds_at_the_top(fitted):
     from scipy.stats import spearmanr
 
     model, loaded, X = fitted
-    fit_rank = model.predict_rank(X=X)[:, 1]
-    onnx_rank = loaded.predict_rank(X)[:, 1]
+    fit_rank = model._oof_percentile(X=X)[:, 1]
+    onnx_rank = loaded._oof_percentile(X)[:, 1]
     fit_proba = model.predict_proba(X=X)[:, 1]
     onnx_proba = loaded.predict_proba(X)[:, 1]
 
