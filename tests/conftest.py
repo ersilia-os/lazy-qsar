@@ -108,10 +108,23 @@ def _install_reference_for_live_registry(monkeypatch, cache, root):
 
     from lazyqsar.registry import DESCRIPTOR_TYPES, get_descriptor_type
 
-    names = sorted(DESCRIPTOR_TYPES)
-    signature = tuple(
-        (name, getattr(get_descriptor_type(name)(), "n_dim", None)) for name in names
-    )
+    names = []
+    pairs = []
+    for name in sorted(DESCRIPTOR_TYPES):
+        try:
+            instance = get_descriptor_type(name)()
+        except ImportError:
+            # Instantiating is what imports the heavy dependency -- RDKitDescriptor needs
+            # rdkit, chemeleon needs torch -- and the base tier installs neither. Nothing
+            # there scores with a real descriptor, so it needs no matrix for one. This is
+            # skipped rather than allowed to raise because the caller above is a
+            # session-scoped autouse fixture: it runs before every test in the session,
+            # so one ImportError here does not fail a test, it errors every test there
+            # is -- which is exactly how the base tier failed, 308 errors at once.
+            continue
+        names.append(name)
+        pairs.append((name, getattr(instance, "n_dim", None)))
+    signature = tuple(pairs)
     if signature not in cache:
         directory = root / f"sig{len(cache)}"
         cache[signature] = (directory, build_reference(directory, names))
@@ -341,20 +354,12 @@ def _offline_reference(monkeypatch, request):
     ):
         return
 
-    from _helpers.reference import build_reference
-    from lazyqsar.registry import DESCRIPTOR_TYPES, get_descriptor_type
-
-    names = sorted(DESCRIPTOR_TYPES)
-    signature = tuple(
-        (name, getattr(get_descriptor_type(name)(), "n_dim", None)) for name in names
+    # The same helper the session fixture uses. This body used to be a second copy of it,
+    # which is how the two came to differ: this one checks the markers first, that one
+    # never did, and only this one was ever exercised without the fit stack installed.
+    _install_reference_for_live_registry(
+        monkeypatch, _REFERENCE_CACHE, _reference_root()
     )
-    cache, root = _REFERENCE_CACHE, _reference_root()
-    if signature not in cache:
-        directory = root / f"sig{len(cache)}"
-        cache[signature] = (directory, build_reference(directory, names))
-    directory, n = cache[signature]
-    monkeypatch.setenv("LAZYQSAR_REFERENCE_DIR", str(directory))
-    monkeypatch.setenv("LAZYQSAR_REFERENCE_N", str(n))
 
 
 @pytest.fixture(autouse=True)
