@@ -214,6 +214,25 @@ def _reference_matrix(n=400, seed=7):
     return np.random.default_rng(seed).normal(size=(n, P)).astype(np.float32)
 
 
+@pytest.fixture(scope="module")
+def fitted_with_reference(data):
+    """One fit carrying a reference, shared by the tests that only read it.
+
+    The same argument the ``fitted`` fixture above makes: there are no descriptors, so no
+    featurization cache can make a later assertion pass vacuously, and ``save()`` delegates
+    to ``self._model.save`` without rebinding anything on the instance. Four tests used to
+    fit their own model purely to have one with a reference attached, at ~1.4 s each.
+
+    The two tests that still fit their own do so because the *comparison of two fits* is
+    the assertion.
+    """
+    X, y = data
+    reference = _reference_matrix()
+    model = LazyClassifier()
+    model.fit(X=X, y=y, reference_X=reference)
+    return model, reference
+
+
 def test_predict_rank_is_refused_without_a_reference(data, fitted):
     """`rank` is a position against a fixed set of drug-like molecules, and this entry
     point takes a descriptor matrix -- it never sees the molecules, so it cannot featurize
@@ -240,31 +259,28 @@ def test_the_refusal_names_the_way_forward(fitted, data):
     assert "reference_smiles" in message
 
 
-def test_a_reference_makes_rank_available(data):
+def test_a_reference_makes_rank_available(data, fitted_with_reference):
     X, y = data
-    model = LazyClassifier()
-    model.fit(X=X, y=y, reference_X=_reference_matrix())
+    model, _ = fitted_with_reference
     ranks = model.predict_rank(X=X)
     assert ranks.shape == (len(y), 2)
     assert np.all((ranks[:, 1] >= 0) & (ranks[:, 1] <= 1))
     np.testing.assert_allclose(ranks.sum(axis=1), 1.0, atol=1e-9)
 
 
-def test_the_reference_quartiles_land_on_the_quartiles_of_the_scale(data):
+def test_the_reference_quartiles_land_on_the_quartiles_of_the_scale(
+    fitted_with_reference,
+):
     """The anchoring, checked through the public entry point rather than the helper."""
-    X, y = data
-    reference = _reference_matrix()
-    model = LazyClassifier()
-    model.fit(X=X, y=y, reference_X=reference)
+    model, reference = fitted_with_reference
     reference_ranks = model.predict_rank(X=reference)[:, 1]
     assert float(np.percentile(reference_ranks, 25)) == pytest.approx(0.25, abs=0.02)
     assert float(np.percentile(reference_ranks, 75)) == pytest.approx(0.75, abs=0.02)
 
 
-def test_rank_orders_molecules_exactly_as_proba_does(data):
-    X, y = data
-    model = LazyClassifier()
-    model.fit(X=X, y=y, reference_X=_reference_matrix())
+def test_rank_orders_molecules_exactly_as_proba_does(data, fitted_with_reference):
+    X, _ = data
+    model, _ = fitted_with_reference
     rank = model.predict_rank(X=X)[:, 1]
     proba = model.predict_proba(X=X)[:, 1]
     assert np.array_equal(np.argsort(np.argsort(rank)), np.argsort(np.argsort(proba)))
@@ -288,12 +304,11 @@ def test_a_reference_h5_matches_the_same_matrix_in_memory(data, tmp_path):
     )
 
 
-def test_the_reference_survives_save_and_load(data, tmp_path):
+def test_the_reference_survives_save_and_load(data, tmp_path, fitted_with_reference):
     """`LazyClassifier.load` returns the ONNX artifact, so the reference has to travel into
     it -- otherwise a saved model silently loses the one output that needed it."""
-    X, y = data
-    model = LazyClassifier()
-    model.fit(X=X, y=y, reference_X=_reference_matrix())
+    X, _ = data
+    model, _ = fitted_with_reference
     directory = str(tmp_path / "with_reference")
     model.save(directory)
 
@@ -303,10 +318,9 @@ def test_the_reference_survives_save_and_load(data, tmp_path):
     )
 
 
-def test_a_saved_model_without_a_reference_still_refuses(data, tmp_path):
-    X, y = data
-    model = LazyClassifier()
-    model.fit(X=X, y=y)
+def test_a_saved_model_without_a_reference_still_refuses(data, tmp_path, fitted):
+    X, _ = data
+    model = fitted
     directory = str(tmp_path / "no_reference")
     model.save(directory)
 

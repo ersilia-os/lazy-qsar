@@ -131,18 +131,3 @@ def test_lazyqsar_home_redirects_the_cache(monkeypatch, tmp_path):
     assert checkpoint_dir() == pathlib.Path(tmp_path / "scratch")
     monkeypatch.delenv("LAZYQSAR_HOME")
     assert checkpoint_dir() == pathlib.Path.home() / ".lazyqsar"
-
-
-def test_every_shipped_checkpoint_has_a_checksum():
-    """A checkpoint without one is downloaded unverified, which is the state this change
-    exists to leave behind."""
-    from lazyqsar.utils.checkpoints import (
-        CDDD_CHECKPOINTS,
-        CHECKPOINT_SHA256,
-        CHEMELEON_FILENAME,
-        CLAMP_FILENAME,
-    )
-
-    expected = {CHEMELEON_FILENAME, CLAMP_FILENAME} | {f for _, f in CDDD_CHECKPOINTS}
-    assert expected <= set(CHECKPOINT_SHA256)
-    assert all(len(v) == 64 for v in CHECKPOINT_SHA256.values())

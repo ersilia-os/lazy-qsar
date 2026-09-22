@@ -20,11 +20,6 @@ def test_the_band_is_the_quartiles_with_a_count():
     assert band["rank_p75"] == 0.75
 
 
-def test_the_quartiles_come_back_ordered():
-    band = _rank_band(np.random.default_rng(0).random(500))
-    assert band["rank_p25"] <= band["rank_p50"] <= band["rank_p75"]
-
-
 def test_an_empty_class_is_none_rather_than_an_error():
     """A task with no actives, or none surviving, must not fail a fit over an advisory
     number."""

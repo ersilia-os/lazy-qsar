@@ -299,6 +299,55 @@ def _pooled_build(tmp_path_factory):
     return {"models": str(models), "smiles": smiles, "tasks": ["alpha", "beta"]}
 
 
+@pytest.fixture(scope="module")
+def pruned_checkpoint(tmp_path_factory):
+    """A three-descriptor checkpoint with one marked inactive, as a fit would leave it.
+
+    Module-scoped because nothing that reads it writes to it. It used to be function-scoped
+    and was rebuilt for all five tests in
+    ``tests/pipeline/test_inactive_descriptors_are_not_loaded.py`` at ~1.8 s each -- the
+    single largest piece of avoidable work in the suite. The two tests there that *do*
+    rewrite a mask still build their own checkpoint in ``tmp_path``.
+
+    The ``stubbed_registry`` block stays open across the yield: the tests load this
+    checkpoint and score through it, so the stub descriptors have to still be registered
+    while they run.
+    """
+    import json
+    import os
+
+    from _helpers.checkpoints import build_checkpoint
+    from _helpers.smiles import make_smiles
+
+    descriptors = ["morgan", "rdkit", "cddd"]
+    inactive = "rdkit"
+
+    with stubbed_registry() as register:
+        register(*descriptors)
+        rng = np.random.default_rng(7)
+        smiles = make_smiles(70)
+        y = rng.integers(0, 2, len(smiles))
+        y[:8] = 1
+        y[-8:] = 0
+
+        root = str(tmp_path_factory.mktemp("pruned") / "models")
+        task_dir = build_checkpoint(root, "task", descriptors, smiles, y)
+        meta_path = os.path.join(task_dir, "metadata.json")
+        with open(meta_path) as handle:
+            meta = json.load(handle)
+        meta["active_descriptors"] = {d: d != inactive for d in descriptors}
+        with open(meta_path, "w") as handle:
+            json.dump(meta, handle)
+
+        yield {
+            "root": root,
+            "task_dir": task_dir,
+            "smiles": smiles,
+            "descriptors": descriptors,
+            "inactive": inactive,
+        }
+
+
 @pytest.fixture
 def pooled_checkpoint(_pooled_build, stub_descriptors):
     """Two tasks over one descriptor, fitted so that they carry a pooled rank reference."""

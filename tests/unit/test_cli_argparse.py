@@ -165,28 +165,13 @@ def test_setup_warns_when_descriptor_flags_have_no_effect(monkeypatch, capsys):
 def option_choices(subcommand, option):
     """The `choices` argparse actually enforces, read off the live parser.
 
-    Built by letting ``main()`` construct its parser and intercepting it at ``parse_args``,
-    so the guard sees the real thing rather than a copy that could itself drift.
+    Shares ``_build_parser`` below rather than repeating the capture: the two were
+    near-identical twenty-line copies of the same trick, which is one place too many for
+    something whose whole purpose is to avoid working against a drifting copy.
     """
     import argparse
 
-    captured = {}
-    real = argparse.ArgumentParser.parse_args
-
-    def capture(self, *a, **k):
-        captured.setdefault("parser", self)
-        raise SystemExit(0)
-
-    argparse.ArgumentParser.parse_args = capture
-    try:
-        try:
-            cli.main()
-        except SystemExit:
-            pass
-    finally:
-        argparse.ArgumentParser.parse_args = real
-
-    parser = captured["parser"]
+    parser = _build_parser()
     sub = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
     action = next(
         a for a in sub.choices[subcommand]._actions if option in a.option_strings

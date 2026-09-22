@@ -141,10 +141,13 @@ def test_reference_ranks_accept_a_scalar():
         assert 0.0 <= float(rank_from_reference(p, prepared=prep)) <= 1.0
 
 
-def test_reference_ranks_are_monotone_and_bounded_across_both_joins():
+@pytest.mark.parametrize("anchors", [None, (0.03, 0.40)], ids=["plain", "anchored"])
+def test_reference_ranks_are_monotone_and_bounded_across_every_join(anchors):
+    """One assertion for both scale variants: they differ in where the joins are, not in
+    what must hold across them."""
     ref = _reference()
-    grid = np.linspace(1e-6, 1.0, 20_000)
-    r = rank_from_reference(grid, prepared=prepare_knots(ref))
+    grid = np.linspace(1e-9, 1.0, 50_000)
+    r = rank_from_reference(grid, prepared=prepare_knots(ref), anchors=anchors)
     assert np.all(np.diff(r) >= 0)
     assert r.min() >= 0.0 and r.max() <= 1.0
 
@@ -257,14 +260,12 @@ def test_one_side_can_anchor_while_the_other_falls_back():
     assert float(got[0]) == pytest.approx(0.95)
 
 
-def test_the_anchored_scale_is_monotone_and_continuous():
+def test_the_anchored_scale_is_continuous_at_all_four_joins():
+    """Monotonicity and bounds are covered above; this is the part unique to anchoring --
+    four joins instead of two, and a gap at any of them is a visible step in every output."""
     ref = _reference()
     prep = prepare_knots(ref)
     low, high = 0.03, 0.40
-    grid = np.linspace(1e-9, 1.0, 50_000)
-    r = rank_from_reference(grid, prepared=prep, anchors=(low, high))
-    assert np.all(np.diff(r) >= 0)
-    assert r.min() >= 0.0 and r.max() <= 1.0
     q1, q3 = np.percentile(ref, [25, 75])
     for join in (low, q1, q3, high):
         below = float(

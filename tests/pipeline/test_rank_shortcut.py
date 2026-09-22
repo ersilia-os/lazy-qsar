@@ -224,13 +224,21 @@ def test_a_checkpoint_without_the_map_keeps_the_old_score(pooled_checkpoint, tmp
     )
 
 
-def test_score_agrees_with_proba_across_several_descriptors(tmp_path, stub_descriptors):
+def test_score_agrees_with_proba_across_several_descriptors(
+    tmp_path, stub_descriptors, monkeypatch
+):
     """The multi-descriptor case, which is the only one where this can actually fail.
 
     With a single descriptor the weights collapse to one column and the pre-3.5.0 fallback
     degenerates to ``score == proba``, so a fast-mode fixture cannot tell a working pooled
-    map from a broken one. Slow mode over five stubbed descriptors is where independent raw
-    pooling genuinely reorders, and therefore where the map has to do its job.
+    map from a broken one. Independent raw pooling has to genuinely reorder, which needs
+    more than one descriptor -- but not all five. Slow mode is narrowed to three here: it
+    was the slowest single call in the suite at 4.4 s, and the third descriptor adds no
+    argument the second does not already make.
+
+    The mode list is narrowed rather than the stub set, because ``fit(mode="slow")`` reads
+    that list -- stubbing only three of five would leave the other two real, which is how
+    this test would start needing RDKit and torch.
     """
     import contextlib
     import io
@@ -239,7 +247,9 @@ def test_score_agrees_with_proba_across_several_descriptors(tmp_path, stub_descr
     from lazyqsar.api.classifier_predict import predict
     from lazyqsar.registry import DESCRIPTORS_MODE
 
-    stub_descriptors(*DESCRIPTORS_MODE["slow"])
+    narrowed = ["cddd", "morgan", "rdkit"]
+    monkeypatch.setitem(DESCRIPTORS_MODE, "slow", narrowed)
+    stub_descriptors(*narrowed)
     smiles = make_smiles(80)
     rng = np.random.default_rng(17)
     y = rng.integers(0, 2, len(smiles))
@@ -267,5 +277,5 @@ def test_score_agrees_with_proba_across_several_descriptors(tmp_path, stub_descr
     for other in ("logit", "rank", "score"):
         assert flipped(out["proba"], out[other]) == 0, (
             f"{other} disagrees with proba about "
-            f"{flipped(out['proba'], out[other])} pairs across five descriptors"
+            f"{flipped(out['proba'], out[other])} pairs across several descriptors"
         )

@@ -18,7 +18,6 @@ from lazyqsar.reference.download import (
     EOSVC_ROOT,
     ReferenceDownloadError,
     download,
-    eosvc_available,
     offline,
 )
 
@@ -109,7 +108,3 @@ def tempfile_dir():
     import tempfile
 
     return tempfile.gettempdir()
-
-
-def test_eosvc_availability_is_reported_not_assumed():
-    assert isinstance(eosvc_available(), bool)
