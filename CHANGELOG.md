@@ -68,6 +68,27 @@ numpy and onnxruntime.
   numbers keep that signal: on shuffled labels the actives' band collapses onto the
   inactives' instead of being pinned high.
 
+### Distribution
+
+- **The reference library is fetched with `eosvc`**, the same tool that publishes it, so
+  there is one path and one set of conventions rather than a publisher and an unrelated
+  reader that can disagree. No AWS credentials are needed: `eosvc` falls back to anonymous
+  access, which is all a public bucket read requires.
+
+  `eosvc` resolves its S3 prefix from the repository it runs inside, and an installed
+  package is not inside a checkout, so the client stages a minimal one and moves the files
+  into the cache afterwards. The cache layout owes `eosvc` nothing.
+
+- **`lazyqsar setup --reference [--only LIST]`**, plus a `lazyqsar reference` subcommand
+  with `status`, `fetch`, `verify` and `smiles`. Not implied by `--descriptors`: a
+  fast-mode model needs one 6.5 MB matrix and the whole bundle is 267 MB.
+
+- **Matrices are fetched lazily at fit**, once the portfolio has settled which descriptors
+  survive, so only what a model actually uses is downloaded.
+
+- `LAZYQSAR_REFERENCE_OFFLINE=1` refuses to fetch instead of reaching for the network,
+  which is what the test suite runs under and what an air-gapped node wants.
+
 ### Renamed
 
 - **The out-of-fold percentile is no longer called a rank.** It is a different quantity from

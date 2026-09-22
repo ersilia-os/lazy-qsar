@@ -48,8 +48,10 @@ NO_REFERENCE_MESSAGE = (
     "predict_rank needs a reference library. `rank` is a position against a fixed set of "
     "drug-like molecules, and this entry point takes a descriptor matrix -- it never sees "
     "the molecules, so it cannot featurize that set itself.\n"
-    "Fit with `reference_X=` (or `reference_h5_file=`): featurize the molecules from "
-    "`lazyqsar.reference.reference_smiles()`, in that order, and pass the matrix.\n"
+    "Fit with `reference_X=` (or `reference_h5_file=`): get the molecule list with "
+    "`lazyqsar reference smiles --output ref.csv` (or "
+    "`lazyqsar.reference.reference_smiles()`), featurize it in that order, and pass "
+    "the matrix.\n"
     "Or use predict_proba, which needs no reference."
 )
 

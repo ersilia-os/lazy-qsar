@@ -52,6 +52,27 @@ The first time you use deep-learning descriptors (Chemeleon, CLAMP, CDDD), their
 lazyqsar setup --descriptors
 ```
 
+Fitting also needs the reference library that `rank` is reported against. It is fetched on
+first use, or in advance:
+
+```bash
+lazyqsar setup --reference                    # all five descriptors, 267 MB
+lazyqsar setup --reference --only morgan      # fast mode needs only this, 6.5 MB
+```
+
+It is deliberately **not** included in `--descriptors`. Inspect or manage it with:
+
+| command | |
+|---|---|
+| `lazyqsar reference status` | what is cached, and how big |
+| `lazyqsar reference fetch [--only LIST] [--force]` | download it |
+| `lazyqsar reference verify` | check what is cached is well formed |
+| `lazyqsar reference smiles --output ref.csv` | the molecule list, which is all a bring-your-own-descriptor caller needs |
+
+`LAZYQSAR_HOME` moves the cache (checkpoints and reference together);
+`LAZYQSAR_REFERENCE_DIR` points at a prepared copy; `LAZYQSAR_REFERENCE_OFFLINE=1` refuses
+to fetch rather than reaching for the network.
+
 ## Python API
 
 ### LazyClassifierQSAR (SMILES)

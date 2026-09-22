@@ -30,16 +30,32 @@ class ReferenceIntegrityError(RuntimeError):
 
 
 def descriptor_path(descriptor: str, n: int | None = None) -> Path:
+    """The local matrix for *descriptor*, fetching it if it is not cached.
+
+    Fetching happens here rather than eagerly because the caller only knows which
+    descriptors it needs once the portfolio has settled: a fast-mode model needs one 6.5 MB
+    matrix, not the 267 MB bundle.
+    """
+    from .download import ReferenceDownloadError, download, offline
+
     n = n or default_n()
     path = reference_dir() / descriptor_filename(descriptor, n)
-    if not path.is_file():
-        raise ReferenceUnavailable(
-            f"No reference matrix for {descriptor!r} at {path}.\n"
-            f"Fetch it with `lazyqsar setup --reference --only {descriptor}`, or point "
-            f"LAZYQSAR_REFERENCE_DIR at a local copy.\n"
-            f"Source: {descriptor_url(descriptor, n)}"
-        )
-    return path
+    if path.is_file():
+        return path
+
+    if not offline():
+        try:
+            return download([descriptor_filename(descriptor, n)], n=n)[0]
+        except ReferenceDownloadError as exc:
+            raise ReferenceUnavailable(str(exc)) from exc
+
+    raise ReferenceUnavailable(
+        f"No reference matrix for {descriptor!r} at {path}, and fetching is disabled by "
+        "LAZYQSAR_REFERENCE_OFFLINE.\n"
+        f"Fetch it with `lazyqsar setup --reference --only {descriptor}`, or point "
+        f"LAZYQSAR_REFERENCE_DIR at a local copy.\n"
+        f"Source: {descriptor_url(descriptor, n)}"
+    )
 
 
 def reference_smiles(n: int | None = None) -> list[str]:
@@ -48,10 +64,21 @@ def reference_smiles(n: int | None = None) -> list[str]:
     This is all a bring-your-own-descriptor caller needs: featurize these, in this order,
     and hand the matrix back to ``LazyClassifier.fit(reference_X=...)``.
     """
+    from .download import ReferenceDownloadError, download, offline
+
     n = n or default_n()
     path = reference_dir() / smiles_filename(n)
+    if not path.is_file() and not offline():
+        try:
+            path = download([smiles_filename(n)], n=n)[0]
+        except ReferenceDownloadError as exc:
+            raise ReferenceUnavailable(str(exc)) from exc
     if not path.is_file():
-        raise ReferenceUnavailable(f"No reference molecule list at {path}.")
+        raise ReferenceUnavailable(
+            f"No reference molecule list at {path}. Fetch it with "
+            "`lazyqsar reference fetch`, or write it out with "
+            "`lazyqsar reference smiles --output ref.csv`."
+        )
     rows = path.read_text().splitlines()
     if rows and rows[0].strip().lower() == "smiles":
         rows = rows[1:]
@@ -135,3 +162,47 @@ def status(n: int | None = None) -> dict:
         for path in sorted(root.glob("*")):
             out["files"][path.name] = path.stat().st_size
     return out
+
+
+def verify(n: int | None = None) -> list[str]:
+    """Check every cached reference file, returning a list of problems.
+
+    Structural checks only -- the file opens, declares the descriptor it is named for, has
+    the right number of rows, and its values are finite. Whether those values match what the
+    *installed* descriptor code would compute is a different question, answered by the
+    manifest's canary rows once the bundle carries them.
+    """
+    import h5py
+
+    from ..registry import DESCRIPTOR_TYPES
+
+    n = n or default_n()
+    root = reference_dir()
+    problems: list[str] = []
+
+    smiles = root / smiles_filename(n)
+    if not smiles.is_file():
+        problems.append(f"missing molecule list: {smiles.name}")
+    else:
+        rows = [r for r in smiles.read_text().splitlines()[1:] if r.strip()]
+        if len(rows) != n:
+            problems.append(f"{smiles.name}: {len(rows)} molecules, expected {n}")
+
+    for descriptor in sorted(DESCRIPTOR_TYPES):
+        path = root / descriptor_filename(descriptor, n)
+        if not path.is_file():
+            continue  # not every descriptor has to be cached; fetching is per-descriptor
+        try:
+            with h5py.File(path, "r") as handle:
+                dset = handle["X"]
+                declared = dset.attrs.get("descriptor")
+                if declared is not None and str(declared) != descriptor:
+                    problems.append(f"{path.name}: declares descriptor {declared!r}")
+                if dset.shape[0] != n:
+                    problems.append(f"{path.name}: {dset.shape[0]} rows, expected {n}")
+                block = np.asarray(dset[: min(1024, dset.shape[0])], dtype=np.float64)
+                if not np.isfinite(block).all():
+                    problems.append(f"{path.name}: non-finite values")
+        except Exception as exc:  # pragma: no cover - corrupt file paths
+            problems.append(f"{path.name}: unreadable ({exc})")
+    return problems
