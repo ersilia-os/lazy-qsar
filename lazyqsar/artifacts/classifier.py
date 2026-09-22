@@ -11,7 +11,12 @@ import os
 
 import numpy as np
 
-from lazyqsar.utils.ranking import binarize, prepare_knots, rank_from_knots
+from lazyqsar.utils.ranking import (
+    binarize,
+    prepare_knots,
+    rank_from_knots,
+    rank_from_reference,
+)
 
 
 def _correct_prior(p1, train_prior, population_prior):
@@ -143,6 +148,23 @@ class LazyClassifierArtifact:
         self._decision_cutoff_logit = float(metadata.get("decision_cutoff_logit", 0.0))
         raw_lift = metadata.get("decision_cutoff_lift")
         self._decision_cutoff_lift = float(raw_lift) if raw_lift is not None else None
+        block = metadata.get("pooled_ranker") or {}
+        ref = block.get("knots") if block.get("source") == "reference_library" else None
+        self._reference_prepared = (
+            prepare_knots(np.asarray(ref, dtype=np.float64))
+            if ref is not None and len(ref)
+            else None
+        )
+        low, high = block.get("anchor_low"), block.get("anchor_high")
+        self._reference_anchors = (
+            (
+                low if block.get("anchor_low_used") else None,
+                high if block.get("anchor_high_used") else None,
+            )
+            if self._reference_prepared is not None
+            else None
+        )
+
         knots = (metadata.get("oof_percentile") or {}).get("knots")
         self._oof_percentile_prepared = (
             prepare_knots(np.asarray(knots, dtype=np.float64))
@@ -227,6 +249,27 @@ class LazyClassifierArtifact:
             return np.column_stack([1 - rank_1, rank_1])
         R = np.array([b._oof_percentile(X)[:, 1] for b in self._batches])
         rank_1 = R.mean(axis=0)
+        return np.column_stack([1 - rank_1, rank_1])
+
+    def predict_rank(self, X) -> np.ndarray:
+        """Position against the reference library this model was fitted with, shape (n, 2).
+
+        Raises when the checkpoint carries no reference. That is the normal state for a
+        model fitted through the descriptor-agnostic entry point without ``reference_X``,
+        and for every checkpoint fitted before v3.6 -- their percentile is relative to their
+        own training data and is not comparable with a position against drug-like chemical
+        space.
+        """
+        prepared = getattr(self, "_reference_prepared", None)
+        if prepared is None:
+            from ..agnostic import NO_REFERENCE_MESSAGE
+
+            raise ValueError(NO_REFERENCE_MESSAGE)
+        rank_1 = rank_from_reference(
+            self.predict_proba(X)[:, 1],
+            prepared=prepared,
+            anchors=getattr(self, "_reference_anchors", None),
+        )
         return np.column_stack([1 - rank_1, rank_1])
 
     def _oof_percentile_from_proba(self, p1):

@@ -118,6 +118,14 @@ model = LazyClassifier()
 model.fit(X=X_train, y=y_train)
 y_hat = model.predict_proba(X=X_test)[:, 1]
 
+# `rank` needs a reference library. This entry point never sees the molecules, so it
+# cannot featurize one -- pass the descriptors of the reference set yourself:
+from lazyqsar.reference import reference_smiles
+
+X_ref = my_featurizer(reference_smiles())        # same featurizer, same order
+model.fit(X=X_train, y=y_train, reference_X=X_ref)   # or reference_h5_file="ref.h5"
+ranks = model.predict_rank(X=X_test)[:, 1]
+
 # From an Ersilia .h5 file
 model.fit(h5_file="descriptors.h5", y=y_train)
 y_hat = model.predict_proba(h5_file="descriptors.h5")[:, 1]

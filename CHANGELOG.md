@@ -81,10 +81,16 @@ numpy and onnxruntime.
   usable independently, each owns its own ECDF, and a percentile is a reasonable thing for a
   standalone estimator to offer; the rename stops at the wrappers above them.
 
-- **`LazyClassifier.predict_rank` raises.** That entry point takes a descriptor matrix and
-  never sees the molecules, so it cannot resolve a reference library. It used to return the
-  training-relative percentile under a name that promised otherwise. Use `predict_proba`, or
-  fit through `LazyClassifierQSAR`.
+- **`LazyClassifier.fit` accepts `reference_X=` / `reference_h5_file=`.** Pass the
+  descriptors of the molecules in `lazyqsar.reference.reference_smiles()`, computed with
+  your own featurizer and in that order, and `predict_rank` becomes available on the
+  descriptor-agnostic path with the same meaning it has everywhere else. A `.h5` reference
+  is read in chunks, so a large one is never held whole. The reference travels through
+  `save()` into the ONNX artifact, which `load()` returns.
+- **`LazyClassifier.predict_rank` raises when no reference was given at fit.** It used to
+  return the training-relative percentile under a name that promised a position against
+  drug-like chemical space. The error names `reference_X` and `reference_smiles()`; the
+  percentile itself survives as `_oof_percentile`.
 
 - **Descriptor-level metadata keys.** `pooled_ranker` becomes `oof_percentile` and
   `decision_cutoff_rank` becomes `decision_cutoff_oof_percentile`. The first is a new key

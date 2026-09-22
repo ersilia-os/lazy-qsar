@@ -622,6 +622,19 @@ class LazyClassifier(object):
                 "knots": np.asarray(knots, dtype=np.float64).tolist(),
                 "n_train": int(len(knots)),
             }
+        ref = getattr(self, "reference_rank_knots_", None)
+        if ref is not None and len(ref):
+            # `pooled_ranker` means the reference library wherever it appears, so the
+            # agnostic path writes the same block the task level does and is read by the
+            # same code. The out-of-fold percentile lives under `oof_percentile` above.
+            metadata["pooled_ranker"] = {
+                "knots": np.asarray(ref, dtype=np.float64).tolist(),
+                "n_train": int(len(ref)),
+                "source": "reference_library",
+            }
+            anchors = getattr(self, "reference_rank_anchors_", None)
+            if anchors:
+                metadata["pooled_ranker"].update(anchors)
         with open(f"{directory}/metadata.json", "w") as f:
             json.dump(metadata, f, indent=4)
         logger.success(f"Saved {len(self.models)} batch(es) to {directory!r}")

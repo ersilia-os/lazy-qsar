@@ -209,17 +209,108 @@ def test_regression_is_not_implemented():
         LazyRegressor()
 
 
-def test_predict_rank_is_refused_on_the_agnostic_entry_point(data, fitted):
-    """`rank` is a position against a reference library of drug-like molecules, and this
-    entry point takes a descriptor matrix -- it never sees the molecules, so it has no
-    reference to report against.
+def _reference_matrix(n=400, seed=7):
+    """Stand-in for the published reference library, in the same feature space as `data`."""
+    return np.random.default_rng(seed).normal(size=(n, P)).astype(np.float32)
 
-    What it used to return was a percentile against the model's own training distribution.
-    That survives as `_oof_percentile`, where it weights the ensemble, and is deliberately
-    not offered as a public rank: it is not comparable with a reference rank and would be
-    read as one.
+
+def test_predict_rank_is_refused_without_a_reference(data, fitted):
+    """`rank` is a position against a fixed set of drug-like molecules, and this entry
+    point takes a descriptor matrix -- it never sees the molecules, so it cannot featurize
+    that set itself.
+
+    What earlier versions returned here was a percentile against the model's own training
+    distribution. That survives as `_oof_percentile`, where it weights the ensemble, and is
+    deliberately not offered as a public rank: it is not comparable with a reference rank
+    and would be read as one.
     """
     X, y = data
-    with pytest.raises(ValueError, match="not available on LazyClassifier"):
+    with pytest.raises(ValueError, match="needs a reference library"):
         fitted.predict_rank(X=X)
     assert fitted._oof_percentile(X=X).shape == (len(y), 2)
+
+
+def test_the_refusal_names_the_way_forward(fitted, data):
+    """An error a caller cannot act on is barely better than a wrong number."""
+    X, _ = data
+    with pytest.raises(ValueError) as exc:
+        fitted.predict_rank(X=X)
+    message = str(exc.value)
+    assert "reference_X" in message
+    assert "reference_smiles" in message
+
+
+def test_a_reference_makes_rank_available(data):
+    X, y = data
+    model = LazyClassifier()
+    model.fit(X=X, y=y, reference_X=_reference_matrix())
+    ranks = model.predict_rank(X=X)
+    assert ranks.shape == (len(y), 2)
+    assert np.all((ranks[:, 1] >= 0) & (ranks[:, 1] <= 1))
+    np.testing.assert_allclose(ranks.sum(axis=1), 1.0, atol=1e-9)
+
+
+def test_the_reference_quartiles_land_on_the_quartiles_of_the_scale(data):
+    """The anchoring, checked through the public entry point rather than the helper."""
+    X, y = data
+    reference = _reference_matrix()
+    model = LazyClassifier()
+    model.fit(X=X, y=y, reference_X=reference)
+    reference_ranks = model.predict_rank(X=reference)[:, 1]
+    assert float(np.percentile(reference_ranks, 25)) == pytest.approx(0.25, abs=0.02)
+    assert float(np.percentile(reference_ranks, 75)) == pytest.approx(0.75, abs=0.02)
+
+
+def test_rank_orders_molecules_exactly_as_proba_does(data):
+    X, y = data
+    model = LazyClassifier()
+    model.fit(X=X, y=y, reference_X=_reference_matrix())
+    rank = model.predict_rank(X=X)[:, 1]
+    proba = model.predict_proba(X=X)[:, 1]
+    assert np.array_equal(np.argsort(np.argsort(rank)), np.argsort(np.argsort(proba)))
+
+
+def test_a_reference_h5_matches_the_same_matrix_in_memory(data, tmp_path):
+    """The chunked reader must not change the answer -- it exists only so a large
+    reference is never held whole."""
+    X, y = data
+    reference = _reference_matrix()
+    path = str(tmp_path / "ref.h5")
+    with h5py.File(path, "w") as f:
+        f.create_dataset("X", data=reference)
+
+    from_array = LazyClassifier()
+    from_array.fit(X=X, y=y, reference_X=reference)
+    from_h5 = LazyClassifier()
+    from_h5.fit(X=X, y=y, reference_h5_file=path)
+    np.testing.assert_allclose(
+        from_array.predict_rank(X=X), from_h5.predict_rank(X=X), atol=1e-6
+    )
+
+
+def test_the_reference_survives_save_and_load(data, tmp_path):
+    """`LazyClassifier.load` returns the ONNX artifact, so the reference has to travel into
+    it -- otherwise a saved model silently loses the one output that needed it."""
+    X, y = data
+    model = LazyClassifier()
+    model.fit(X=X, y=y, reference_X=_reference_matrix())
+    directory = str(tmp_path / "with_reference")
+    model.save(directory)
+
+    loaded = LazyClassifier.load(directory)
+    np.testing.assert_allclose(
+        model.predict_rank(X=X)[:, 1], loaded.predict_rank(X)[:, 1], atol=1e-4
+    )
+
+
+def test_a_saved_model_without_a_reference_still_refuses(data, tmp_path):
+    X, y = data
+    model = LazyClassifier()
+    model.fit(X=X, y=y)
+    directory = str(tmp_path / "no_reference")
+    model.save(directory)
+
+    loaded = LazyClassifier.load(directory)
+    assert np.all(np.isfinite(loaded.predict_proba(X)[:, 1]))
+    with pytest.raises(ValueError, match="needs a reference library"):
+        loaded.predict_rank(X)
