@@ -125,6 +125,16 @@ def download(filenames, n: int | None = None, force: bool = False) -> list[Path]
     finally:
         shutil.rmtree(root, ignore_errors=True)
 
+    # Verified after the move, and only once the manifest itself is cached -- fetching it
+    # is what the first pass through here usually does.
+    if MANIFEST_FILENAME not in wanted:
+        from .manifest import load, verify_file
+
+        checked = load(fetch_if_missing=False)
+        if checked:
+            for path in landed:
+                verify_file(path, checked)
+
     logger.success(f"Fetched {len(landed)} file(s) into {target}")
     return [target / f for f in filenames]
 
