@@ -72,6 +72,17 @@ def _staging_repo() -> Path:
     return root
 
 
+def _canary_filename(target: Path) -> str | None:
+    """The canary file this bundle's manifest names, if the manifest is cached."""
+    path = target / MANIFEST_FILENAME
+    if not path.is_file():
+        return None
+    try:
+        return (json.loads(path.read_text()).get("canary") or {}).get("file")
+    except Exception:  # pragma: no cover - corrupt manifest
+        return None
+
+
 def download(filenames, n: int | None = None, force: bool = False) -> list[Path]:
     """Fetch *filenames* from the published bundle into the local cache.
 
@@ -97,6 +108,25 @@ def download(filenames, n: int | None = None, force: bool = False) -> list[Path]
             f"Alternatively, place the bundle at {target} and point "
             "LAZYQSAR_REFERENCE_DIR at it."
         )
+
+    # The manifest comes first, always. It is 13 KB and it is what every other file is
+    # checked against -- fetched afterwards, or not at all, the first download of a bundle
+    # would land unverified, which is exactly the download most worth verifying.
+    if MANIFEST_FILENAME not in wanted and not (target / MANIFEST_FILENAME).is_file():
+        try:
+            download([MANIFEST_FILENAME], n=n)
+        except ReferenceDownloadError as exc:
+            logger.debug(f"No manifest published for this bundle: {exc}")
+
+    # The canary rows travel with the manifest. They are 161 KB and they are the only thing
+    # that can tell whether this install reproduces the published matrices -- and an
+    # air-gapped node that pre-seeds its cache could never verify anything without them.
+    canary = _canary_filename(target)
+    if canary and canary not in wanted and not (target / canary).is_file():
+        try:
+            download([canary], n=n)
+        except ReferenceDownloadError as exc:
+            logger.debug(f"No canary published for this bundle: {exc}")
 
     root = _staging_repo()
     env = dict(os.environ, EVC_REPO_NAME=EOSVC_REPO)
