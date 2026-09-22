@@ -79,52 +79,65 @@ def shipped_descriptor_types():
 
 @pytest.fixture(scope="session", autouse=True)
 def _session_reference():
-    """Install a reference library before any session-scoped fixture fits a model.
+    """Forbid the session from fetching a reference, and build the one real tests need.
 
-    Scope is the whole point. pytest sets higher-scoped fixtures up first, so the
-    session-scoped checkpoint builders run *before* any function-scoped fixture -- and a
-    function-scoped env var would arrive too late for them. Function-scoped overrides still
-    apply on top, which is what lets the stub tiers swap in a differently-shaped reference.
+    Session scope is deliberate and was the one part of the original design that held up:
+    ``test_oof_diagnostics.py`` builds its model in a *module*-scoped fixture, and pytest
+    sets higher-scoped fixtures up first, so a function-scoped env var arrives too late.
+
+    What changed is what gets built. This used to sweep ``DESCRIPTOR_TYPES`` and
+    instantiate every registered descriptor to size it -- five matrices, of which the suite
+    ever read one, at the cost of importing torch and downloading 431 MB of cddd
+    checkpoints. Where those dependencies were absent it raised instead, and a
+    session-scoped autouse fixture that raises errors every test in the run rather than
+    failing one: that is how the base tier came to report 308 errors.
+
+    Now it builds ``mode="fast"`` only -- ``["morgan"]``, one rdkit matrix, no downloads --
+    and only when rdkit is actually installed. ``missing_for_tier("chem")`` is the existing
+    answer to that question, so nothing here restates which descriptor needs what.
+
+    Stub tests install their own matching reference when they register, which happens after
+    this and so takes precedence.
     """
     mp = pytest.MonkeyPatch()
     mp.setenv("LAZYQSAR_REFERENCE_OFFLINE", "1")
     try:
-        _install_reference_for_live_registry(mp, _REFERENCE_CACHE, _reference_root())
+        if not missing_for_tier("chem"):
+            from lazyqsar.registry import DESCRIPTORS_MODE
+
+            _install_reference(
+                mp, _REFERENCE_CACHE, _reference_root(), DESCRIPTORS_MODE["fast"]
+            )
         yield
     finally:
         mp.undo()
 
 
-def _install_reference_for_live_registry(monkeypatch, cache, root):
-    """Build (or reuse) a reference matching whatever descriptors are registered now.
+def _install_reference(monkeypatch, cache, root, names):
+    """Build (or reuse) a reference covering exactly *names*, and point the env at it.
 
-    Keyed by the live registry's shapes, because the stubs mutate ``DESCRIPTOR_TYPES``
-    globally and a `morgan` producing 24 features in one test produces 2048 in another.
-    The loader checks that a reference matrix matches the descriptor it will be scored
-    with, and that check is load-bearing -- so the reference has to follow the stubbing,
-    not precede it.
+    *names* is passed in rather than read off ``DESCRIPTOR_TYPES`` because the registry is
+    not the same thing as what a test will score with. ``install_stub_registry`` replaces
+    entries one at a time with ``setitem``, so after ``register("morgan")`` the four real
+    descriptors are still registered -- and sweeping the registry meant instantiating them.
+    Instantiating is neither free nor local: it imports the heavy dependency and, for cddd,
+    downloads 431 MB of checkpoints. Four of the five matrices it built were never read.
+
+    Keyed by the resulting shapes, because the stubs mutate ``DESCRIPTOR_TYPES`` globally
+    and a `morgan` producing 24 features in one test produces 2048 in another. The loader
+    checks that a reference matrix matches the descriptor it will be scored with, and that
+    check is load-bearing -- so the reference has to follow the stubbing, not precede it.
     """
     from _helpers.reference import build_reference
 
-    from lazyqsar.registry import DESCRIPTOR_TYPES, get_descriptor_type
+    from lazyqsar.registry import get_descriptor_type
 
-    names = []
-    pairs = []
-    for name in sorted(DESCRIPTOR_TYPES):
-        try:
-            instance = get_descriptor_type(name)()
-        except ImportError:
-            # Instantiating is what imports the heavy dependency -- RDKitDescriptor needs
-            # rdkit, chemeleon needs torch -- and the base tier installs neither. Nothing
-            # there scores with a real descriptor, so it needs no matrix for one. This is
-            # skipped rather than allowed to raise because the caller above is a
-            # session-scoped autouse fixture: it runs before every test in the session,
-            # so one ImportError here does not fail a test, it errors every test there
-            # is -- which is exactly how the base tier failed, 308 errors at once.
-            continue
-        names.append(name)
-        pairs.append((name, getattr(instance, "n_dim", None)))
-    signature = tuple(pairs)
+    names = sorted(names)
+    if not names:
+        return
+    signature = tuple(
+        (name, getattr(get_descriptor_type(name)(), "n_dim", None)) for name in names
+    )
     if signature not in cache:
         directory = root / f"sig{len(cache)}"
         cache[signature] = (directory, build_reference(directory, names))
@@ -149,18 +162,17 @@ def stubbed_registry():
     mp = pytest.MonkeyPatch()
     try:
         register = install_stub_registry(mp)
+        stubbed = []
 
         def register_and_refresh(*args, **kwargs):
             # After the stubs are in, not before. `install_stub_registry` only hands back
             # a callable; nothing is registered until it is invoked, so refreshing any
             # earlier builds a reference for the descriptors being replaced.
             out = register(*args, **kwargs)
-            _install_reference_for_live_registry(
-                mp, _REFERENCE_CACHE, _reference_root()
-            )
+            stubbed.extend(n for n in args if n not in stubbed)
+            _install_reference(mp, _REFERENCE_CACHE, _reference_root(), stubbed)
             return out
 
-        _install_reference_for_live_registry(mp, _REFERENCE_CACHE, _reference_root())
         yield register_and_refresh
     finally:
         mp.undo()
@@ -178,17 +190,14 @@ def stub_descriptors(monkeypatch):
     from _helpers.stubs import install_stub_registry
 
     register = install_stub_registry(monkeypatch)
+    stubbed = []
 
     def register_and_refresh(*args, **kwargs):
         out = register(*args, **kwargs)
-        _install_reference_for_live_registry(
-            monkeypatch, _REFERENCE_CACHE, _reference_root()
-        )
+        stubbed.extend(n for n in args if n not in stubbed)
+        _install_reference(monkeypatch, _REFERENCE_CACHE, _reference_root(), stubbed)
         return out
 
-    _install_reference_for_live_registry(
-        monkeypatch, _REFERENCE_CACHE, _reference_root()
-    )
     yield register_and_refresh
     CountingStub.reset()
 
@@ -337,29 +346,6 @@ def _reference_cache(tmp_path_factory):
     Built at most once per shape, so the cost lands once rather than per test.
     """
     return {}, tmp_path_factory.mktemp("references")
-
-
-@pytest.fixture(autouse=True)
-def _offline_reference(monkeypatch, request):
-    """Point every fit at a local reference, and never at the network.
-
-    Fitting requires a reference library. The published bundle is 267 MB behind a network
-    fetch, and a test that reached for it would be a flake; one that silently fitted
-    without a reference would exercise a code path that no longer exists.
-    """
-    monkeypatch.setenv("LAZYQSAR_REFERENCE_OFFLINE", "1")
-    if not (
-        request.node.get_closest_marker("fit")
-        or request.node.get_closest_marker("chem")
-    ):
-        return
-
-    # The same helper the session fixture uses. This body used to be a second copy of it,
-    # which is how the two came to differ: this one checks the markers first, that one
-    # never did, and only this one was ever exercised without the fit stack installed.
-    _install_reference_for_live_registry(
-        monkeypatch, _REFERENCE_CACHE, _reference_root()
-    )
 
 
 @pytest.fixture(autouse=True)
