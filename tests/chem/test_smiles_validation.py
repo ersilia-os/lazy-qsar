@@ -97,3 +97,30 @@ def test_the_two_checks_agree(good, bad):
         validate_smiles(mixed)
     for i in positions:
         assert f"[{i}]" in str(exc.value)
+
+
+def test_every_descriptor_reports_its_width_the_same_way():
+    """`n_dim` is what callers read, and RDKit's was missing.
+
+    `LazyClassifierQSAR` asks the reference library for a matrix of the right width via
+    `descriptors[i].n_dim`, so a slow-mode fit with RDKit active raised AttributeError the
+    moment it reached the reference. Nothing caught it because the fitting tests run in fast
+    mode; the bundle verification gate did, by comparing the published dimension against the
+    installed descriptor's.
+
+    RDKit's count is not a constant -- it is however many descriptors the installed version
+    defines -- so this asserts the attribute agrees with `features`, not a number.
+    """
+    from lazyqsar.registry import DESCRIPTOR_TYPES, get_descriptor_type
+
+    for name in sorted(DESCRIPTOR_TYPES):
+        descriptor = get_descriptor_type(name)()
+        n_dim = getattr(descriptor, "n_dim", None)
+        assert isinstance(n_dim, int) and n_dim > 0, f"{name} has no usable n_dim"
+        # `features` is not universal -- CDDD has none -- so it is only cross-checked
+        # where it exists, which is where the two could disagree.
+        features = getattr(descriptor, "features", None)
+        if features is not None:
+            assert n_dim == len(features), (
+                f"{name}: n_dim {n_dim} disagrees with {len(features)} features"
+            )

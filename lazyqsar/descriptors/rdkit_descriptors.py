@@ -20,6 +20,12 @@ class RDKitDescriptor(object):
             self._descriptor_names
         )
         self.features = [n.lower() for n in self._descriptor_names]
+        # Every other descriptor exposes `n_dim`, and callers read it rather than counting
+        # `features`. Without it a slow-mode fit raised AttributeError the moment it asked
+        # the reference library for a matrix of the right width -- which nothing in the
+        # suite did, because the fitting tests run in fast mode. RDKit's count is not a
+        # constant: it is however many descriptors the installed version defines.
+        self.n_dim = len(self.features)
 
     def transform(self, smiles_list):
         logger.debug("Transforming RDKit descriptors...")

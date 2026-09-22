@@ -122,8 +122,22 @@ Writes `data/reference/<REFERENCE_ID>/` (gitignored):
 | `ordering.npy` | every candidate in selection order, so larger tiers nest |
 | `stage_report.json` | counts, distributions and parameters for every stage |
 
-Remaining steps — descriptor computation, manifest, publish, verify — are documented as they
-land.
+Then describe it, and check what was published:
+
+```bash
+python scripts/compute_reference_descriptors.py --all   # the five matrices
+python scripts/build_reference_manifest.py              # manifest.json + canary rows
+eosvc upload --path data/reference/lazyqsar_reference_v1
+python scripts/verify_reference_bundle.py               # the acceptance gate
+```
+
+`verify_reference_bundle.py` downloads from the **published prefix** into a throwaway
+cache and never reads `data/`, so it cannot pass by finding something the build left
+behind. It checks the manifest, every sha256, that all matrices were built from the same
+molecule list, that this install reproduces the published canary values, and that a model
+fits and ranks correctly against it. Run it on a second machine before anyone depends on
+the bundle: passing here only says the prefix is good *from this environment*, and a
+different RDKit or checkpoint is exactly what the canary exists to catch.
 
 ## Immutability
 
