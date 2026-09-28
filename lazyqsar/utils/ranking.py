@@ -16,6 +16,45 @@ import numpy as np
 # far below any meaningful decision margin and makes the comparison runtime-independent.
 _CUTOFF_ATOL = 1e-6
 
+# The reference percentiles the rank scale is anchored on, and the rank each receives.
+#
+# Tail percentiles rather than quartiles. A bioactivity model's product is the top of the
+# list, and resolving inactives is worth nothing: measured across six antimicrobial models,
+# the top 1% of a screened library falls between the reference's p98.9 and p100, while
+# anchoring on the quartiles spends three quarters of the axis below the library's median.
+# On one of those models the shipped quartile scale gave the 113 best-scoring compounds a
+# span of 0.003 of the axis -- effectively one value; these anchors give them 0.096.
+#
+# Each step is a 10x shrink of the tail, so 0.50 reads "beats 90% of drug-like space",
+# 0.65 "beats 99%", 0.75 "beats 99.9%".
+TAIL_ANCHORS = ((50.0, 0.25), (90.0, 0.50), (99.0, 0.65), (99.9, 0.75))
+
+# Where p95 of the model's own out-of-fold actives lands, when it clears the last reference
+# anchor. Past the reference's p99.9 the library is too sparse to resolve anything -- for a
+# selective model the whole top 1% of a screen can sit inside a single knot interval -- so
+# the top of the scale is pinned on molecules whose labels are known instead.
+ACTIVES_RANK = 0.95
+
+# The decision boundary, as a point on this scale. 0.65 is the reference's p99, so "a hit
+# beats 99% of drug-like space" and the generic hit rate is 1% by construction, rather than
+# whatever a balanced-accuracy search against assay-matched inactives happens to produce
+# (measured: 0.60 to 0.99 across six real models, i.e. most of drug-like space called active).
+#
+# Deliberately at or below the last reference anchor, so inverting it never touches the
+# out-of-fold actives anchor. The cutoff is then a pure function of the reference library and
+# does not wobble on a model fitted from 24 actives. Keep any retuned value <= 0.75.
+DECISION_RANK = 0.65
+
+# The value of the ``decision_cutoff_source`` metadata key that means "this checkpoint's
+# cutoff is :data:`DECISION_RANK` inverted against its reference library". `binary` and the
+# artifacts' `predict` threshold on the cutoff only when they see this, so a checkpoint
+# fitted before the cutoff moved onto the rank scale keeps the labels it always produced.
+#
+# Lives here rather than in `ensemble.combine` because the inference artifacts branch on it
+# and are documented as numpy-only; this module is the shared floor both tiers already
+# import.
+DECISION_CUTOFF_SOURCE = "reference_rank"
+
 
 def binarize(scores, threshold):
     """Return 0/1 labels for *scores* against *threshold*, tolerant of exact ties.
@@ -88,6 +127,108 @@ def prepare_knots(knots):
     return vals, midranks
 
 
+def _collapse_anchors(points):
+    """Sort *points* by probability and keep one per distinct value, carrying the top rank.
+
+    ``np.interp`` needs a strictly increasing ``xp``, and a narrow reference library can put
+    two anchor percentiles on the same probability -- one measured library spans 0.17 to
+    0.26 across its whole range. Keeping the higher rank leaves the map monotone and the
+    inverse single-valued: a rank between the two collapsed values inverts to that one
+    probability, which is the honest answer, because the library cannot tell those ranks
+    apart.
+    """
+    out = []
+    for x, y in sorted(points):
+        if out and x <= out[-1][0]:
+            out[-1] = (out[-1][0], max(out[-1][1], y))
+        else:
+            out.append((x, y))
+    xs = np.array([p[0] for p in out], dtype=np.float64)
+    ys = np.array([p[1] for p in out], dtype=np.float64)
+    return xs, ys
+
+
+def reference_anchor_table(knots=None, prepared=None, anchor_high=None):
+    """The (probability -> rank) anchor points, and whether the actives anchor was used.
+
+    One table, three readers: :func:`rank_from_reference` interpolates it forward,
+    :func:`proba_from_reference_rank` interpolates it backward, and the fit-time anchor
+    decision reads *used* instead of re-deriving the comparison. Holding them to one
+    definition is what stops the forward and inverse maps drifting apart.
+
+    Parameters
+    ----------
+    knots : array_like, optional
+        Reference pooled probabilities. Ignored when *prepared* is given.
+    prepared : tuple, optional
+        The ``(vals, midranks)`` pair from :func:`prepare_knots`.
+    anchor_high : float, optional
+        ``p95`` of the model's out-of-fold actives, or ``None``.
+
+    Returns
+    -------
+    xs, ys : ndarray
+        Probabilities and the rank each receives, both strictly increasing.
+    used : bool
+        Whether *anchor_high* entered the table. ``False`` means the model's known actives
+        do not reach the top 0.1% of drug-like chemical space, so pinning
+        :data:`ACTIVES_RANK` to them would fold the table back on itself -- a *lower*
+        probability would receive a *higher* rank, breaking the one invariant ``rank`` must
+        keep. The table then runs straight from the last reference anchor to certainty. Worth
+        reporting rather than hiding: it is a statement about the model, not about the scale.
+
+    Notes
+    -----
+    The anchor probabilities are read off the collapsed knots by inverse interpolation, the
+    same way :func:`rank_from_reference` has always recovered its quartiles -- not with
+    ``np.percentile`` on the raw array. The two disagree on a library with tied knots, and
+    only the former is consistent with the ECDF the forward map interpolates.
+    """
+    vals, midranks = prepare_knots(knots) if prepared is None else prepared
+    vals = np.asarray(vals, dtype=np.float64)
+    midranks = np.asarray(midranks, dtype=np.float64)
+
+    points = [(0.0, 0.0)]
+    points += [
+        (float(np.interp(q / 100.0, midranks, vals)), rank) for q, rank in TAIL_ANCHORS
+    ]
+    last_reference = points[-1][0]
+
+    used = anchor_high is not None and last_reference < float(anchor_high) < 1.0
+    if used:
+        points.append((float(anchor_high), ACTIVES_RANK))
+    points.append((1.0, 1.0))
+
+    xs, ys = _collapse_anchors(points)
+    return xs, ys, bool(used)
+
+
+def proba_from_reference_rank(rank, knots=None, prepared=None, anchor_high=None):
+    """The probability that :func:`rank_from_reference` maps to *rank*.
+
+    Exact inverse, because both directions interpolate the one table from
+    :func:`reference_anchor_table`, whose ``ys`` are strictly increasing.
+
+    This is what turns a decision expressed on the rank scale -- :data:`DECISION_RANK` --
+    into the probability the model actually thresholds on, and from there into every other
+    unit the model reports.
+
+    Parameters
+    ----------
+    rank : array_like or float
+        Position on the rank scale.
+    knots, prepared, anchor_high
+        As :func:`reference_anchor_table`.
+
+    Returns
+    -------
+    ndarray
+        Pooled probabilities, same shape as *rank*.
+    """
+    xs, ys, _ = reference_anchor_table(knots, prepared, anchor_high)
+    return np.interp(np.asarray(rank, dtype=np.float64), ys, xs)
+
+
 def rank_from_knots(scores, knots=None, prepared=None):
     """Return [0, 1] ECDF ranks for *scores*, interpolating between distinct knots.
 
@@ -139,33 +280,31 @@ def score_from_knots(p1, knots):
 
 
 def rank_from_reference(scores, knots=None, prepared=None, anchors=None):
-    """Position against a reference library, with tails anchored on known molecules.
+    """Position against a reference library, anchored on its upper tail.
 
-    Five segments. The middle says where a molecule sits in drug-like chemical space; the
-    ends say how it compares to what this model already knows::
+    One interpolation over :func:`reference_anchor_table`::
 
-        p < p05            0.05 * p / p05                      -> 0.00 .. 0.05
-        p05 -> Q1          linear                              -> 0.05 .. 0.25
-        Q1 <= p <= Q3      ECDF(p), the exact percentile        -> 0.25 .. 0.75
-        Q3 -> p95          linear                              -> 0.75 .. 0.95
-        p > p95            linear                              -> 0.95 .. 1.00
+        ref p50   -> 0.25      "beats half of drug-like space"
+        ref p90   -> 0.50      "beats 90%"
+        ref p99   -> 0.65      "beats 99%"
+        ref p99.9 -> 0.75      "beats 99.9%"
+        p95 of the model's out-of-fold actives -> 0.95, when it clears ref p99.9
 
-    Q1 and Q3 are the reference library's own quartiles, recovered from the knots, so 0.25,
-    0.50 and 0.75 are exactly the quartiles of drug-like chemical space and between them the
-    value is the true percentile. ``p05``/``p95`` are the 5th and 95th percentiles of this
-    model's out-of-fold inactives and actives.
+    Each step is a 10x shrink of the tail, so the axis is spent where a bioactivity model's
+    product is. Measured across six antimicrobial models, the top 1% of a screened library
+    sits between the reference's p98.9 and p100; the earlier quartile anchoring gave that
+    top 1% a mean span of 0.069 of the axis against 0.215 here, and on one model the 113
+    best-scoring compounds shared a span of 0.003 -- effectively a single value.
 
-    Why the tails are anchored at all. Scaling straight from Q3 to 1.0 assumes a model can
-    reach probability 1.0, and many cannot: calibrators clip to the range seen in training,
-    ensemble averaging pulls extremes inward, and a calibrated probability is bounded by how
-    rare actives are. A model topping out at p=0.40 could then never exceed rank 0.838, so a
-    sixth of the scale was unreachable -- and since the ceiling moves with prevalence as much
-    as with skill, a *perfect* model on a 1%-prevalence task read lower than a mediocre one
-    on an easy task. Anchoring removes that.
+    The cost, taken deliberately: the bottom of the scale is flattened. Roughly a third of a
+    generic library can land below rank 0.25. That is the right trade for a model whose job
+    is a hit list, but it means ``rank`` carries little information about *how* inactive
+    something is, and nothing downstream should read low ranks quantitatively.
 
-    What it costs: every model's top actives read 0.95 by construction, so the top of the
-    scale no longer distinguishes a strong model from a weak one. That signal lives in
-    ``oof_diagnostics.screening_auc`` instead, where it is explicit and testable.
+    Above the reference's maximum the library has nothing left to say, which is what the
+    out-of-fold actives anchor is for -- and when a model's actives do not reach the
+    reference's p99.9 it is dropped rather than folding the map back on itself. See
+    :func:`reference_anchor_table`.
 
     Parameters
     ----------
@@ -175,53 +314,18 @@ def rank_from_reference(scores, knots=None, prepared=None, anchors=None):
     knots, prepared
         The reference, as raw knots or as the output of :func:`prepare_knots`.
     anchors : tuple, optional
-        ``(p05_inactives, p95_actives)``. Either may be ``None``. An anchor that is absent,
-        or that does not sit outside the quartile it belongs to, falls back to a single
-        linear segment to the corresponding extreme -- the behaviour when no anchors exist
-        at all. The two sides are independent.
+        ``(p05_inactives, p95_actives)``. **Only the second element shapes the scale.** The
+        first is still measured and recorded, because where a model's inactives sit is worth
+        reporting, but the tail table has no low anchor: the region it used to govern is now
+        inside the ``0 -> ref p50`` segment.
 
     Returns
     -------
     ndarray
-        Ranks in [0, 1], monotone in *scores*, reaching 1.0 only as the probability does.
+        Ranks in [0, 1], monotone in *scores*.
     """
-    vals, midranks = prepare_knots(knots) if prepared is None else prepared
+    xs, ys, _ = reference_anchor_table(
+        knots, prepared, None if anchors is None else anchors[1]
+    )
     scores = np.asarray(scores, dtype=np.float64)
-
-    if len(vals) == 1:
-        # One distinct value carries no interior at all. Fall back to the two outer
-        # segments meeting at it, which still says which side of it a molecule falls on.
-        q1 = q3 = float(vals[0])
-        ranks = np.full(scores.shape, 0.5)
-    else:
-        # Inverse interpolation: the probabilities at which the reference's own ECDF
-        # crosses 0.25 and 0.75.
-        q1 = float(np.interp(0.25, midranks, vals))
-        q3 = float(np.interp(0.75, midranks, vals))
-        ranks = np.interp(scores, vals, midranks)
-
-    low, high = anchors or (None, None)
-
-    # `np.where`, never boolean assignment: `np.interp` of a scalar returns a numpy scalar,
-    # which has no item assignment. Both branches are evaluated, so every denominator is
-    # proven non-zero by the guard before it is used.
-    if q3 >= q1 and q3 < 1.0:
-        if high is not None and q3 < high < 1.0:
-            near = 0.75 + 0.20 * (scores - q3) / (high - q3)
-            far = 0.95 + 0.05 * (scores - high) / (1.0 - high)
-            ranks = np.where(scores > q3, np.where(scores > high, far, near), ranks)
-        else:
-            # No usable upper anchor: one segment to certainty, as before anchoring.
-            ranks = np.where(
-                scores > q3, 0.75 + 0.25 * (scores - q3) / (1.0 - q3), ranks
-            )
-
-    if q3 >= q1 and q1 > 0.0:
-        if low is not None and 0.0 < low < q1:
-            near = 0.05 + 0.20 * (scores - low) / (q1 - low)
-            far = 0.05 * scores / low
-            ranks = np.where(scores < q1, np.where(scores < low, far, near), ranks)
-        else:
-            ranks = np.where(scores < q1, 0.25 * scores / q1, ranks)
-
-    return np.clip(ranks, 0.0, 1.0)
+    return np.clip(np.interp(scores, xs, ys), 0.0, 1.0)

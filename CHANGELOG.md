@@ -3,10 +3,15 @@
 ## 3.6.0
 
 `predict_rank` now positions a molecule against a fixed reference library of 50,000
-drug-like molecules, anchored on that library's quartiles: 0.25, 0.50 and 0.75 are exactly
-the quartiles of drug-like chemical space, and between them `rank` is the true percentile.
-Before this release it was a percentile against the model's own training set, which sounds
-similar and is not.
+drug-like molecules, anchored on that library's **upper tail**: 0.50 means the top 10% of
+drug-like chemical space, 0.65 the top 1%, 0.75 the top 0.1%. Each step is a 10x shrink of
+the tail. Before this release it was a percentile against the model's own training set,
+which sounds similar and is not.
+
+`binary` and the decision cutoff follow from that scale. The cutoff is fixed at **rank
+0.65** -- "to be called a hit, beat 99% of drug-like space" -- so a model calls 1% of
+generic chemistry active by construction, and `proba`, `logit`, `lift` and `score` cutoffs
+are all derived from that one probability.
 
 The old behaviour was not a bug in the ranking arithmetic. A trained model's out-of-fold
 scores are bimodal -- inactives crushed near 0, actives near 1, almost nothing between --
@@ -18,6 +23,44 @@ was correct; the training set simply contained nothing in that score range, so n
 to the interpolation could manufacture resolution there. Two cheaper fixes were measured
 and rejected -- correcting tie handling moved the mean from 0.670 to 0.669, and ranking
 against training negatives made it worse at 0.748.
+
+### Why the tail and not the quartiles
+
+Quartile anchors spend three quarters of the axis below the library's median, on compounds
+nobody will order. A bioactivity model's product is the top of the list, and measured across
+six real antimicrobial models the top 1% of a screened library sits between the reference's
+p98.9 and p100 -- exactly where the quartile scale had no resolution left. The rank-axis span
+given to the top 1% of DrugBank went from a mean of 0.069 to 0.215; on one model the 113
+best-scoring compounds had shared a span of 0.003, effectively a single value, and now have
+0.096.
+
+The cost is taken deliberately: **the bottom of the scale is flattened.** Roughly a third of
+a generic library can land below rank 0.25. That is the right trade for a hit list, but it
+means `rank` carries little information about *how* inactive something is, and nothing
+downstream should read low ranks quantitatively.
+
+An earlier measurement scored the scales by how *evenly* they spread a whole screening
+library, and on that basis the tail anchors looked worst. That metric values resolving
+inactives, which for a bioactivity model is worth nothing; scored on the top of the list
+instead, the ordering reverses and the tail anchors win on every model at every cut.
+
+### Why the cutoff is a constant
+
+The cutoff used to be learned: `balanced_accuracy_score` maximised over out-of-fold raw
+scores, whose argmax is Youden's J. That is optimal against the inactives *measured in the
+same assay* -- usually close analogues from one programme -- and says nothing about generic
+chemistry. Measured on six real models it gave generic hit rates of **0.60 to 0.99**: every
+one called most of drug-like space active, and one called 98.3% of DrugBank a hit.
+
+Deriving it from the rank scale instead needs no new data -- the reference library is already
+scored at fit time to build the knots -- and 0.65 sits below the last reference anchor, so
+inverting it never touches the out-of-fold actives anchor. The cutoff is therefore a pure
+function of the reference library and does not wobble on a model fitted from 24 actives.
+
+Note that maximising an *ordering-based* criterion on the rank scale would have changed
+nothing: rank is a monotone transform of `proba`, so Youden's J picks the identical split
+either way and only the printed number moves. A fixed point on the scale is the only version
+of this that has any effect.
 
 At fit time the model now scores the reference library and stores the sorted pooled
 probabilities as its knots. Inference is unchanged: still one interpolation against knots
@@ -36,14 +79,48 @@ numpy and onnxruntime.
   per-descriptor training percentiles. It answered a different question, and keeping it
   would have meant one `rank` column meaning two different things depending on when the
   checkpoint was fitted, with nothing in the output to say which.
-- **`decision_cutoff_rank` jumps from ~0.5 to ~0.99** on activity-enriched training sets.
-  This is the correct reading, not a regression: 0.994 means "to be called a hit, beat
-  99.4% of drug-like space". Nothing thresholds on it -- `binary` is still `proba >= 0.5`.
+- **`decision_cutoff_rank` is now exactly `0.65` on every model**, and `binary`
+  thresholds on it. What moves is `decision_cutoff_proba`, which is whatever 0.65 inverts
+  to for that model's reference. On the six antimicrobial models measured, the share of
+  DrugBank called active drops from 68-98% to 0.9-3.6%.
+
+  Gated on a new `decision_cutoff_source: "reference_rank"` key rather than on the presence
+  of `decision_cutoff_proba`, because every checkpoint has one of those. A checkpoint
+  without the key keeps `proba >= 0.5`, so **its labels are bit-identical to before.**
+- **`decision_cutoff_raw` changes scale.** It was a mean of per-head raw cutoffs living on
+  different quantities -- XGB raw probability, RF vote fraction, SVC sigmoid-of-margin, LR
+  probability -- which corresponded to nothing any output emits. It is now the cutoff in the
+  units the task's `score` output emits. Reporting only: `score_from_knots` is a running-max
+  staircase, so `score >= decision_cutoff_raw` is **not** equivalent to `binary`.
+- **`LazyClassifierQSAR.predict()` returns `combine`'s `binary`.** It used to recompute the
+  label from `proba` against a hardcoded 0.5, ignoring the `binary` it had just computed, so
+  the Python API and `--predict_type binary` could disagree. Pass `threshold=` to override.
+- **`LazyClassifier.predict()` (agnostic) thresholds proba, not score.** With a reference it
+  compares `predict_proba` against the rank-derived cutoff; without one it keeps comparing
+  `predict_score` against the balanced-accuracy cutoff, unchanged. The two entry points
+  agreed with neither each other nor the CLI before this.
+- **`anchor_low` no longer shapes the scale.** The tail table has no low anchor, so
+  `anchor_low_used` is always `False`. `p05` of the out-of-fold inactives is still measured
+  and recorded, because where a model's inactives sit is worth reporting.
 - **Fitting requires the reference library.** `lazyqsar setup --reference` fetches it, and
   only the descriptors a model actually uses are downloaded -- 6.5 MB for a `fast` model,
   267 MB for all five.
 
 ### Added
+
+- **`sensitivity_at_cutoff` in `oof_diagnostics`** -- the share of a model's own known
+  actives it still catches while calling 1% of drug-like chemical space active. Sensitivity
+  at a fixed generic hit rate, the standard screening statistic.
+
+  This carries the signal `generic_hit_rate` gives up: now that the cutoff is a fixed point
+  on the rank scale, the hit rate is 0.01 by construction on every model. `generic_hit_rate`
+  is kept anyway, because it is a one-line check that inverting the rank landed where it
+  claims. Measured across six models `sensitivity_at_cutoff` reads 0.042 to 0.622, which
+  ranks them sensibly; a model fitted on shuffled labels catches almost none.
+
+  Precision at the cutoff is deliberately *not* reported. The out-of-fold inactives are
+  assay-matched analogues rather than generic chemistry, so a precision here would look
+  usable and not be -- the same trap the `oof_auc`-versus-`screening_auc` note describes.
 
 - **`oof_diagnostics` in every checkpoint, and in the fit log.** A rank on its own cannot be
   judged, so a fitted model now records how it treats molecules whose labels are known:
@@ -148,31 +225,31 @@ numpy and onnxruntime.
 
 ### Known limitations
 
-- **The tails are anchored on known molecules.** `0.95` is the 95th percentile of the
-  model's out-of-fold actives and `0.05` the 5th percentile of its inactives. Scaling
-  straight to 1.0 assumed a model can reach probability 1.0; many cannot, so a model topping
-  out at p = 0.40 could never exceed rank 0.838 and a sixth of the scale was unreachable.
-  Because that ceiling tracks prevalence as much as skill, a perfect model on a rare target
-  read lower than a mediocre one on an easy target -- anchoring makes ranks comparable across
-  tasks. An anchor that does not sit outside its quartile is dropped for that side, which
-  then behaves as before; `anchor_low_used` / `anchor_high_used` record which branch was
-  taken. The cost is that every model's top actives read 0.95 by construction, so the top of
-  the scale no longer distinguishes model quality -- `oof_diagnostics.screening_auc` carries
-  that instead.
-- **Above 0.75 the scale is not a percentile.** A molecule at `rank = 0.9` beats far more
-  than 90% of drug-like space. This is deliberate. A selective model scores generic
-  chemistry into a narrow band -- measured 0.065 to 0.334, while its actives sat at 0.4 to
-  0.95, two to eight reference-IQRs above the reference median -- so *any* scale calibrated
-  to the reference pins every active at 1.0 and leaves a hit list as an undifferentiated
-  wall. A plain ECDF does it exactly; even a logistic fitted to the reference's quartiles
-  only moves from 0.9916 to 0.99999999 across the whole active range. Outside the quartiles
-  `rank` is a bounded linear function of probability instead.
-- **Roughly a quarter of a generic library lands just above 0.75**, since the reference's
-  own top quartile is compressed there. That is the cost of reserving the upper scale, and
-  it reads correctly: the top quartile of generic chemistry is still generic.
-- **A rank says nothing on its own about model skill.** A random model still puts a
-  quarter of the reference above 0.75. If the real problem is that top-ranked compounds are
-  not active, this relabels it rather than fixing it.
+- **The top of the scale is anchored on known molecules.** `0.95` is the 95th percentile
+  of the model's out-of-fold actives. Past the reference's p99.9 the library is too sparse
+  to resolve anything -- for a selective model the whole top 1% of a screen can sit inside a
+  single knot interval -- so the last stretch is pinned on molecules whose labels are known.
+  An anchor that does not clear p99.9 is dropped and the scale runs straight to certainty;
+  `anchor_high_used` records which branch was taken. That case is itself a finding: it means
+  the model's known actives do not reach the top 0.1% of drug-like chemical space. The cost
+  is that every model's top actives read 0.95 by construction, so the top of the scale does
+  not distinguish model quality -- `oof_diagnostics.screening_auc` and
+  `sensitivity_at_cutoff` carry that instead.
+- **The bottom of the scale is flattened.** Roughly a third of a generic library can land
+  below rank 0.25. That is the deliberate trade for spending the axis on the top of the
+  list, but it means `rank` carries little information about *how* inactive something is,
+  and nothing downstream should read low ranks quantitatively.
+- **A rank says nothing on its own about model skill.** A random model still puts 1% of the
+  reference above the cutoff, because the cutoff is defined that way. If the real problem is
+  that top-ranked compounds are not active, this relabels it rather than fixing it -- and
+  since every output is a monotone transform of one probability, none of them can separate a
+  false positive from a true positive that scores the same.
+- **The reference knot subsample caps the tail at p99.99.** `subsample_knots` thins 50,000
+  reference probabilities to 10,000 spaced evenly *in rank*, so 7,500 of them sit below the
+  third quartile -- the part of the library this scale discards. For a selective model the
+  binding constraint on tail resolution is therefore the subsample, not the anchor table: its
+  top 1% of compounds can fall inside one knot spacing. A tail-weighted subsample would cost
+  nothing in file size and is the obvious next step.
 - **`proba` remains conditioned on the training prior**, not the screening library's, so
   this release does not make probabilities real-world-calibrated.
 - **The applicability-domain veto stays train-relative**, so diverse library compounds trip

@@ -19,12 +19,26 @@ from .registry import (  # noqa: F401  (re-exported for backwards compatibility)
     get_descriptor_type,
 )
 from .ensemble.combine import (
+    DECISION_CUTOFF_SOURCE,
+    read_decision_cutoff,
     read_pooled_rank_anchors,
     read_pooled_rank_knots,
     read_pooled_score_knots,
 )
 from .utils.logging import logger
-from .utils.ranking import prepare_knots, rank_from_reference, subsample_knots
+from .utils.ranking import (
+    DECISION_RANK,
+    prepare_knots,
+    proba_from_reference_rank,
+    rank_from_reference,
+    reference_anchor_table,
+    score_from_knots,
+    subsample_knots,
+)
+
+# Matches `combine`'s guard on the lift denominator, so the reported cutoff is the number
+# the `lift` output is compared against.
+_LIFT_EPS = 1e-7
 
 
 def _smiles_md5(smiles_list):
@@ -197,14 +211,26 @@ class _EnsemblePredictMixin:
         """Probability over the population prior, shape (n_samples, 2)."""
         return self._combined(smiles_list).values["lift"]
 
-    def predict(self, smiles_list, threshold=0.5, cutoff=None):
+    def predict(self, smiles_list, threshold=None, cutoff=None):
         """Binary labels, shape (n_samples,).
+
+        With no threshold given this returns :func:`combine`'s own ``binary`` output, which
+        thresholds on the checkpoint's decision cutoff -- a fixed point on the reference rank
+        scale, so the model calls about 1% of drug-like chemical space active. A checkpoint
+        without one falls back to ``proba >= 0.5``, as this method always did.
+
+        That matters because this method used to recompute the label from ``proba`` against a
+        hardcoded 0.5, ignoring the ``binary`` that :meth:`_combined` had just computed. The
+        Python API and ``--predict_type binary`` could therefore disagree.
 
         ``cutoff`` is accepted as an alias for ``threshold``: the two classes this mixin
         replaced spelled the same argument differently, and both spellings are in use.
+        Passing either overrides the checkpoint's cutoff.
         """
         if cutoff is not None:
             threshold = cutoff
+        if threshold is None:
+            return self._combined(smiles_list).values["binary"]
         p1 = self._combined(smiles_list).values["proba"][:, 1]
         labels = p1 >= threshold
         # NaN >= threshold is False, which would quietly turn an unparseable molecule into
@@ -251,16 +277,37 @@ def _anchors_from_metadata(meta):
 
 
 def _anchor_pair(anchors):
-    """``(low, high)`` from the stored anchor record, honouring the per-side fallbacks.
+    """``(low, high)`` from the stored anchor record, honouring the usability flags.
 
-    An anchor that was not usable -- it did not sit outside the quartile it belongs to -- is
-    passed as ``None``, so that side behaves exactly as it did before anchoring existed.
+    ``high`` is ``None`` when p95 of the out-of-fold actives did not clear the reference's
+    p99.9, so the scale runs straight from there to certainty. ``low`` is always ``None``:
+    the tail table has no low anchor, and `rank_from_reference` reads only the second
+    element. Kept as a pair because that is the shape stored in every checkpoint.
     """
     if not anchors:
         return None
     low = anchors.get("anchor_low") if anchors.get("anchor_low_used") else None
     high = anchors.get("anchor_high") if anchors.get("anchor_high_used") else None
     return None if low is None and high is None else (low, high)
+
+
+def _decision_cutoff_from_metadata(meta):
+    """The fitted model's cutoff record, rebuilt from a task-level ``metadata.json``.
+
+    Shaped like :meth:`LazyClassifierQSAR._build_decision_cutoff`'s return so that a loaded
+    model and a freshly fitted one carry the same attribute. ``None`` for a checkpoint whose
+    cutoff is not on the reference rank scale, which keeps ``binary`` at ``proba >= 0.5``.
+    """
+    proba = read_decision_cutoff(meta)
+    if proba is None:
+        return None
+    return {
+        "rank": meta.get("decision_cutoff_rank"),
+        "proba": proba,
+        "logit": meta.get("decision_cutoff_logit"),
+        "lift": meta.get("decision_cutoff_lift"),
+        "source": DECISION_CUTOFF_SOURCE,
+    }
 
 
 def _spec_from_attributes(
@@ -274,6 +321,7 @@ def _spec_from_attributes(
     pooled_knots=None,
     pooled_score_knots=None,
     pooled_anchors=None,
+    decision_cutoff=None,
 ):
     """Build an :class:`EnsembleSpec` from the per-descriptor attribute lists.
 
@@ -281,12 +329,18 @@ def _spec_from_attributes(
     active ones so the weighting code never has to re-index. *pooled_knots* and
     *pooled_score_knots* are the arguments that are not per-descriptor: each describes the
     pooled probability of the active set as a whole, so they pass through unsliced -- as
-    do *pooled_anchors*, which pin the scale's tails.
+    do *pooled_anchors*, which pin the top of the scale, and *decision_cutoff*.
+
+    *decision_cutoff* of ``None`` leaves :class:`EnsembleSpec`'s own default in place, which
+    is the historical ``proba >= 0.5``. Callers that only want ``proba`` need not supply it.
     """
 
     def sliced(seq):
         return tuple(seq[i] for i in active_indices) if seq else None
 
+    extra = (
+        {} if decision_cutoff is None else {"decision_cutoff": float(decision_cutoff)}
+    )
     return EnsembleSpec(
         descriptor_names=tuple(names[i] for i in active_indices),
         oof_aucs=sliced(oof_aucs),
@@ -297,6 +351,7 @@ def _spec_from_attributes(
         pooled_rank_knots=pooled_knots,
         pooled_score_knots=pooled_score_knots,
         pooled_rank_anchors=pooled_anchors,
+        **extra,
     )
 
 
@@ -399,6 +454,7 @@ class ArtifactWrapper(_EnsemblePredictMixin):
         pooled_rank_knots=None,
         pooled_score_knots=None,
         pooled_rank_anchors=None,
+        decision_cutoff=None,
     ):
         self.descriptors = descriptors
         self.artifacts = artifacts
@@ -413,6 +469,9 @@ class ArtifactWrapper(_EnsemblePredictMixin):
         self.pooled_rank_knots = pooled_rank_knots  # ndarray or None
         self.pooled_score_knots = pooled_score_knots  # (ndarray, ndarray) or None
         self.pooled_rank_anchors = pooled_rank_anchors  # (low, high) or None
+        self.decision_cutoff = (
+            decision_cutoff  # float or None -> `binary` falls back to 0.5
+        )
         self._ensemble_cache = {}
 
     def _channels(self, smiles_list):
@@ -464,6 +523,7 @@ class ArtifactWrapper(_EnsemblePredictMixin):
             getattr(self, "pooled_rank_knots", None),
             getattr(self, "pooled_score_knots", None),
             getattr(self, "pooled_rank_anchors", None),
+            getattr(self, "decision_cutoff", None),
         )
         return _stack_channels(y_hats, rank_preds, score_preds, ad_scores) + (spec,)
 
@@ -689,6 +749,8 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
         # Before the diagnostics, because the band is expressed on the scale the anchors
         # help define.
         self.pooled_rank_anchors_ = self._build_rank_anchors(_stacked, y)
+        # Before the diagnostics too: `sensitivity_at_cutoff` needs the cutoff.
+        self.decision_cutoff_ = self._build_decision_cutoff()
         self.oof_diagnostics_ = self._build_oof_diagnostics(_stacked, y)
 
         for row, active in zip(desc_rows, active_mask):
@@ -718,7 +780,16 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
                 "whether actives rise above generic chemistry, which oof_auc does not ask)"
             )
         hit = diag.get("generic_hit_rate")
-        if hit is not None:
+        sens = diag.get("sensitivity_at_cutoff")
+        if hit is not None and sens is not None:
+            # As a pair: the hit rate alone is now fixed by the cutoff and says nothing
+            # about the model, while the two together are the screening trade-off.
+            logger.info(
+                f"  at rank {diag.get('decision_cutoff_rank')}, calls {hit:.2%} of "
+                f"drug-like chemical space active, catching {sens:.1%} of its own "
+                "known actives"
+            )
+        elif hit is not None:
             logger.info(
                 f"  this model would call {hit:.2%} of drug-like chemical space active"
             )
@@ -780,17 +851,21 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
         return build_pooled_score_knots(*stacked)
 
     def _build_rank_anchors(self, stacked, y):
-        """Where the rank scale's tails are pinned: the model's own known molecules.
+        """Where the top of the rank scale is pinned: the model's own known actives.
 
-        ``p95`` of the out-of-fold actives becomes rank 0.95 and ``p05`` of the inactives
-        becomes 0.05, so the top of the scale is reachable whatever the model's probability
-        ceiling. Without them the scale runs straight from Q3 to 1.0, which assumes a model
-        can reach certainty -- and a model topping out at p=0.40 could then never exceed
-        rank 0.838, with the ceiling moving as much with prevalence as with skill.
+        ``p95`` of the out-of-fold actives becomes rank 0.95, so the top of the scale is
+        reachable whatever the model's probability ceiling. Without it the scale runs
+        straight from the reference's p99.9 to 1.0, which assumes a model can reach
+        certainty -- and most cannot: calibrators clip to the range seen in training and a
+        calibrated probability is bounded by how rare actives are.
 
-        An anchor that does not sit outside the quartile it belongs to is dropped for that
-        side, which then behaves exactly as it did before anchoring existed. Recorded, never
-        silent: a rank must not quietly mean two different things.
+        The decision is delegated to :func:`reference_anchor_table` rather than repeated
+        here, so the anchor this records is by construction the anchor the scale uses.
+
+        ``p05`` of the inactives is still measured and recorded -- where a model's inactives
+        sit is worth reporting -- but it no longer shapes the scale: the tail table has no
+        low anchor, and the region it used to govern now lies inside the
+        ``0 -> reference p50`` segment.
         """
         knots = getattr(self, "pooled_rank_knots_", None)
         if stacked is None or knots is None or not len(knots):
@@ -803,27 +878,20 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
         if len(y) != len(p1):
             return None
 
-        vals, midranks = prepare_knots(knots)
-        q1 = float(np.interp(0.25, midranks, vals))
-        q3 = float(np.interp(0.75, midranks, vals))
-
+        prepared = prepare_knots(knots)
         act, inact = p1[y == 1], p1[y == 0]
         high = float(np.percentile(act, 95)) if act.size else None
         low = float(np.percentile(inact, 5)) if inact.size else None
 
-        high_used = high is not None and q3 < high < 1.0
-        low_used = low is not None and 0.0 < low < q1
+        _, _, high_used = reference_anchor_table(prepared=prepared, anchor_high=high)
         if high is not None and not high_used:
+            last_reference = float(np.interp(0.999, prepared[1], prepared[0]))
             logger.warning(
                 f"Upper rank anchor unused: p95 of the out-of-fold actives ({high:.3f}) "
-                f"does not exceed the reference's third quartile ({q3:.3f}). The top of "
-                "the scale falls back to a straight line to certainty."
-            )
-        if low is not None and not low_used:
-            logger.warning(
-                f"Lower rank anchor unused: p05 of the out-of-fold inactives ({low:.3f}) "
-                f"is not below the reference's first quartile ({q1:.3f}). The bottom of "
-                "the scale falls back to a straight line to zero."
+                f"does not exceed the reference's 99.9th percentile "
+                f"({last_reference:.3f}) -- this model's known actives do not reach the "
+                "top 0.1% of drug-like chemical space. The top of the scale falls back to "
+                "a straight line to certainty; see oof_diagnostics.screening_auc."
             )
         if act.size and act.size < 20:
             logger.warning(
@@ -834,10 +902,64 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
         return {
             "anchor_low": low,
             "anchor_high": high,
-            "anchor_low_used": bool(low_used),
+            # Recorded for symmetry with `anchor_high` and read by nothing: the tail table
+            # has no low anchor. Always False so no reader can mistake it for live.
+            "anchor_low_used": False,
             "anchor_high_used": bool(high_used),
             "n_actives": int(act.size),
             "n_inactives": int(inact.size),
+        }
+
+    def _build_decision_cutoff(self):
+        """The decision boundary, fixed on the reference-library rank scale.
+
+        ``DECISION_RANK`` is inverted against this model's reference knots, so the cutoff is
+        "beat 99% of drug-like chemical space" on every model and the generic hit rate is 1%
+        by construction. What it replaces is a balanced-accuracy threshold learned from
+        out-of-fold scores: optimal against the *assay-matched* inactives it was fitted on,
+        and on six real antimicrobial models it called 60% to 99% of drug-like space active.
+
+        Every unit is derived here from the one probability, rather than each being averaged
+        up the descriptor hierarchy independently. That is what makes them mutually
+        consistent: pushing ``proba`` through the forward maps reproduces ``rank``, ``logit``
+        and ``lift`` exactly.
+
+        Cannot be aggregated, which is why it lives here and not per descriptor: the mean of
+        two descriptors' p99 is a probability whose rank on the *pooled* scale is not 0.65.
+
+        Returns
+        -------
+        dict or None
+            ``{"rank", "proba", "logit", "lift", "source"}``, or ``None`` when this model has
+            no reference library -- in which case ``binary`` keeps ``proba >= 0.5``.
+
+        Notes
+        -----
+        ``lift`` still varies across models even though ``rank`` is fixed: the cutoff
+        probability is a property of the reference library, the prior a property of the
+        training set. It uses ``combine``'s guarded formula so that the number reported is
+        the one the ``lift`` output is actually compared against.
+        """
+        knots = getattr(self, "pooled_rank_knots_", None)
+        if knots is None or not len(knots):
+            return None
+
+        anchors = _anchor_pair(getattr(self, "pooled_rank_anchors_", None))
+        proba = float(
+            proba_from_reference_rank(
+                DECISION_RANK,
+                prepared=prepare_knots(knots),
+                anchor_high=None if anchors is None else anchors[1],
+            )
+        )
+        clipped = float(np.clip(proba, 1e-7, 1.0 - 1e-7))
+        prior = getattr(self, "population_prior_", None) or 0.0
+        return {
+            "rank": DECISION_RANK,
+            "proba": proba,
+            "logit": float(np.log(clipped / (1.0 - clipped))),
+            "lift": float(proba / max(prior, _LIFT_EPS)) if prior > 0 else None,
+            "source": DECISION_CUTOFF_SOURCE,
         }
 
     def _build_oof_diagnostics(self, stacked, y):
@@ -894,6 +1016,8 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
             "inactives": _rank_band(ranks[y == 0]),
             "screening_auc": None,
             "generic_hit_rate": None,
+            "decision_cutoff_rank": None,
+            "sensitivity_at_cutoff": None,
         }
 
         # The knots are a uniform subsample of the reference's pooled probabilities, so a
@@ -914,14 +1038,23 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
             except Exception:  # pragma: no cover - degenerate label vectors only
                 pass
 
-        cutoffs = [
-            m._model.decision_cutoff_proba_
-            for m in self.models
-            if hasattr(getattr(m, "_model", None), "decision_cutoff_proba_")
-        ]
-        if cutoffs and reference.size:
-            out["generic_hit_rate"] = float(
-                (reference >= float(np.mean(cutoffs))).mean()
+        cut = getattr(self, "decision_cutoff_", None)
+        if cut is not None and reference.size:
+            p_cut = float(cut["proba"])
+            out["decision_cutoff_rank"] = cut["rank"]
+            # Now 0.01 by construction, and kept for exactly that reason: it is a one-line
+            # check that inverting the rank landed where it claims. It no longer
+            # discriminates between models -- `sensitivity_at_cutoff` does that.
+            out["generic_hit_rate"] = float((reference >= p_cut).mean())
+            # The share of its own known actives the model catches while calling that 1% of
+            # drug-like space active. Sensitivity at a fixed generic hit rate: the standard
+            # screening statistic, and the signal `generic_hit_rate` gives up.
+            #
+            # Precision is deliberately absent. The out-of-fold inactives are assay-matched
+            # analogues, not generic chemistry, so a precision here would look usable and
+            # not be -- the same trap the oof_auc/screening_auc note above describes.
+            out["sensitivity_at_cutoff"] = (
+                float((act >= p_cut).mean()) if act.size else None
             )
         return out
 
@@ -1055,6 +1188,7 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
             getattr(self, "pooled_rank_knots_", None),
             getattr(self, "pooled_score_knots_", None),
             _anchor_pair(getattr(self, "pooled_rank_anchors_", None)),
+            (getattr(self, "decision_cutoff_", None) or {}).get("proba"),
         )
         return Y, R, S, A, spec
 
@@ -1078,6 +1212,11 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
             }
             if self.models
             else {},
+            # The pre-reference fallback: a mean of the per-descriptor balanced-accuracy
+            # cutoffs, each in its own unit. Overwritten in one block below when this model
+            # has a reference library, which is the only case that can place the cutoff on
+            # the rank scale. Left here so a model fitted without one still reports
+            # something, on the scale it always did.
             "decision_cutoff_raw": float(
                 np.mean([m._model.decision_cutoff_raw_ for m in self.models])
             )
@@ -1093,6 +1232,7 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
             )
             if self.models
             else None,
+            "decision_cutoff_source": None,
             "oof_aucs": {
                 name: float(auc)
                 for name, auc in zip(self.descriptor_types, self.oof_aucs_)
@@ -1189,27 +1329,36 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
                 "descriptors": _ref.get("descriptors"),
                 "saturation": _ref.get("saturation"),
             }
-            # The tails are pinned on out-of-fold molecules, which do not travel in the
-            # checkpoint, so the anchors themselves have to.
+            # The top of the scale is pinned on out-of-fold molecules, which do not travel
+            # in the checkpoint, so the anchor itself has to. `anchor_low` travels too, as
+            # a diagnostic; it no longer shapes the scale.
             _anchors = getattr(self, "pooled_rank_anchors_", None)
             if _anchors:
                 meta["pooled_ranker"].update(_anchors)
-            # decision_cutoff_raw/proba/logit/lift are one learned threshold in four
-            # units. Its rank image used to be a mean of the per-descriptor rank cutoffs,
-            # which after the pooled reference lands on a scale nothing emits. Nothing in
-            # the package thresholds on it -- binary is proba >= 0.5 -- but it is reported
-            # to users, so it should mean what its name says.
-            _cut_p = meta.get("decision_cutoff_proba")
-            if _cut_p is not None:
-                meta["decision_cutoff_rank"] = float(
-                    rank_from_reference(
-                        float(_cut_p),
-                        prepared=prepare_knots(_knots),
-                        anchors=_anchor_pair(
-                            getattr(self, "pooled_rank_anchors_", None)
-                        ),
+            # The whole cutoff family, in one place, derived from the single probability
+            # `_build_decision_cutoff` inverted out of the rank scale. Previously
+            # `decision_cutoff_rank` was corrected here while proba/logit/lift were built
+            # from a mean-of-means far above -- one threshold maintained in two conditional
+            # regions, which is how they drifted apart.
+            _cut = getattr(self, "decision_cutoff_", None)
+            if _cut is not None:
+                meta["decision_cutoff_proba"] = _cut["proba"]
+                meta["decision_cutoff_rank"] = _cut["rank"]
+                meta["decision_cutoff_logit"] = _cut["logit"]
+                meta["decision_cutoff_lift"] = _cut["lift"]
+                meta["decision_cutoff_source"] = _cut["source"]
+                # `decision_cutoff_raw` on the scale the task's `score` output emits. The
+                # mean it replaces averaged per-head raw cutoffs living on different
+                # quantities (XGB raw probability, RF vote fraction, SVC sigmoid-of-margin,
+                # LR probability), giving a number that corresponded to no emitted scale.
+                #
+                # Reporting only: `score_from_knots` is a running-max staircase, so a query
+                # whose score equals this value can sit either side of the probability
+                # cutoff. `score >= decision_cutoff_raw` is NOT equivalent to `binary`.
+                if _score_knots is not None:
+                    meta["decision_cutoff_raw"] = float(
+                        score_from_knots(_cut["proba"], _score_knots)
                     )
-                )
 
         with open(os.path.join(model_dir, "metadata.json"), "w") as f:
             json.dump(meta, f, indent=2)
@@ -1307,6 +1456,7 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
             obj.pooled_rank_knots_ = read_pooled_rank_knots(meta)
             obj.pooled_rank_anchors_ = _anchors_from_metadata(meta)
             obj.pooled_score_knots_ = read_pooled_score_knots(meta)
+            obj.decision_cutoff_ = _decision_cutoff_from_metadata(meta)
         else:
             obj.population_prior_ = 0.5
             obj.oof_aucs_ = [1.0] * len(descriptor_types)
@@ -1317,7 +1467,11 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
             obj.ad_hard_cutoffs_ = None
             obj._rank_error_curves_ = [None] * len(descriptor_types)
             obj.pooled_rank_knots_ = None
+            # Was never set on this branch, so only `getattr` defaults elsewhere kept it
+            # from raising. Set explicitly alongside its siblings.
+            obj.pooled_rank_anchors_ = None
             obj.pooled_score_knots_ = None
+            obj.decision_cutoff_ = None
         return obj
 
     def save_onnx(self, model_dir: str, clean: bool = True):
@@ -1343,6 +1497,11 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
         population_prior = 0.5
         pooled_rank_knots = None
         pooled_score_knots = None
+        # Initialised here, not only inside the branch below: both are passed to
+        # `ArtifactWrapper` unconditionally, so a checkpoint with no `metadata.json` raised
+        # `UnboundLocalError` on `pooled_rank_anchors`.
+        pooled_rank_anchors = None
+        decision_cutoff = None
         if os.path.isfile(meta_path):
             with open(meta_path) as f:
                 meta = json.load(f)
@@ -1380,6 +1539,7 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
             pooled_rank_knots = read_pooled_rank_knots(meta)
             pooled_rank_anchors = read_pooled_rank_anchors(meta)
             pooled_score_knots = read_pooled_score_knots(meta)
+            decision_cutoff = read_decision_cutoff(meta)
 
         descriptors, artifacts, ad_artifacts = _load_descriptor_stack(
             model_dir,
@@ -1402,6 +1562,7 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
             pooled_rank_knots=pooled_rank_knots,
             pooled_rank_anchors=pooled_rank_anchors,
             pooled_score_knots=pooled_score_knots,
+            decision_cutoff=decision_cutoff,
         )
 
     def save(self, model_dir: str):

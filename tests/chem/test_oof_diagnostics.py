@@ -16,6 +16,7 @@ import pytest
 
 from _helpers.smiles import load_reference_dataset
 from lazyqsar.qsar import LazyClassifierQSAR
+from lazyqsar.utils.ranking import DECISION_RANK
 
 
 def _fit(tmp_path, y, name="m"):
@@ -37,7 +38,14 @@ def real(tmp_path_factory):
 def test_the_checkpoint_carries_the_diagnostics(real):
     _, _, meta = real
     diag = meta["oof_diagnostics"]
-    assert set(diag) == {"actives", "inactives", "screening_auc", "generic_hit_rate"}
+    assert set(diag) == {
+        "actives",
+        "inactives",
+        "screening_auc",
+        "generic_hit_rate",
+        "decision_cutoff_rank",
+        "sensitivity_at_cutoff",
+    }
     assert diag["actives"]["n"] + diag["inactives"]["n"] == 233
 
 
@@ -67,10 +75,29 @@ def test_the_rates_are_proportions(real):
     assert 0.0 <= diag["generic_hit_rate"] <= 1.0
 
 
-def test_a_selective_model_calls_little_of_chemical_space_active(real):
-    """The number that makes a model's selectivity legible before anyone screens with it."""
-    _, _, meta = real
-    assert meta["oof_diagnostics"]["generic_hit_rate"] < 0.10
+def test_the_hit_rate_is_fixed_by_the_cutoff(real):
+    """`generic_hit_rate` is now 1% by construction, and kept for exactly that reason.
+
+    The cutoff is `DECISION_RANK` inverted against the reference, so the share of drug-like
+    chemical space called active is pinned. This assertion is therefore a check that the
+    inverse landed where it claims, not a statement about the model -- what discriminates
+    between models is `sensitivity_at_cutoff`.
+
+    The tolerance is the knot resolution: the reference is subsampled, so the percentile can
+    only be hit to within one knot spacing.
+    """
+    diag = real[2]["oof_diagnostics"]
+    assert diag["decision_cutoff_rank"] == DECISION_RANK
+    assert diag["generic_hit_rate"] == pytest.approx(0.01, abs=2e-3)
+
+
+def test_a_working_model_keeps_most_of_its_actives_at_that_hit_rate(real):
+    """The number that makes a model's selectivity legible before anyone screens with it.
+
+    Sensitivity at a fixed generic hit rate: what share of its own known actives the model
+    still catches while calling only 1% of drug-like space active.
+    """
+    assert real[2]["oof_diagnostics"]["sensitivity_at_cutoff"] > 0.5
 
 
 def test_the_band_is_on_the_scale_the_user_sees(real):
@@ -103,6 +130,12 @@ def test_a_worthless_model_says_so(tmp_path):
     assert diag["actives"]["rank_p50"] < 0.85, "its actives must not look like actives"
     # The two classes must be indistinguishable, which is what "learned nothing" means.
     assert diag["actives"]["rank_p25"] < diag["inactives"]["rank_p75"]
+    # And the assertion `generic_hit_rate` used to carry, now that it is fixed by the
+    # cutoff: at a 1% hit rate a model that learned nothing catches almost none of its
+    # actives, where the real model above keeps more than half.
+    assert diag["sensitivity_at_cutoff"] < 0.25, (
+        "a shuffled model must not catch its actives at a 1% generic hit rate"
+    )
 
 
 def test_the_checkpoint_carries_the_rank_anchors(real):
@@ -111,7 +144,9 @@ def test_the_checkpoint_carries_the_rank_anchors(real):
     _, _, meta = real
     block = meta["pooled_ranker"]
     assert block["anchor_high"] is not None and block["anchor_low"] is not None
-    assert block["anchor_high_used"] and block["anchor_low_used"]
+    # Only the high anchor shapes the scale: the tail table has no low anchor, so
+    # `anchor_low` is recorded as a diagnostic and `anchor_low_used` is always False.
+    assert block["anchor_high_used"] and not block["anchor_low_used"]
     assert block["n_actives"] == 54 and block["n_inactives"] == 179
 
 

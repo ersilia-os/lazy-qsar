@@ -4,6 +4,7 @@ import time as _time
 import numpy as np
 
 from lazyqsar.utils.ranking import (
+    DECISION_CUTOFF_SOURCE,
     binarize,
     prepare_knots,
     rank_from_knots,
@@ -586,7 +587,21 @@ class LazyClassifier(object):
         return np.column_stack([1 - rank_1, rank_1])
 
     def predict(self, X, cutoff=None):
-        """Return binary labels using the OOF-learned decision cutoff."""
+        """Return binary labels using this model's decision cutoff.
+
+        Two paths, branching on what the cutoff *is* rather than on any setting:
+
+        - A cutoff placed on the reference rank scale exists in probability units only, so
+          it is compared against ``predict_proba``. The model then calls a known fraction of
+          drug-like chemical space active.
+        - Without a reference there is no such cutoff, and the out-of-fold
+          balanced-accuracy threshold is compared against ``predict_score`` exactly as
+          before, so a model fitted without one labels bit-identically.
+        """
+        if cutoff is None and getattr(self, "decision_cutoff_source_", None) == (
+            DECISION_CUTOFF_SOURCE
+        ):
+            return binarize(self.predict_proba(X)[:, 1], self.decision_cutoff_proba_)
         threshold = self.decision_cutoff_raw_ if cutoff is None else cutoff
         return binarize(self.predict_score(X)[:, 1], threshold)
 
@@ -610,6 +625,9 @@ class LazyClassifier(object):
             "decision_cutoff_oof_percentile": self.decision_cutoff_rank_,
             "decision_cutoff_logit": self.decision_cutoff_logit_,
             "decision_cutoff_lift": self.decision_cutoff_lift_,
+            # Names which of the two cutoff conventions this checkpoint carries, so the
+            # artifact's `predict` can branch on data rather than guessing from the value.
+            "decision_cutoff_source": getattr(self, "decision_cutoff_source_", None),
         }
         knots = getattr(self, "oof_percentile_knots_", None)
         if knots is not None and len(knots):

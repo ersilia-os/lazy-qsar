@@ -90,41 +90,49 @@ from lazyqsar.qsar import LazyClassifierQSAR
 model = LazyClassifierQSAR(mode="slow") # default is "slow"
 model.fit(smiles_list=smiles_train, y=y_train)
 
-ranks = model.predict_rank(smiles_list=smiles_test)[:, 1]  # position against 50,000 drug-like reference molecules
+ranks = model.predict_rank(smiles_list=smiles_test)[:, 1]  # position against 50,000 drug-like reference molecules; 0.65 = beats 99%
 ```
 
 Other prediction methods are `predict_proba`, `predict_logit`, `predict_score`, `predict_lift` and `predict` (binary labels). All six share one implementation with the CLI, so a checkpoint gives the same answer through either entry point.
 
 > `predict_rank` positions a molecule against a **fixed reference library** of 50,000
-> drug-like molecules, anchored on that library's quartiles: **0.25, 0.50 and 0.75 are
-> exactly the quartiles of drug-like chemical space**, and between them `rank` is the true
-> percentile. Within one model it is a monotone view of `proba` -- they order molecules
-> identically, so any ordering-only metric (AUROC, AUPRC, BEDROC) gives the same answer
-> from either.
+> drug-like molecules, anchored on that library's **upper tail**. Each step of rank is a 10x
+> shrink of the tail:
 >
-> **Outside the quartiles it is not a percentile.** The tails are pinned on molecules whose
-> labels are known: `0.95` is the 95th percentile of the model's out-of-fold actives and
-> `0.05` the 5th percentile of its inactives, with straight lines between the anchors. So a
-> molecule at `rank = 0.9` beats far more than 90% of drug-like space, and `rank = 0.95`
-> means "at the top of what this model's known actives reach".
+> | rank | means |
+> |---|---|
+> | 0.25 | beats half of drug-like chemical space |
+> | 0.50 | beats 90% -- the top tenth |
+> | **0.65** | beats 99% -- **the decision cutoff** |
+> | 0.75 | beats 99.9% |
+> | 0.95 | at the top of what this model's known actives reach |
 >
-> The tails are anchored because scaling straight to 1.0 assumes a model can reach
-> probability 1.0, and many cannot -- calibrators clip to the range seen in training, and a
-> calibrated probability is bounded by how rare actives are. A model topping out at p = 0.40
-> could never exceed rank 0.838, and since that ceiling moves with prevalence as much as
-> with skill, a *perfect* model on a rare target read lower than a mediocre one on an easy
-> target. Anchoring removes that, so ranks are comparable across tasks of different
-> prevalence.
+> Within one model it is a monotone view of `proba` -- they order molecules identically, so
+> any ordering-only metric (AUROC, AUPRC, BEDROC) gives the same answer from either.
 >
-> The cost: the top of the scale no longer distinguishes a strong model from a weak one --
-> every model's top actives read 0.95 by construction. That signal lives in
-> `oof_diagnostics.screening_auc` instead, which is reported in every checkpoint.
+> **The axis is spent on the top of the list**, because that is a bioactivity model's
+> product. Measured across six antimicrobial models, the top 1% of a screened library sits
+> between the reference's p98.9 and p100; anchoring on quartiles instead gave that top 1% a
+> mean span of 0.069 of the axis against 0.215 here, and on one model the 113 best-scoring
+> compounds shared a span of 0.003 -- effectively one value.
 >
-> One consequence: roughly a quarter of a generic screening library lands just above 0.75,
-> because the top quartile of generic chemistry is still generic.
+> **The cost is the bottom.** Roughly a third of a generic library can land below 0.25, so
+> `rank` says little about *how* inactive something is. Do not read low ranks
+> quantitatively.
 >
-> And a rank says nothing on its own about model skill -- a random model still puts a
-> quarter of the reference above 0.75. Report `proba`, `lift` and the out-of-fold AUC
+> Above the reference's p99.9 the library is too sparse to resolve anything, so the last
+> stretch is pinned on the model's own out-of-fold actives -- `0.95` is their 95th
+> percentile. When a model's actives do not even reach p99.9 that anchor is dropped and
+> reported, which is a statement about the model: its actives look like generic chemistry.
+>
+> The top of the scale therefore does not distinguish a strong model from a weak one. That
+> signal lives in `oof_diagnostics.screening_auc` and `sensitivity_at_cutoff`, both reported
+> in every checkpoint.
+>
+> And a rank says nothing on its own about model skill -- a random model still puts 1% of the
+> reference above the cutoff, because the cutoff is *defined* as 1%. Every output is a
+> monotone transform of one probability, so none of them can separate a false positive from a
+> true positive that scores the same. Report `proba`, `lift` and the out-of-fold AUC
 > alongside it.
 
 ### LazyClassifier (custom descriptors)
@@ -202,11 +210,11 @@ The output CSV contains one column per task, ordered alphabetically by task name
 | type | meaning |
 |------|---------|
 | `proba` (default) | calibrated probability of the positive class |
-| `rank` | position against the 50,000-molecule reference library (quartiles) with tails anchored on known actives and inactives |
+| `rank` | position against the 50,000-molecule reference library, on its upper tail: 0.50 is the top 10%, 0.65 the top 1%, 0.75 the top 0.1% |
 | `logit` | log-odds of the calibrated probability |
 | `lift` | probability divided by the training-set positive rate |
 | `score` | the pre-calibration scale, read off the calibrated probability |
-| `binary` | 0/1 label, thresholded at probability 0.5 |
+| `binary` | 0/1 label, thresholded at the decision cutoff -- `rank >= 0.65`, i.e. beats 99% of drug-like space. Checkpoints without a reference-rank cutoff keep `proba >= 0.5` |
 
 All six rank molecules identically — they are different scales on one quantity, so sorting
 by any of them gives the same order. `score` reports what the model looked like before

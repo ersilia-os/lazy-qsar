@@ -37,6 +37,8 @@ import numpy as np
 import pytest
 from _helpers.smiles import load_imbalanced_dataset
 
+from lazyqsar.utils.ranking import DECISION_CUTOFF_SOURCE, DECISION_RANK
+
 ORDERED = ("proba", "logit", "lift", "rank", "score")
 
 
@@ -88,6 +90,41 @@ def test_binary_never_contradicts_a_continuous_output(imbalanced, other):
     """``binary`` is a threshold on the same quantity, so it may tie but never invert."""
     _, out = imbalanced
     assert _flipped_pairs(out["binary"], out[other]) == 0
+
+
+def test_binary_is_the_cutoff_applied_on_every_scale(imbalanced):
+    """The cutoff is one boundary, so thresholding any output at its image must agree.
+
+    This is what ties the units together end to end: `binary` comes from `proba` against
+    `decision_cutoff_proba`, and the same molecules must fall out of `rank` against
+    `DECISION_RANK`. If `_build_decision_cutoff`'s inverse and `rank_from_reference`'s
+    forward map ever drift, the two sides part company here.
+
+    Boundary rows are excluded rather than given a tolerance. `rank` reaches the cutoff
+    through two `np.interp` hops where `proba` reaches it through none, and `combine`'s
+    `binary` carries no `_CUTOFF_ATOL` slack, so a molecule sitting on the boundary can
+    legitimately land either side by float rounding.
+    """
+    import json
+    import os
+
+    models, out = imbalanced
+    with open(os.path.join(models, "alpha", "metadata.json")) as f:
+        meta = json.load(f)
+
+    cutoff = meta["decision_cutoff_proba"]
+    assert meta["decision_cutoff_source"] == DECISION_CUTOFF_SOURCE
+    assert meta["decision_cutoff_rank"] == DECISION_RANK
+
+    proba, rank, binary = out["proba"], out["rank"], out["binary"]
+    assert np.array_equal(binary, (proba >= cutoff).astype(int))
+
+    off_boundary = np.abs(rank - DECISION_RANK) > 1e-6
+    assert off_boundary.sum() > 0.9 * len(rank), "fixture is degenerate at the cutoff"
+    assert np.array_equal(
+        binary[off_boundary],
+        (rank[off_boundary] >= DECISION_RANK).astype(int),
+    )
 
 
 def test_the_checkpoint_carries_the_score_reference(imbalanced):

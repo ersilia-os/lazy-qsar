@@ -35,6 +35,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from ..utils.ranking import (
+    DECISION_CUTOFF_SOURCE,
     prepare_knots,
     rank_from_reference,
     score_from_knots,
@@ -52,6 +53,10 @@ POOLED_SCORER_KEY = "pooled_scorer"
 # space. Anything else -- notably "oof", written by v3.5.x -- is a training-set
 # percentile and is not comparable with one.
 REFERENCE_SOURCE = "reference_library"
+
+# `binary` thresholds on the cutoff only when the checkpoint names this source -- see
+# `read_decision_cutoff`. Defined in `utils.ranking` beside `DECISION_RANK`, because the
+# numpy-only inference artifacts branch on it too.
 
 NO_REFERENCE_MESSAGE = (
     "This checkpoint has no reference-library rank. `rank` is a percentile against a "
@@ -101,14 +106,16 @@ def read_pooled_rank_knots(metadata):
 
 
 def read_pooled_rank_anchors(metadata):
-    """Pull the rank scale's tail anchors out of a task-level ``metadata.json``.
+    """Pull the rank scale's top anchor out of a task-level ``metadata.json``.
 
     ``(p05_inactives, p95_actives)`` in probability units, either of which may be ``None``.
-    They cannot be derived at predict time -- only the reference knots travel in the
-    checkpoint, not the out-of-fold molecules -- so they have to be stored.
+    Only the second shapes the scale -- the tail table has no low anchor -- but the pair is
+    the shape every checkpoint stores, and ``p05`` is still worth reporting. They cannot be
+    derived at predict time, because only the reference knots travel in the checkpoint, not
+    the out-of-fold molecules.
 
-    A checkpoint without them ranks exactly as one fitted before anchoring existed, because
-    :func:`lazyqsar.utils.ranking.rank_from_reference` falls back per side.
+    A checkpoint without a usable ``p95`` ranks straight from the reference's p99.9 to
+    certainty; see :func:`lazyqsar.utils.ranking.reference_anchor_table`.
     """
     block = (metadata or {}).get(POOLED_RANKER_KEY) or {}
     if block.get("source") != REFERENCE_SOURCE:
@@ -136,6 +143,27 @@ def read_pooled_score_knots(metadata):
     if x is None or y is None or len(x) == 0 or len(x) != len(y):
         return None
     return np.asarray(x, dtype=np.float64), np.asarray(y, dtype=np.float64)
+
+
+def read_decision_cutoff(metadata):
+    """The probability threshold ``binary`` uses, or ``None`` when the checkpoint has none.
+
+    ``None`` means "keep the historical behaviour", which is ``proba >= 0.5``. That is what
+    every checkpoint fitted before the cutoff was placed on the rank scale gets, so their
+    labels do not move.
+
+    Returns
+    -------
+    float or None
+        The cutoff, or ``None`` when ``decision_cutoff_source`` is absent or is not
+        :data:`DECISION_CUTOFF_SOURCE`.
+    """
+    meta = metadata or {}
+    if meta.get("decision_cutoff_source") != DECISION_CUTOFF_SOURCE:
+        return None
+    cutoff = meta.get("decision_cutoff_proba")
+    # `is None`, not falsy: 0.0 is a legal cutoff and must not fall back to 0.5.
+    return None if cutoff is None else float(cutoff)
 
 
 @dataclass(frozen=True)
@@ -237,11 +265,11 @@ class EnsembleSpec:
         pooled_knots = read_pooled_rank_knots(metadata)
         pooled_anchors = read_pooled_rank_anchors(metadata)
         pooled_score = read_pooled_score_knots(metadata)
-        # decision_cutoff is deliberately NOT read from metadata["decision_cutoff_proba"].
-        # That learned, balanced-accuracy-optimal threshold exists in every checkpoint but
-        # has never been used by either prediction path, and adopting it would move the
-        # binary output on every deployed model. Whether to switch is its own change, with
-        # its own held-out evaluation; until then binary means proba >= 0.5 as it always has.
+        # `binary` thresholds on the cutoff only when the checkpoint places it on the
+        # reference rank scale -- see `read_decision_cutoff` for why the older
+        # balanced-accuracy cutoff is not adopted. A checkpoint without the key keeps
+        # `proba >= 0.5`, so its labels are bit-identical to what it always produced.
+        cutoff = read_decision_cutoff(metadata)
 
         return (
             cls(
@@ -257,6 +285,7 @@ class EnsembleSpec:
                     else None
                 ),
                 population_prior=float(prior if prior is not None else 0.5),
+                decision_cutoff=_DEFAULT_CUTOFF if cutoff is None else cutoff,
                 pooled_rank_knots=pooled_knots,
                 pooled_rank_anchors=pooled_anchors,
                 pooled_score_knots=pooled_score,

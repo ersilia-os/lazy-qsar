@@ -118,3 +118,48 @@ def test_from_metadata_slices_curves_and_cutoffs_to_active():
     assert spec.ad_hard_cutoffs == (0.1, 0.3)
     assert len(spec.rank_error_curves) == 2
     assert np.array_equal(spec.rank_error_curves[1][1], np.array([0.3, 0.3]))
+
+
+# ------------------------------------------------------- the decision cutoff gate
+#
+# `binary` thresholds on the checkpoint's cutoff only when the checkpoint says the cutoff
+# was placed on the reference rank scale. Gated on its own key because *every* checkpoint
+# carries a `decision_cutoff_proba` -- the balanced-accuracy threshold learned from
+# out-of-fold scores -- and adopting that one would call most of drug-like chemical space
+# active (measured: 60% to 99% across six real antimicrobial models).
+
+
+def test_a_reference_rank_cutoff_is_read():
+    meta = {
+        "decision_cutoff_source": "reference_rank",
+        "decision_cutoff_proba": 0.2041,
+    }
+    spec, _ = EnsembleSpec.from_metadata(meta, ["a"])
+    assert spec.decision_cutoff == 0.2041
+
+
+def test_a_cutoff_without_the_source_key_is_ignored():
+    """The shape of every checkpoint fitted before the cutoff moved onto the rank scale.
+
+    Its `decision_cutoff_proba` is the balanced-accuracy threshold. Reading it would move
+    `binary` on a model nobody refitted, so it stays at 0.5.
+    """
+    meta = {"decision_cutoff_proba": 0.2041}
+    spec, _ = EnsembleSpec.from_metadata(meta, ["a"])
+    assert spec.decision_cutoff == 0.5
+
+
+def test_an_unrecognised_cutoff_source_is_ignored():
+    meta = {
+        "decision_cutoff_source": "oof_balanced_accuracy",
+        "decision_cutoff_proba": 0.2041,
+    }
+    spec, _ = EnsembleSpec.from_metadata(meta, ["a"])
+    assert spec.decision_cutoff == 0.5
+
+
+def test_a_zero_cutoff_is_honoured_rather_than_falling_back():
+    """`0.0` is falsy and a legal cutoff; an `or`-style default would silently give 0.5."""
+    meta = {"decision_cutoff_source": "reference_rank", "decision_cutoff_proba": 0.0}
+    spec, _ = EnsembleSpec.from_metadata(meta, ["a"])
+    assert spec.decision_cutoff == 0.0

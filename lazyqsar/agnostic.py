@@ -6,6 +6,7 @@ import numpy as np
 
 from .artifacts.classifier import LazyClassifierArtifact
 from .utils.logging import logger
+from .utils.ranking import DECISION_CUTOFF_SOURCE
 
 
 def _load_h5(h5_file: str, h5_idxs=None) -> np.ndarray:
@@ -156,15 +157,53 @@ class LazyClassifier:
         knots = subsample_knots(np.sort(p1))
         self._model.reference_rank_knots_ = knots
         self._model.reference_rank_anchors_ = self._reference_anchors(X, y, knots)
+        # Overrides the batch-mean-of-head-means balanced-accuracy cutoff the assembler set
+        # during `fit`. Only now is there a reference to place the cutoff against, and a
+        # cutoff on the rank scale is the one thing a mean of per-head cutoffs cannot be.
+        self._set_decision_cutoff(knots)
         logger.info(
             f"Reference library scored: {p1.size:,} molecules, "
             f"probability {p1.min():.3f} to {p1.max():.3f}"
         )
 
+    def _set_decision_cutoff(self, knots):
+        """Place the decision cutoff at :data:`DECISION_RANK` on the reference rank scale.
+
+        Mirrors :meth:`lazyqsar.qsar.LazyClassifierQSAR._build_decision_cutoff`: the cutoff
+        becomes "beat 99% of drug-like chemical space", so the model calls 1% of it active by
+        construction instead of whatever the out-of-fold balanced-accuracy search produced.
+
+        Written in probability units only. ``predict`` then thresholds ``predict_proba``
+        against it rather than ``predict_score`` against ``decision_cutoff_raw_``, because a
+        rank-derived cutoff exists on the probability scale and nowhere else.
+        """
+        from .utils.ranking import (
+            DECISION_RANK,
+            prepare_knots,
+            proba_from_reference_rank,
+        )
+
+        anchors = getattr(self._model, "reference_rank_anchors_", None) or {}
+        high = anchors.get("anchor_high") if anchors.get("anchor_high_used") else None
+        proba = float(
+            proba_from_reference_rank(
+                DECISION_RANK, prepared=prepare_knots(knots), anchor_high=high
+            )
+        )
+        self._model.decision_cutoff_proba_ = proba
+        self._model.decision_cutoff_rank_ = DECISION_RANK
+        self._model.decision_cutoff_source_ = DECISION_CUTOFF_SOURCE
+        clipped = float(np.clip(proba, 1e-7, 1.0 - 1e-7))
+        self._model.decision_cutoff_logit_ = float(np.log(clipped / (1.0 - clipped)))
+        prior = getattr(self._model, "population_prior_", None) or 0.0
+        self._model.decision_cutoff_lift_ = (
+            float(proba / max(prior, 1e-7)) if prior > 0 else None
+        )
+
     def _reference_anchors(self, X, y, knots):
-        """The tails, pinned on this model's own known molecules. See
+        """The top of the scale, pinned on this model's own known actives. See
         :func:`lazyqsar.utils.ranking.rank_from_reference`."""
-        from .utils.ranking import prepare_knots
+        from .utils.ranking import prepare_knots, reference_anchor_table
 
         channels = self._model.oof_channels(X)
         if channels is None:
@@ -174,28 +213,23 @@ class LazyClassifier:
         if len(y) != len(p1):
             return None
 
-        vals, midranks = prepare_knots(knots)
-        q1 = float(np.interp(0.25, midranks, vals))
-        q3 = float(np.interp(0.75, midranks, vals))
+        prepared = prepare_knots(knots)
         act, inact = p1[y == 1], p1[y == 0]
         high = float(np.percentile(act, 95)) if act.size else None
         low = float(np.percentile(inact, 5)) if inact.size else None
-        high_used = high is not None and q3 < high < 1.0
-        low_used = low is not None and 0.0 < low < q1
+        _, _, high_used = reference_anchor_table(prepared=prepared, anchor_high=high)
         if high is not None and not high_used:
+            last_reference = float(np.interp(0.999, prepared[1], prepared[0]))
             logger.warning(
                 f"Upper rank anchor unused: p95 of the out-of-fold actives ({high:.3f}) "
-                f"does not exceed the reference's third quartile ({q3:.3f})."
-            )
-        if low is not None and not low_used:
-            logger.warning(
-                f"Lower rank anchor unused: p05 of the out-of-fold inactives ({low:.3f}) "
-                f"is not below the reference's first quartile ({q1:.3f})."
+                f"does not exceed the reference's 99.9th percentile "
+                f"({last_reference:.3f})."
             )
         return {
             "anchor_low": low,
             "anchor_high": high,
-            "anchor_low_used": bool(low_used),
+            # Recorded, read by nothing: the tail table has no low anchor.
+            "anchor_low_used": False,
             "anchor_high_used": bool(high_used),
             "n_actives": int(act.size),
             "n_inactives": int(inact.size),
@@ -261,9 +295,9 @@ class LazyClassifier:
     def predict_rank(self, X=None, h5_file=None, h5_idxs=None) -> np.ndarray:
         """Position against the reference library given at fit, shape (n, 2).
 
-        Between the reference's first and third quartiles this is the exact percentile, so
-        0.25, 0.50 and 0.75 are its quartiles; outside, the tails are pinned on this model's
-        own known molecules. See :func:`lazyqsar.utils.ranking.rank_from_reference`.
+        Anchored on the reference's upper tail: 0.50 is the top 10% of it, 0.65 the top 1%,
+        0.75 the top 0.1%. Past p99.9 the scale is pinned on this model's own known actives.
+        See :func:`lazyqsar.utils.ranking.rank_from_reference`.
 
         Raises when no reference was given. What earlier versions returned here was a
         percentile against this model's own training distribution -- a different quantity

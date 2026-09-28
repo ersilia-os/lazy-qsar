@@ -189,10 +189,16 @@ def test_the_pooled_reference_is_uniform_on_the_training_set(scored):
 
 
 def test_the_checkpoint_carries_the_reference_and_a_matching_cutoff(scored):
-    """Without the stored reference a loaded model silently reverts to the old rank."""
+    """Without the stored reference a loaded model silently reverts to the old rank, and
+    without a cutoff on the rank scale `binary` silently reverts to `proba >= 0.5`."""
     import json
 
-    from lazyqsar.utils.ranking import prepare_knots, rank_from_reference
+    from lazyqsar.utils.ranking import (
+        DECISION_CUTOFF_SOURCE,
+        DECISION_RANK,
+        prepare_knots,
+        rank_from_reference,
+    )
 
     with open(os.path.join(scored["task_dir"], "metadata.json")) as f:
         meta = json.load(f)
@@ -200,23 +206,38 @@ def test_the_checkpoint_carries_the_reference_and_a_matching_cutoff(scored):
     knots = meta["pooled_ranker"]["knots"]
     assert len(knots) > 0
     assert knots == sorted(knots), "knots must be stored ascending"
-    # decision_cutoff_rank is reported, never thresholded on, but it should still be the
-    # learned probability cutoff expressed in the units `rank` now uses -- which means
-    # through the tail anchors as well, not just the reference knots. Recomputing it
-    # without them is how a checkpoint ends up disagreeing with its own scale.
+
+    # The direction of travel is now the other way round: the cutoff is DECISION_RANK
+    # inverted against the reference, so `decision_cutoff_rank` is that constant exactly
+    # and `decision_cutoff_proba` is whatever it inverted to. `binary` thresholds on it, so
+    # this is no longer a report-only value.
+    assert meta["decision_cutoff_rank"] == DECISION_RANK
+    assert meta["decision_cutoff_source"] == DECISION_CUTOFF_SOURCE
+
+    # And the forward map must send that probability back to the constant. This is the one
+    # place the inverse is checked against the forward on a real checkpoint -- through the
+    # actives anchor as well, not just the knots, because recomputing without it is how a
+    # checkpoint ends up disagreeing with its own scale.
     block = meta["pooled_ranker"]
     anchors = (
         block.get("anchor_low") if block.get("anchor_low_used") else None,
         block.get("anchor_high") if block.get("anchor_high_used") else None,
     )
-    expected = float(
+    round_tripped = float(
         rank_from_reference(
             meta["decision_cutoff_proba"],
             prepared=prepare_knots(np.asarray(knots)),
             anchors=anchors if any(a is not None for a in anchors) else None,
         )
     )
-    assert meta["decision_cutoff_rank"] == pytest.approx(expected)
+    assert round_tripped == pytest.approx(DECISION_RANK, abs=1e-9)
+
+    # A 1% generic hit rate, by construction. The knots are a uniform subsample of the
+    # reference, so the tolerance is one knot spacing.
+    reference = np.asarray(knots, dtype=float)
+    hit_rate = float((reference >= meta["decision_cutoff_proba"]).mean())
+    assert hit_rate == pytest.approx(0.01, abs=2e-3)
+
     assert meta["pooled_ranker"]["source"] == "reference_library"
     assert meta["pooled_ranker"]["descriptors"]
 

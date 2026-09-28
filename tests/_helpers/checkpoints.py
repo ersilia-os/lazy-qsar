@@ -11,6 +11,12 @@ import os
 
 import numpy as np
 
+from lazyqsar.utils.ranking import (
+    DECISION_CUTOFF_SOURCE,
+    DECISION_RANK,
+    proba_from_reference_rank,
+)
+
 
 def build_checkpoint(root, task, descriptors, smiles, y, seed=0):
     """Fit and save one task's checkpoint, laid out as ``root/task/descriptor/``.
@@ -77,7 +83,19 @@ def build_checkpoint(root, task, descriptors, smiles, y, seed=0):
             "library": {"id": "test_reference", "n": 512},
             "descriptors": list(descriptors),
         },
+        # Without these the pipeline tier would never exercise the rank-derived cutoff:
+        # `binary` falls back to `proba >= 0.5` for any checkpoint that does not name the
+        # source, so every structural test would silently check the fallback.
+        "decision_cutoff_source": DECISION_CUTOFF_SOURCE,
     }
+    # Derived from the synthetic knots the same way a real fit derives it, so the helper
+    # cannot drift from `LazyClassifierQSAR._build_decision_cutoff`.
+    meta["decision_cutoff_proba"] = float(
+        proba_from_reference_rank(
+            DECISION_RANK, knots=np.asarray(meta["pooled_ranker"]["knots"], float)
+        )
+    )
+    meta["decision_cutoff_rank"] = DECISION_RANK
     with open(os.path.join(task_dir, "metadata.json"), "w") as f:
         json.dump(meta, f, indent=2)
     return task_dir

@@ -6,6 +6,8 @@ else: that the ``X=`` and ``h5_file=`` paths are genuinely the same code, and th
 survives the zip round trip that the README tells people to use.
 """
 
+import contextlib
+import io
 import os
 import zipfile
 
@@ -14,6 +16,11 @@ import numpy as np
 import pytest
 
 from lazyqsar.agnostic import LazyClassifier, LazyRegressor, _load_h5
+from lazyqsar.utils.ranking import (
+    DECISION_CUTOFF_SOURCE,
+    DECISION_RANK,
+    TAIL_ANCHORS,
+)
 
 N, P = 200, 30
 
@@ -268,14 +275,50 @@ def test_a_reference_makes_rank_available(data, fitted_with_reference):
     np.testing.assert_allclose(ranks.sum(axis=1), 1.0, atol=1e-9)
 
 
-def test_the_reference_quartiles_land_on_the_quartiles_of_the_scale(
-    fitted_with_reference,
-):
-    """The anchoring, checked through the public entry point rather than the helper."""
+def test_the_reference_tail_percentiles_land_on_their_ranks(fitted_with_reference):
+    """The anchoring, checked through the public entry point rather than the helper.
+
+    Distribution-free: whatever the reference looks like, the fraction of it above each
+    anchor rank is the anchor's own tail fraction. Half above 0.25, a tenth above 0.50.
+    """
     model, reference = fitted_with_reference
     reference_ranks = model.predict_rank(X=reference)[:, 1]
-    assert float(np.percentile(reference_ranks, 25)) == pytest.approx(0.25, abs=0.02)
-    assert float(np.percentile(reference_ranks, 75)) == pytest.approx(0.75, abs=0.02)
+    for q, rank in TAIL_ANCHORS:
+        assert float((reference_ranks > rank).mean()) == pytest.approx(
+            1.0 - q / 100.0, abs=0.02
+        )
+
+
+def test_the_agnostic_cutoff_is_on_the_rank_scale(fitted_with_reference):
+    """With a reference, `predict` thresholds proba against the rank-derived cutoff.
+
+    The agnostic path used to threshold `predict_score` against a mean of per-head
+    balanced-accuracy cutoffs, which made it disagree with `LazyClassifierQSAR.predict` on
+    the same underlying model.
+    """
+    model, reference = fitted_with_reference
+    inner = model._model
+    assert inner.decision_cutoff_source_ == DECISION_CUTOFF_SOURCE
+    assert inner.decision_cutoff_rank_ == DECISION_RANK
+    # A 1% generic hit rate on the library it was inverted against.
+    knots = np.asarray(inner.reference_rank_knots_, dtype=float)
+    hit = float((knots >= inner.decision_cutoff_proba_).mean())
+    assert hit == pytest.approx(0.01, abs=5e-3)
+
+
+def test_without_a_reference_the_cutoff_and_labels_are_unchanged(data):
+    """No reference means no rank scale to place a cutoff on, so nothing moves."""
+    X, y = data
+    model = LazyClassifier()
+    with contextlib.redirect_stdout(io.StringIO()):
+        model.fit(X=X, y=y)
+    inner = model._model
+    assert getattr(inner, "decision_cutoff_source_", None) is None
+    labels = model.predict(X=X)
+    expected = (
+        inner.predict_score(X)[:, 1] >= inner.decision_cutoff_raw_ - 1e-6
+    ).astype(int)
+    assert np.array_equal(labels, expected)
 
 
 def test_rank_orders_molecules_exactly_as_proba_does(data, fitted_with_reference):

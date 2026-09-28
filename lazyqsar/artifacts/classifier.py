@@ -12,6 +12,7 @@ import os
 import numpy as np
 
 from lazyqsar.utils.ranking import (
+    DECISION_CUTOFF_SOURCE,
     binarize,
     prepare_knots,
     rank_from_knots,
@@ -148,6 +149,10 @@ class LazyClassifierArtifact:
         self._decision_cutoff_logit = float(metadata.get("decision_cutoff_logit", 0.0))
         raw_lift = metadata.get("decision_cutoff_lift")
         self._decision_cutoff_lift = float(raw_lift) if raw_lift is not None else None
+        # Which of the two cutoff conventions this checkpoint carries. Absent on anything
+        # fitted before the cutoff moved onto the rank scale, which is exactly the
+        # checkpoints that must keep labelling as they always did.
+        self._decision_cutoff_source = metadata.get("decision_cutoff_source")
         block = metadata.get("pooled_ranker") or {}
         ref = block.get("knots") if block.get("source") == "reference_library" else None
         self._reference_prepared = (
@@ -194,8 +199,9 @@ class LazyClassifierArtifact:
 
     @property
     def decision_cutoff_oof_percentile(self) -> float:
-        """The learned cutoff as an out-of-fold percentile. Advisory: nothing thresholds
-        on it -- `binary` is `proba >= 0.5`."""
+        """The per-descriptor balanced-accuracy cutoff, as a percentile of this model's own
+        out-of-fold scores. Advisory: nothing thresholds on it. Not the reference-library
+        rank -- that is `decision_cutoff_rank` at the task level."""
         return self._decision_cutoff_oof_percentile
 
     @property
@@ -209,7 +215,16 @@ class LazyClassifierArtifact:
         return self._decision_cutoff_lift
 
     def predict(self, X, cutoff: float = None) -> np.ndarray:
-        """Return binary predictions (0 or 1)."""
+        """Return binary predictions (0 or 1).
+
+        A cutoff placed on the reference rank scale exists in probability units only, so it
+        is compared against ``predict_proba``; the model then calls about 1% of drug-like
+        chemical space active. Without one, the out-of-fold balanced-accuracy threshold is
+        compared against ``predict_score`` exactly as before, so an older checkpoint's
+        labels do not move.
+        """
+        if cutoff is None and self._decision_cutoff_source == DECISION_CUTOFF_SOURCE:
+            return binarize(self.predict_proba(X)[:, 1], self._decision_cutoff_proba)
         threshold = self._decision_cutoff_raw if cutoff is None else cutoff
         return binarize(self.predict_score(X)[:, 1], threshold)
 
