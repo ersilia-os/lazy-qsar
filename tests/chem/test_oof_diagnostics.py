@@ -48,6 +48,12 @@ def test_the_diagnostics_are_not_part_of_the_ranker(real):
     assert meta["pooled_ranker"]["source"] == "reference_library"
 
 
+def test_the_checkpoint_names_the_bundle_it_was_ranked_against(real):
+    """The id is only a promise; the manifest hash is what can be checked."""
+    _, _, meta = real
+    assert "manifest_sha256" in meta["pooled_ranker"]["library"]
+
+
 def test_known_actives_sit_above_known_inactives(real):
     _, _, meta = real
     diag = meta["oof_diagnostics"]

@@ -944,6 +944,7 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
         """
         from .reference import ReferenceUnavailable, iter_chunks
         from .reference.identity import DEFAULT_N, REFERENCE_ID
+        from .reference.manifest import manifest_sha256
 
         active_indices = self._active_indices()
         names = [self.descriptor_types[i] for i in active_indices]
@@ -981,7 +982,11 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
 
         knots = subsample_knots(np.sort(p1))
         meta = {
-            "library": {"id": REFERENCE_ID, "n": DEFAULT_N},
+            "library": {
+                "id": REFERENCE_ID,
+                "n": DEFAULT_N,
+                "manifest_sha256": manifest_sha256(),
+            },
             "descriptors": list(names),
             "saturation": {"p_max": float(p1.max())},
         }

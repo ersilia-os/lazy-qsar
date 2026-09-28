@@ -70,6 +70,27 @@ numpy and onnxruntime.
 
 ### Distribution
 
+- **Every checkpoint records `pooled_ranker.library.manifest_sha256`** -- one hash naming
+  the exact reference bundle the model was fitted against. The reference id cannot do that
+  job: it is a promise that a published bundle never changes, and nothing enforces it. A
+  bundle re-uploaded under the same id would leave every checkpoint ranking against a
+  different distribution than it claims, with nothing able to detect it. The manifest pins
+  each file by hash, so hashing the manifest collapses the whole bundle to one checkable
+  value.
+
+  It does not catch a changed *featurizer*. `manifest.check_environment`, the
+  descriptor-drift canary, still runs only from `scripts/verify_reference_bundle.py` and
+  never at fit time, so an install whose RDKit or neural checkpoints have moved will still
+  fit and rank against matrices it cannot reproduce.
+
+- **Fixed: the published URL was missing a path segment.** `PUBLIC_BASE_URL` read
+  `.../lazy-qsar/reference/`, but `eosvc` puts the bundle at `.../lazy-qsar/data/reference/`
+  -- `data/` is the prefix it treats as public. Any error message offering a user a download
+  URL pointed at nothing. It is now built from `EOSVC_REPO` and `EOSVC_ROOT`, the same two
+  constants the download itself uses, so the URL a client is pointed at is the object it
+  reads. A second, also-wrong copy in `scripts/reference/config.py` that nothing read has
+  been removed rather than corrected.
+
 - **The reference library is fetched with `eosvc`**, the same tool that publishes it, so
   there is one path and one set of conventions rather than a publisher and an unrelated
   reader that can disagree. No AWS credentials are needed: `eosvc` falls back to anonymous

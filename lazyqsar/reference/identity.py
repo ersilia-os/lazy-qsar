@@ -34,7 +34,16 @@ def default_n() -> int:
 
 DEFAULT_N = _DEFAULT_N
 
-PUBLIC_BASE_URL = "https://eosvc-public.s3.amazonaws.com/lazy-qsar/reference/"
+# The repo whose S3 prefix the bundle lives under. eosvc maps repo name -> prefix, so this
+# is what puts the files at s3://eosvc-public/lazy-qsar/data/reference/<id>/.
+EOSVC_REPO = "lazy-qsar"
+
+# Where the bundle sits inside that repo. `data/` is the prefix eosvc treats as public.
+EOSVC_ROOT = "data/reference"
+
+# Built from the eosvc path rather than written out, so the URL an error message points a
+# user at is the one the download actually reads.
+PUBLIC_BASE_URL = f"https://eosvc-public.s3.amazonaws.com/{EOSVC_REPO}/{EOSVC_ROOT}/"
 
 
 def lazyqsar_home() -> Path:

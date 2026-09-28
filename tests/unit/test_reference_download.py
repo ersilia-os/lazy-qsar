@@ -108,3 +108,25 @@ def tempfile_dir():
     import tempfile
 
     return tempfile.gettempdir()
+
+
+def test_the_public_url_is_where_eosvc_puts_the_bundle():
+    """The URL an error message offers must be the object the download reads."""
+    url = identity.descriptor_url("morgan", 50_000)
+    assert url == (
+        f"https://eosvc-public.s3.amazonaws.com/{EOSVC_REPO}/{EOSVC_ROOT}/"
+        f"{identity.REFERENCE_ID}/morgan_n50000.h5"
+    )
+
+
+def test_the_manifest_hash_names_the_bundle(monkeypatch, tmp_path):
+    """One hash pins every file, because the manifest pins each of them."""
+    import hashlib
+
+    from lazyqsar.reference.manifest import manifest_sha256
+
+    monkeypatch.setenv("LAZYQSAR_REFERENCE_DIR", str(tmp_path))
+    assert manifest_sha256() is None
+    payload = json.dumps({"reference_id": identity.REFERENCE_ID}).encode()
+    (tmp_path / "manifest.json").write_bytes(payload)
+    assert manifest_sha256() == hashlib.sha256(payload).hexdigest()

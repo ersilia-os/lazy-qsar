@@ -31,9 +31,12 @@ SOURCE_LIBRARY_URL = (
     "ersilia_reference_library_v0.csv"
 )
 
-# Where the published bundle will live. eosvc maps the repo name to the S3 prefix, so
-# `eosvc upload --path data/reference/<REFERENCE_ID>` lands here.
-PUBLIC_BASE_URL = "https://eosvc-public.s3.amazonaws.com/lazy-qsar/reference/"
+# The published URL is deliberately NOT restated here. It lived here as a second copy, was
+# wrong (missing the `data/` segment eosvc actually uses) until it was fixed, and nothing
+# under `scripts/` ever read it. The one definition is
+# `lazyqsar.reference.identity.PUBLIC_BASE_URL`, built from EOSVC_REPO and EOSVC_ROOT so the
+# URL a client is pointed at is the object it reads. The upload command a maintainer needs is
+# in `scripts/README.md`.
 
 # --- clustering and selection defaults -------------------------------------------
 

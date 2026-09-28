@@ -53,6 +53,19 @@ def manifest_path(n: int | None = None) -> Path:
     return reference_dir() / MANIFEST_FILENAME
 
 
+def manifest_sha256() -> str | None:
+    """The sha256 of the cached manifest, or ``None`` if there is none to hash.
+
+    The manifest pins every file in the bundle by hash, so this one value names the exact
+    reference a model was fitted against. The reference id alone cannot: it is a promise
+    that the bundle never changes, and nothing enforces it.
+    """
+    from ..utils.fetch import sha256_file
+
+    path = manifest_path()
+    return sha256_file(path) if path.is_file() else None
+
+
 def load(n: int | None = None, fetch_if_missing: bool = True) -> dict | None:
     """The manifest, or ``None`` if the published bundle carries none.
 

@@ -31,19 +31,14 @@ from pathlib import Path
 
 from ..utils.logging import logger
 from .identity import (
+    EOSVC_REPO,
+    EOSVC_ROOT,
     REFERENCE_ID,
     default_n,
     descriptor_filename,
     reference_dir,
     smiles_filename,
 )
-
-# The repo whose S3 prefix the bundle lives under. eosvc maps repo name -> prefix, so this
-# is what puts the files at s3://eosvc-public/lazy-qsar/data/reference/<id>/.
-EOSVC_REPO = "lazy-qsar"
-
-# Where the bundle sits inside that repo. `data/` is the prefix eosvc treats as public.
-EOSVC_ROOT = "data/reference"
 
 MANIFEST_FILENAME = "manifest.json"
 
