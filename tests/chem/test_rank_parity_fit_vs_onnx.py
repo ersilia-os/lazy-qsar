@@ -41,10 +41,15 @@ pytest.importorskip("scipy")
 
 CUTS = (0.01, 0.05, 0.10)
 
-# `load_raw` and `load_onnx` are different numeric paths and differ by ~3e-08 on `proba`.
-# `rank` is an ECDF of `proba`, and an ECDF's slope is the reciprocal of the local density
-# of training scores, so it multiplies that gap by ~100x here. Measured max across routes
-# is 4.1e-06; 1e-04 leaves a margin without being loose enough to hide a real change.
+# `load_raw` and `load_onnx` are *both* ONNX -- `agnostic.LazyClassifier.load` raises
+# `NotImplementedError` for a genuinely raw load, so each returns a `LazyClassifierArtifact`
+# over the same onnxruntime sessions. What separates them is the wrapper: chunking and the
+# order floating-point sums accumulate in, worth ~3e-08 on `proba`. (The scikit-learn
+# against ONNX comparison is a different measurement and lives in
+# `tests/fit/test_ensemble_export_fidelity.py`.) `rank` is an ECDF of `proba`, and an
+# ECDF's slope is the reciprocal of the local density of training scores, so it multiplies
+# that gap by ~100x here. Measured max across routes is 4.1e-06; 1e-04 leaves a margin
+# without being loose enough to hide a real change.
 # Whether a route *kept* the reference at all is checked structurally below, not by
 # tolerance -- on a single-descriptor model the two poolings coincide to ~4e-06, so no
 # tolerance on this value could tell them apart.
@@ -269,9 +274,10 @@ def test_every_load_route_carries_the_reference(scored):
 def test_every_load_route_agrees_on_rank(scored):
     """And the values agree, to a tolerance the ECDF's slope explains.
 
-    `load_raw` is a different numeric path from `load_onnx` and differs from it by ~3e-08
-    on `proba`; ranking amplifies that by the reciprocal of the local training-score
-    density. The tolerance is sized for that, not tuned to pass.
+    Both routes run the same ONNX sessions, so this is not an export check -- they differ
+    only in chunking and summation order, worth ~3e-08 on `proba`; ranking amplifies that
+    by the reciprocal of the local training-score density. The tolerance is sized for
+    that, not tuned to pass.
     """
     from lazyqsar.api.classifier_predict import predict
 
