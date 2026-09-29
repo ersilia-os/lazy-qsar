@@ -1,5 +1,14 @@
 # Changelog
 
+All notable changes to this project are documented here. Versions follow
+[semantic versioning](https://semver.org/); the reference library `rank` is measured
+against is versioned separately and its id is recorded in every checkpoint's
+`pooled_ranker.library`.
+
+## [Unreleased]
+
+Nothing yet.
+
 ## 3.6.0
 
 `predict_rank` now positions a molecule against a fixed reference library of 50,000
@@ -225,6 +234,19 @@ numpy and onnxruntime.
 
 ### Known limitations
 
+- **A loaded checkpoint does not reproduce the fitted model exactly.** The preprocessor
+  does -- `BasePreprocessor._bind_onnx_runtime` makes the fitted pipeline run its own
+  exported graph -- but the heads are not bound, so they compute float32 in ONNX against
+  scikit-learn's float64. Measured at the ensemble level over three antimicrobial datasets
+  and 4,000 DrugBank molecules in fast mode: **every molecule's `proba` differs, by at
+  most 1.8e-07**, `rank` by 2.9e-07, `score` by 8.0e-06, and **no `binary` label moves**.
+  Raising the export to double precision does not fix it (`svc` accepts
+  `DoubleTensorType` and silently stays float32; `xgb` has no double converter; `lr` in
+  double still lands at 2.2e-16 rather than 0), so the only route to bit-identity is
+  binding the heads the way the preprocessor is bound, which would shift every fitted
+  number. Until then the guarantee is bounded and enforced by
+  `tests/fit/test_ensemble_export_fidelity.py`. If you compare `predict_proba` before and
+  after a `save()`/`load()` round trip, expect to see this.
 - **The top of the scale is anchored on known molecules.** `0.95` is the 95th percentile
   of the model's out-of-fold actives. Past the reference's p99.9 the library is too sparse
   to resolve anything -- for a selective model the whole top 1% of a screen can sit inside a
@@ -269,8 +291,12 @@ Every selected molecule is CDDD-calculable by construction, which matters becaus
 refuses a dataset failing more than 0.1% of its filters and the library's own rate is
 1.88% -- a random 50,000-molecule slice would have made CDDD inapplicable.
 
-The anchoring is exact by construction and checked directly: a quarter of the reference
-falls above rank 0.75 and a quarter below 0.25, whatever shape the reference has.
+The anchoring is exact by construction and checked directly: whatever shape the reference
+has, 1% of it falls above rank 0.65 and 0.1% above 0.75, because those ranks *are* its p99
+and p99.9. (An earlier draft of this entry claimed a quarter above 0.75 and a quarter
+below 0.25 -- true of the quartile scale this release replaced, and the opposite of the
+point made under "Why the tail and not the quartiles" above: under tail anchoring half the
+reference sits below 0.25.)
 
 ## 3.5.0
 
@@ -340,7 +366,10 @@ This release removes an inconsistency, it does not claim a better model.
 
 ### Fixed
 
-- **The exported ONNX checkpoint now matches the model it was exported from.** It did not:
+- **The exported ONNX checkpoint now matches the model it was exported from, to a bounded
+  tolerance rather than exactly** — the heading in the released 3.5.0 notes omitted that
+  qualification; see 3.6.0's Known limitations for the measured bound. What follows is the
+  part that *is* exact. It did not:
   the exported preprocessor ran in float32 while scikit-learn ran it in float64, and
   although the two agreed to about one float32 ULP, the tree heads downstream are
   piecewise constant — a value landing a hair either side of a learned split fell into a

@@ -19,7 +19,7 @@ in ways real chemistry does not, which is the regime this test is least able to 
 *how many* descriptors survive the portfolio is data- and version-dependent -- scikit-learn
 1.6 keeps rdkit on this data and 1.9 prunes it -- so the multi-descriptor pooling that
 motivated the change is pinned deterministically in
-``tests/unit/test_pooled_rank_reference.py`` instead. What this file is for is the
+``tests/unit/test_monotone_outputs.py`` instead. What this file is for is the
 end-to-end plumbing on real chemistry: that the reference is built during a genuine fit,
 survives every load route, and holds on molecules the model never trained on.
 """

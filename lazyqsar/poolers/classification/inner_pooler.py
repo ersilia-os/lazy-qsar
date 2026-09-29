@@ -67,17 +67,26 @@ class InnerClassifierPooler(object):
         otherwise sets them to ``None`` (uniform weights at inference).
         """
         y = np.asarray(y, dtype=int)
-        oof_scores = [composite_score(y, S[:, i]) for i in range(self._n_heads)]
 
-        if self._n_heads == 1 or X_prep is None:
+        # Scoring the heads needs `S`, so the equal-weight branch has to be taken before
+        # it is touched, not after. It used to sit below, which made the documented
+        # `S=None` route -- `LazyClassifier(calibrated=False)`, and any portfolio where a
+        # head has no `oof_probas_` -- raise TypeError instead of falling back.
+        if S is None or self._n_heads == 1 or X_prep is None:
             self._gate_coef = None
             self._gate_intercept = None
             logger.inner_pooler_table(
                 portfolio=self.portfolio,
                 n_samples=len(y),
-                oof_aucs=oof_scores,
+                oof_aucs=(
+                    None
+                    if S is None
+                    else [composite_score(y, S[:, i]) for i in range(self._n_heads)]
+                ),
             )
             return
+
+        oof_scores = [composite_score(y, S[:, i]) for i in range(self._n_heads)]
 
         eps = 1e-7
         log_scores = np.where(

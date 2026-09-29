@@ -5,8 +5,12 @@ import h5py
 import numpy as np
 
 from .artifacts.classifier import LazyClassifierArtifact
+from .utils.archives import unpack_to_scratch
 from .utils.logging import logger
-from .utils.ranking import DECISION_CUTOFF_SOURCE
+from .utils.ranking import (
+    DECISION_CUTOFF_SOURCE,
+    NO_REFERENCE_MESSAGE as _NO_REFERENCE_MESSAGE,
+)
 
 
 def _load_h5(h5_file: str, h5_idxs=None) -> np.ndarray:
@@ -45,16 +49,9 @@ def _iter_h5(h5_file: str, chunk_size: int = 4096):
         raise ValueError(f"No recognised dataset key in {h5_file!r}. Found: {keys}")
 
 
-NO_REFERENCE_MESSAGE = (
-    "predict_rank needs a reference library. `rank` is a position against a fixed set of "
-    "drug-like molecules, and this entry point takes a descriptor matrix -- it never sees "
-    "the molecules, so it cannot featurize that set itself.\n"
-    "Fit with `reference_X=` (or `reference_h5_file=`): get the molecule list with "
-    "`lazyqsar reference smiles --output ref.csv` (or "
-    "`lazyqsar.reference.reference_smiles()`), featurize it in that order, and pass "
-    "the matrix.\n"
-    "Or use predict_proba, which needs no reference."
-)
+# Re-exported, not redefined: there used to be a second, divergent copy here, and the
+# inference artifacts raised whichever of the two their module happened to import.
+NO_REFERENCE_MESSAGE = _NO_REFERENCE_MESSAGE
 
 
 class LazyClassifier:
@@ -132,6 +129,7 @@ class LazyClassifier:
 
         self._model.reference_rank_knots_ = None
         self._model.reference_rank_anchors_ = None
+        self._model.decision_cutoff_reference_rank_ = None
         if reference_X is None and reference_h5_file is None:
             logger.info(
                 "No reference library given; `rank` will not be available on this model."
@@ -191,7 +189,9 @@ class LazyClassifier:
             )
         )
         self._model.decision_cutoff_proba_ = proba
-        self._model.decision_cutoff_rank_ = DECISION_RANK
+        # Its own attribute, not `decision_cutoff_rank_`: that one is the out-of-fold
+        # percentile the assembler computed, and it is saved under that name.
+        self._model.decision_cutoff_reference_rank_ = DECISION_RANK
         self._model.decision_cutoff_source_ = DECISION_CUTOFF_SOURCE
         clipped = float(np.clip(proba, 1e-7, 1.0 - 1e-7))
         self._model.decision_cutoff_logit_ = float(np.log(clipped / (1.0 - clipped)))
@@ -257,7 +257,17 @@ class LazyClassifier:
     def predict(
         self, X=None, h5_file=None, h5_idxs=None, cutoff: float = None
     ) -> np.ndarray:
-        """Return binary labels using the OOF-learned decision cutoff, shape (n,)."""
+        """Return binary labels, shape (n,).
+
+        The cutoff depends on what the model carries. With a reference library it is
+        :data:`~lazyqsar.utils.ranking.DECISION_RANK` (0.65) mapped back to a probability
+        -- the point that admits 1% of drug-like space -- and the threshold is applied to
+        ``predict_proba``. Without one it falls back to the pre-3.6 behaviour: a
+        balanced-accuracy cutoff learned out of fold, applied to the raw score.
+
+        Pass ``cutoff`` to override it. It is interpreted on whichever scale the model's
+        own cutoff uses, so on a reference-carrying model it is a probability.
+        """
         if X is None:
             X = _load_h5(h5_file, h5_idxs)
         return self._model.predict(X, cutoff=cutoff)
@@ -359,26 +369,27 @@ class LazyClassifier:
 
     @classmethod
     def load(cls, model_dir: str):
-        if model_dir.endswith(".zip"):
-            base_dir = model_dir[:-4]
-            if os.path.exists(base_dir):
-                shutil.rmtree(base_dir)
-            shutil.unpack_archive(model_dir, base_dir)
-            model_dir = base_dir
-        # ONNX / artifact path
-        if os.path.isfile(os.path.join(model_dir, "metadata.json")):
-            logger.info(f"Loading ONNX artifact from {model_dir!r}")
-            artifact = LazyClassifierArtifact.load(model_dir)
-            logger.success(f"Artifact loaded from {model_dir!r}")
-            return artifact
-        # Raw assembler path
-        from .assemblers.classifier import LazyClassifier as _AssemblerClassifier
-
-        obj = cls.__new__(cls)
-        obj._model = _AssemblerClassifier()
-        raise NotImplementedError(
-            "Loading a raw (non-ONNX) LazyClassifier is not yet supported."
-        )
+        # Unpacked into scratch, not alongside the archive: the old code deleted the
+        # sibling directory of the same name without asking. Sessions are built before
+        # the scratch copy goes, and onnxruntime holds the graph in memory, so they
+        # outlive it.
+        scratch = None
+        try:
+            if model_dir.endswith(".zip"):
+                scratch, model_dir = unpack_to_scratch(model_dir)
+            if os.path.isfile(os.path.join(model_dir, "metadata.json")):
+                logger.info(f"Loading ONNX artifact from {model_dir!r}")
+                artifact = LazyClassifierArtifact.load(model_dir)
+                logger.success(f"Artifact loaded from {model_dir!r}")
+                return artifact
+            raise NotImplementedError(
+                "Loading a raw (non-ONNX) LazyClassifier is not yet supported. Every "
+                "checkpoint `save` writes carries metadata.json, so this is reachable "
+                "only for a hand-assembled directory."
+            )
+        finally:
+            if scratch is not None:
+                shutil.rmtree(scratch, ignore_errors=True)
 
 
 class LazyRegressor:

@@ -384,19 +384,6 @@ def _clean_env(monkeypatch):
         monkeypatch.delenv(var, raising=False)
 
 
-@pytest.fixture(scope="session")
-def _reference_cache(tmp_path_factory):
-    """Reference bundles, one per distinct descriptor signature.
-
-    Not a single session-scoped bundle: the stub fixtures replace the registry per test, so
-    a `morgan` producing 24 features in one test produces 2048 in another. A reference
-    matrix has to match the descriptor the model was fitted with -- the loader checks, and
-    that check is load-bearing -- so bundles are keyed by what the live registry emits.
-    Built at most once per shape, so the cost lands once rather than per test.
-    """
-    return {}, tmp_path_factory.mktemp("references")
-
-
 @pytest.fixture(autouse=True)
 def _scramble_global_rng(request):
     """Seed the global numpy RNG differently for every test.

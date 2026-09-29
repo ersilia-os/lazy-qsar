@@ -187,7 +187,17 @@ def _unparseable(smiles_list, scan):
     """
     if not _NAN_FAITHFUL.intersection(scan.get("descriptors", ())):
         return invalid_smiles_indices(smiles_list)
-    candidates = sorted(scan.get("nan_rows", ()))
+    # Blank cells are added to the candidate set directly rather than trusted to the NaN
+    # scan. RDKit parses "" into a valid zero-atom molecule, so a descriptor can emit a
+    # clean row for it -- morgan returned an all-zero fingerprint -- and the row never
+    # became a candidate. The descriptors now reject it too, but this does not depend on
+    # which of them survived the portfolio, and the check costs one string test per row.
+    blank = {
+        i
+        for i, smi in enumerate(smiles_list)
+        if not isinstance(smi, str) or not smi.strip()
+    }
+    candidates = sorted(blank.union(scan.get("nan_rows", ())))
     if not candidates:
         return []
     subset = [smiles_list[i] for i in candidates]

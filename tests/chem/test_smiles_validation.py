@@ -55,20 +55,34 @@ def test_non_string_input_is_reported_not_raised(hostile):
     assert invalid_smiles_indices(hostile) == list(range(len(hostile)))
 
 
-def test_the_empty_string_is_accepted_as_a_zero_atom_molecule():
-    """Characterization, not endorsement.
+def test_the_empty_string_is_not_a_molecule():
+    """The decision this file used to leave open, now taken.
 
-    ``Chem.MolFromSmiles("")`` returns a real Mol with no atoms, so an empty cell in an input
-    CSV is *not* flagged and does not get the NaN treatment that an unparseable string gets.
-    It is featurized as an empty molecule and scored like any other row.
+    ``Chem.MolFromSmiles("")`` returns a real Mol with no atoms, so an empty cell used to
+    pass validation and be scored like any other row -- morgan handed back an all-zero
+    fingerprint, which looks like a perfectly ordinary feature vector. That is the same
+    failure the NaN masking exists to prevent: something that is not a molecule receiving
+    an ordinary-looking score. A blank cell is far more likely to be a shifted column, a
+    trailing comma or a NaN written as ``""`` than a deliberate query about nothing.
 
-    That is arguably the same failure the NaN masking exists to prevent -- something that is
-    not a molecule receiving an ordinary-looking score -- but it is current behaviour, and
-    changing it is a decision about the API rather than something a test should assume. This
-    pins it so the decision is at least visible.
+    So a zero-atom molecule is now invalid, and an empty cell gets the NaN treatment.
+    :func:`parse_molecule` is the single place that decides this, shared with the
+    descriptors so the ``_NAN_FAITHFUL`` fast path in predict stays a true superset.
     """
-    assert invalid_smiles_indices([""]) == []
-    assert validate_smiles([""]) is None
+    assert invalid_smiles_indices([""]) == [0]
+    with pytest.raises(ValueError, match="position"):
+        validate_smiles([""])
+
+
+def test_a_single_atom_is_still_a_molecule():
+    """The boundary the zero-atom rule must not cross.
+
+    ``"C"`` and ``"*"`` are one-atom molecules and legitimate queries; only the zero-atom
+    case is rejected. Worth pinning separately, because "reject tiny molecules" is the
+    obvious wrong way to implement the test above.
+    """
+    assert invalid_smiles_indices(["C", "*", "O"]) == []
+    assert validate_smiles(["C", "*", "O"]) is None
 
 
 def test_empty_input_is_not_an_error():

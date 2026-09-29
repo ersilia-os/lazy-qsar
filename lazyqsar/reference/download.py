@@ -153,12 +153,18 @@ def download(filenames, n: int | None = None, force: bool = False) -> list[Path]
     # Verified after the move, and only once the manifest itself is cached -- fetching it
     # is what the first pass through here usually does.
     if MANIFEST_FILENAME not in wanted:
-        from .manifest import load, verify_file
+        from .manifest import ReferenceDriftError, load, verify_file
 
         checked = load(fetch_if_missing=False)
         if checked:
             for path in landed:
-                verify_file(path, checked)
+                try:
+                    verify_file(path, checked)
+                except ReferenceDriftError:
+                    # Removed before raising. Left in place, the next run would find it
+                    # cached, skip the fetch -- and with it this check -- and use it.
+                    path.unlink(missing_ok=True)
+                    raise
 
     logger.success(f"Fetched {len(landed)} file(s) into {target}")
     return [target / f for f in filenames]

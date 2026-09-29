@@ -12,7 +12,11 @@ import pytest
 
 from _helpers.trees import fake_task_tree, write_models_txt
 
-from lazyqsar.ensemble.runner import sources_from_mapping, sources_from_parent
+from lazyqsar.ensemble.runner import (
+    predict_tasks,
+    sources_from_mapping,
+    sources_from_parent,
+)
 
 TASKS = ["taskA", "taskB", "taskC"]
 
@@ -69,3 +73,10 @@ def test_sources_from_mapping_filters_but_does_not_reorder(tree, tmp_path):
     models_txt = write_models_txt(tmp_path / "m.txt", ["Alpha", "Zeta"])
     sources = sources_from_mapping(col_map, models_txt)
     assert [s.column_name for s in sources] == ["Zeta", "Alpha"]
+
+
+def test_rank_on_a_checkpoint_without_a_reference_is_refused_before_featurizing(tree):
+    """These directories hold no models, so reaching featurization would fail differently:
+    the refusal has to come first, not after a full pass over the library."""
+    with pytest.raises(ValueError, match="no reference-library rank"):
+        predict_tasks(sources_from_parent(tree), ["CCO"], outputs=("rank",))

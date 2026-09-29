@@ -3,18 +3,40 @@ lazyqsar — unified CLI entry point.
 
 Subcommands
 -----------
-lazyqsar setup [--descriptors] [--fit] [--only LIST] [--target-dir DIR]
-    Install optional dependencies and download model checkpoints.
-    --only       Comma-separated subset of descriptors to download: chemeleon, cddd, clamp.
-                 Default: all three. Only meaningful with --descriptors.
-    --target-dir Directory to write checkpoint files into (default: ~/.lazyqsar/).
-                 Only meaningful with --descriptors.
+lazyqsar setup [--descriptors] [--fit] [--reference] [--only LIST] [--target-dir DIR]
+               [--cpu-torch]
+    Install optional dependencies and download what the descriptors and `rank` need.
+    --descriptors  Install the descriptor extra and download the Chemeleon / CDDD
+                   checkpoints.
+    --fit          Install the fit extra (scikit-learn, xgboost, scipy, skl2onnx,
+                   onnxmltools, joblib, eosvc). Read out of the package metadata, so it
+                   cannot drift from `pip install lazyqsar[fit]`.
+    --reference    Download the reference library `rank` is reported against. Not implied
+                   by --descriptors: a fast-mode model needs one 6.5 MB matrix and the
+                   whole bundle is 267 MB.
+    --only         Comma-separated subset. With --descriptors: chemeleon, cddd, clamp.
+                   With --reference: any descriptor in the registry, so also morgan and
+                   rdkit.
+    --target-dir   Where to write. Sets LAZYQSAR_HOME, so it moves the reference cache as
+                   well as the descriptor checkpoints (default: ~/.lazyqsar/).
+    --cpu-torch    Reinstall torch from PyTorch's CPU index, replacing a CUDA wheel pip
+                   may have pulled from PyPI. Only meaningful with --descriptors.
+
+lazyqsar reference {status,fetch,verify,smiles} [--only LIST] [--output FILE] [--force]
+    Inspect or fetch the reference library `rank` is a position against.
+    status   What is cached, and what it would cost to complete.
+    fetch    Download it. --force re-downloads what is already cached.
+    verify   Check what is cached against the published manifest.
+    smiles   Write the molecule list, which is all a bring-your-own-descriptor caller
+             needs in order to pass `reference_X=` to LazyClassifier.fit.
 
 lazyqsar fit --task classification --input DATA_DIR --output MODEL_DIR [--mode MODE] [--models_txt FILE]
-    Fit a classifier on CSV data.
+    Fit a classifier on CSV data. One CSV per task, SMILES first column, label second.
 
 lazyqsar predict --input INPUT_CSV --model MODEL_DIR --output OUTPUT_CSV [--models_txt FILE]
+                 [--predict_type TYPE]
     Run predictions with a saved model.
+    --predict_type  One of proba, rank, logit, lift, score, binary (default: proba).
 """
 
 import argparse
@@ -123,7 +145,7 @@ def _extra_requirements(extra: str) -> list:
         if marker not in req:
             continue
         spec = req.split(";", 1)[0]
-        # Metadata spells these "scikit-learn (==1.6.1)"; pip wants "scikit-learn==1.6.1".
+        # Metadata spells these "scikit-learn (==1.9.1)"; pip wants "scikit-learn==1.6.1".
         spec = spec.replace("(", "").replace(")", "").replace(" ", "")
         # `all` is expressed as a self-reference; installing it here would recurse.
         if spec.lower().startswith("lazyqsar"):
@@ -312,8 +334,9 @@ def main():
         default=None,
         metavar="LIST",
         help=(
-            "Comma-separated subset of descriptors to download: chemeleon, cddd, clamp "
-            "(default: all three). Only meaningful with --descriptors."
+            "Comma-separated subset. With --descriptors: chemeleon, cddd, clamp "
+            "(default: all three). With --reference: any descriptor in the registry, so "
+            "also morgan and rdkit (default: all of them)."
         ),
     )
     p_setup.add_argument(
@@ -321,7 +344,10 @@ def main():
         type=str,
         default=None,
         metavar="DIR",
-        help="Directory to download checkpoints into (default: ~/.lazyqsar/). Only meaningful with --descriptors.",
+        help=(
+            "Directory to download into (default: ~/.lazyqsar/). Sets LAZYQSAR_HOME, so "
+            "it moves the reference cache as well as the descriptor checkpoints."
+        ),
     )
     p_setup.add_argument(
         "--reference",

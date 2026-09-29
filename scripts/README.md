@@ -1,12 +1,20 @@
 # Reference-library build (maintainer only)
 
-Builds the fixed reference library that `predict_rank` reports percentiles against, and
+Builds the fixed reference library that `predict_rank` reports a position against, and
 publishes it to public S3. **Nothing here ships in the wheel** — `pyproject.toml` packages
-only `lazyqsar/`, and the installed package reads the published bundle over plain HTTPS.
+only `lazyqsar/`.
 
-`eosvc` and `boto3` are never imported. `publish_reference.py` shells out to the `eosvc`
-binary, which is the strongest available guarantee that neither can leak into the package's
-dependencies.
+The installed package fetches the bundle by shelling out to the `eosvc` binary
+(`lazyqsar/reference/download.py`), which stages a throwaway repo directory and runs
+`eosvc` there. `eosvc` and `boto3` are never *imported*, which is what keeps them out of
+the inference path — `tests/packaging/test_import_purity.py` asserts it. They are not
+absent from the dependency tree, though: `eosvc==1.3.0` is a declared member of the `fit`
+extra, because fitting is when the reference is read. A deployed model carries its knots in
+`metadata.json` and never needs the bundle, so an Ersilia Model Hub container installs
+neither.
+
+There is no `publish_reference.py`; publishing is the bare `eosvc upload` invocation in the
+recipe below.
 
 ```bash
 pip install "lazyqsar[all]" -r scripts/requirements-maintainer.txt
@@ -18,8 +26,10 @@ installed package, and they have to agree.
 
 ## Why the reference set is built this way
 
-A rank is a percentile, so **the reference set's density is the calibration**. That single
-fact drives every choice below.
+A rank is read off this library's distribution, so **the reference set's density is the
+calibration**. That single fact drives every choice below. (Since 3.6 the mapping is not a
+bare percentile: four reference percentiles are pinned to fixed ranks by `TAIL_ANCHORS`.
+The density still decides what falls where between them.)
 
 ### Two clusterings, in two spaces
 

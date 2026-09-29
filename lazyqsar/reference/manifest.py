@@ -102,8 +102,8 @@ def verify_file(path, manifest: dict | None) -> None:
             f"{Path(path).name} does not match the manifest.\n"
             f"  expected sha256 {entry['sha256']}\n"
             f"  got            {got}\n"
-            "The published bundle is immutable, so this is a corrupt download: delete the "
-            "file and fetch it again."
+            "The published bundle is immutable, so this is a corrupt download. The file "
+            "has been removed from the cache; run again to fetch it afresh."
         )
 
 

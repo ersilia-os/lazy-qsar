@@ -23,8 +23,9 @@ Needs RDKit and the ``fit`` extra: only a fitted checkpoint carries the referenc
 One prevalence regime, not two. This used to fit a balanced checkpoint as well, at ~8 s,
 and both fixtures use ``mode="fast"`` -- a single descriptor, where the weights collapse to
 one column and the pooling defect above *cannot* recur. The regression is pinned properly,
-and for free, by ``tests/unit/test_combine_score_ordering.py`` and
-``tests/unit/test_pooled_rank_reference.py``, which build the disagreeing columns by hand.
+and for free, by ``tests/unit/test_monotone_outputs.py``, which builds the disagreeing
+columns by hand. (It absorbed the two files this used to name, ``test_combine_score_ordering``
+and ``test_pooled_rank_reference``; both are gone.)
 What is left here is the end-to-end check that a real fitted checkpoint writes a usable
 map -- worth one fixture, and the low-prevalence one is the regime Ersilia deploys in.
 """
@@ -150,7 +151,8 @@ def test_score_still_lands_near_the_raw_scale(imbalanced):
     another name.
     """
     _, out = imbalanced
-    assert _flipped_pairs(out["score"], out["proba"]) == 0
+    # Ordering against proba is not re-asserted here: it is the `[proba-score]` case of
+    # `test_no_two_outputs_disagree_about_order` above, on this same fixture.
     assert not np.allclose(out["score"], out["proba"], atol=1e-3), (
         "score has collapsed onto proba; the map is no longer carrying the raw scale"
     )

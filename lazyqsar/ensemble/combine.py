@@ -13,9 +13,11 @@ How each output is pooled
 ``proba``, ``logit``, ``lift`` and ``binary`` come from one weighted sum in logit space.
 ``score`` is a weighted mean of the raw scores. ``rank`` is *not* a weighted mean of the
 per-descriptor ranks -- averaging percentiles does not give the percentile of the average,
-and the two orderings genuinely disagreed -- it is the pooled probability read off one
-pooled out-of-fold reference, so it is a monotone view of ``proba``. Checkpoints fitted
-before that reference existed fall back to the old weighted mean.
+and the two orderings genuinely disagreed -- it is the pooled probability read through the
+external reference library's anchor table, so it is a monotone view of ``proba``. A
+checkpoint that carries no such reference does **not** fall back to the old weighted mean:
+``rank`` is refused, because a percentile against a model's own training set is a
+different quantity and reporting it under the same name is what the refusal prevents.
 
 Weights, not just averages
 --------------------------
@@ -36,6 +38,7 @@ import numpy as np
 
 from ..utils.ranking import (
     DECISION_CUTOFF_SOURCE,
+    NO_REFERENCE_MESSAGE,
     prepare_knots,
     rank_from_reference,
     score_from_knots,
@@ -58,13 +61,7 @@ REFERENCE_SOURCE = "reference_library"
 # `read_decision_cutoff`. Defined in `utils.ranking` beside `DECISION_RANK`, because the
 # numpy-only inference artifacts branch on it too.
 
-NO_REFERENCE_MESSAGE = (
-    "This checkpoint has no reference-library rank. `rank` is a percentile against a "
-    "fixed library of drug-like molecules; checkpoints fitted before v3.6 carry a "
-    "percentile against their own training set instead, which is not comparable and is "
-    "not reported as though it were. Refit with lazyqsar>=3.6 to get `rank`, or use "
-    "`proba`, `logit`, `lift`, `score` or `binary`, which are unaffected."
-)
+# Defined in `utils.ranking`; re-exported here, which is where callers already look.
 
 
 def read_pooled_rank_knots(metadata):
@@ -193,12 +190,15 @@ class EnsembleSpec:
     decision_cutoff : float
         Probability threshold for ``binary``.
     pooled_rank_knots : ndarray, or None
-        Ascending ECDF knots over the pooled out-of-fold probability, built at fit time
-        by :func:`lazyqsar.ensemble.reference.build_pooled_rank_knots`. When present,
-        ``rank`` is this ECDF evaluated at the pooled probability. ``None`` -- the state
-        of every checkpoint fitted before v3.5.0 -- keeps the earlier weighted mean of
-        per-descriptor ranks. Not per-descriptor, so it is never sliced: it is written
-        after the active set is settled and describes exactly that set.
+        Ascending knots over the *reference library's* pooled probability, built at fit
+        time by ``LazyClassifierQSAR._build_reference_rank_knots``. When present, ``rank``
+        is the anchor table of :mod:`lazyqsar.utils.ranking` evaluated at the pooled
+        probability. ``None`` means this checkpoint has no reference -- every checkpoint
+        fitted before v3.6, and every 3.5.x one, whose block lacks
+        ``source: "reference_library"`` and is rejected by
+        :func:`read_pooled_rank_knots`. There is no fallback: ``rank`` is refused, and the
+        other five outputs are unaffected. Not per-descriptor, so it is never sliced: it
+        is written after the active set is settled and describes exactly that set.
     """
 
     descriptor_names: tuple[str, ...] = ()
@@ -263,6 +263,21 @@ class EnsembleSpec:
 
         prior = metadata.get("population_prior", 0.5)
         pooled_knots = read_pooled_rank_knots(metadata)
+        # The knots describe the pooled probability of exactly the descriptor set they were
+        # built from. A checkpoint missing one of those directories would otherwise be
+        # scored with fewer descriptors and ranked against a distribution it never had.
+        built_from = (metadata.get("pooled_ranker") or {}).get("descriptors")
+        if pooled_knots is not None and built_from:
+            # Against what is on disk, not the active mask: a descriptor switched off in
+            # the metadata is a choice, a directory that is not there is damage.
+            missing = sorted(set(built_from) - set(descriptor_names))
+            if missing:
+                raise ValueError(
+                    f"This checkpoint's reference rank was built from {sorted(built_from)}, "
+                    f"but {missing} {'is' if len(missing) == 1 else 'are'} missing from "
+                    "its directory. The checkpoint is incomplete; restore the missing "
+                    "descriptor directories or refit."
+                )
         pooled_anchors = read_pooled_rank_anchors(metadata)
         pooled_score = read_pooled_score_knots(metadata)
         # `binary` thresholds on the cutoff only when the checkpoint places it on the
@@ -480,7 +495,10 @@ def combine(Y, R=None, S=None, A=None, *, spec, outputs=OUTPUT_NAMES, cutoff=Non
     W, base = build_weight_matrix(Y, R, A, spec)
 
     diagnostics = None
-    if A is not None:
+    # Every entry below is a reduction over the query rows, so there is nothing to report
+    # for a query of no molecules -- and `.min()` on a zero-size array raises rather than
+    # returning a neutral value.
+    if A is not None and B > 0:
         names = spec.descriptor_names or tuple(str(j) for j in range(D))
         oof_aucs, proxy_aucs = spec.oof_aucs, spec.proxy_aucs
         diagnostics = [

@@ -38,9 +38,12 @@ class Channels:
 def required_channels(outputs, has_ad: bool, has_scorer: bool = False) -> set[str]:
     """Return the channel letters needed to produce *outputs*.
 
-    ``y`` is always needed. ``r`` is needed for the ``rank`` output, and also whenever
-    applicability-domain scores are available, because the weighting derives its
-    per-sample reliability term from the ranks.
+    ``y`` is always needed. ``r`` is needed whenever applicability-domain scores are
+    available, because the weighting derives its per-sample reliability term from the
+    ranks -- and *only* then. It is deliberately not fetched for the ``rank`` output:
+    since 3.6 ``rank`` is computed from the pooled probability through the reference
+    table, not pooled from the per-descriptor ranks, so asking for it costs no extra pass
+    over any graph.
 
     ``s`` is needed only for ``score``, and only on a checkpoint with no pooled score map.
     With one, ``score`` is read off the pooled probability, so the raw channel is never

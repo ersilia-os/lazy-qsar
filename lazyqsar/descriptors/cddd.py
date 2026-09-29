@@ -473,6 +473,8 @@ class ContinuousDataDrivenDescriptor(object):
             for s in smiles_list
             if len(s) > _MAX_SMILES_LEN or not isinstance(preprocess_smiles(s), str)
         )
+        if not smiles_list:
+            return True
         return n_inapplicable / len(smiles_list) <= 0.001
 
     def save(self, dir_name: str):

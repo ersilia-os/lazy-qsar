@@ -103,6 +103,36 @@ def _check(dset, descriptor: str, n: int, expected_dim: int | None) -> None:
         )
 
 
+def require_fetchable(descriptors, n: int | None = None) -> None:
+    """Fail now if any of *descriptors*' matrices is neither cached nor fetchable.
+
+    Fit reads the reference only once every descriptor model is trained. Without this, an
+    offline node or a missing ``eosvc`` would surface only then, and the fit would be lost.
+    Nothing is downloaded here: the fetch waits until pruning has settled which matrices
+    are actually needed.
+    """
+    from .download import eosvc_available, offline
+
+    n = n or default_n()
+    root = reference_dir()
+    missing = [
+        d for d in descriptors if not (root / descriptor_filename(d, n)).is_file()
+    ]
+    if not missing:
+        return
+    if offline():
+        reason = "fetching is disabled by LAZYQSAR_REFERENCE_OFFLINE"
+    elif not eosvc_available():
+        reason = "`eosvc`, which fetches them, is not installed (pip install eosvc)"
+    else:
+        return
+    raise ReferenceUnavailable(
+        f"No reference matrix for {', '.join(missing)} in {root}, and {reason}.\n"
+        f"Fetch them with `lazyqsar setup --reference`, or point LAZYQSAR_REFERENCE_DIR "
+        "at a local copy. Checked before fitting so that no fit is lost to it."
+    )
+
+
 def iter_chunks(
     descriptor: str,
     n: int | None = None,

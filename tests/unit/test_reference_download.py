@@ -95,6 +95,51 @@ def test_the_eosvc_contract(monkeypatch, tmp_path):
     assert got[0].read_bytes() == b"matrix"
 
 
+def test_a_corrupt_download_does_not_stay_cached(monkeypatch, tmp_path):
+    """A file that fails its hash is removed, or the next run would use it unchecked:
+    a cached file is never fetched, so it is never verified either."""
+    from lazyqsar.reference.manifest import ReferenceDriftError
+
+    monkeypatch.delenv("LAZYQSAR_REFERENCE_OFFLINE", raising=False)
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    monkeypatch.setenv("LAZYQSAR_REFERENCE_DIR", str(cache))
+    name = identity.descriptor_filename("morgan")
+    (cache / "manifest.json").write_text(
+        json.dumps({"files": {name: {"sha256": "0" * 64}}})
+    )
+
+    fake = tmp_path / "bin" / "eosvc"
+    fake.parent.mkdir()
+    fake.write_text(
+        "#!/usr/bin/env python3\n"
+        "import pathlib, sys\n"
+        "p = pathlib.Path(sys.argv[sys.argv.index('--path') + 1])\n"
+        "p.parent.mkdir(parents=True, exist_ok=True)\n"
+        "p.write_bytes(b'corrupt')\n"
+    )
+    fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+    monkeypatch.setenv("PATH", str(fake.parent) + os.pathsep + os.environ["PATH"])
+
+    with pytest.raises(ReferenceDriftError, match="removed from the cache"):
+        download([name])
+    assert not (cache / name).exists()
+
+
+def test_fit_is_refused_up_front_when_the_reference_cannot_be_fetched(
+    monkeypatch, tmp_path
+):
+    """Checked before training, so no fit is lost to a reference it could never read."""
+    from lazyqsar.reference import ReferenceUnavailable, require_fetchable
+
+    monkeypatch.setenv("LAZYQSAR_REFERENCE_OFFLINE", "1")
+    monkeypatch.setenv("LAZYQSAR_REFERENCE_DIR", str(tmp_path))
+    with pytest.raises(ReferenceUnavailable, match="morgan"):
+        require_fetchable(["morgan"])
+    (tmp_path / identity.descriptor_filename("morgan")).write_bytes(b"cached")
+    require_fetchable(["morgan"])
+
+
 def test_the_staging_repo_does_not_outlive_the_download(monkeypatch, tmp_path):
     monkeypatch.setenv("LAZYQSAR_REFERENCE_OFFLINE", "1")
     monkeypatch.setenv("LAZYQSAR_REFERENCE_DIR", str(tmp_path))

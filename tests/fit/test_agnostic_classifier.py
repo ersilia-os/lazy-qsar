@@ -8,6 +8,7 @@ survives the zip round trip that the README tells people to use.
 
 import contextlib
 import io
+import json
 import os
 import zipfile
 
@@ -289,7 +290,7 @@ def test_the_reference_tail_percentiles_land_on_their_ranks(fitted_with_referenc
         )
 
 
-def test_the_agnostic_cutoff_is_on_the_rank_scale(fitted_with_reference):
+def test_the_agnostic_cutoff_is_on_the_rank_scale(fitted_with_reference, tmp_path):
     """With a reference, `predict` thresholds proba against the rank-derived cutoff.
 
     The agnostic path used to threshold `predict_score` against a mean of per-head
@@ -299,11 +300,16 @@ def test_the_agnostic_cutoff_is_on_the_rank_scale(fitted_with_reference):
     model, reference = fitted_with_reference
     inner = model._model
     assert inner.decision_cutoff_source_ == DECISION_CUTOFF_SOURCE
-    assert inner.decision_cutoff_rank_ == DECISION_RANK
+    assert inner.decision_cutoff_reference_rank_ == DECISION_RANK
     # A 1% generic hit rate on the library it was inverted against.
     knots = np.asarray(inner.reference_rank_knots_, dtype=float)
     hit = float((knots >= inner.decision_cutoff_proba_).mean())
     assert hit == pytest.approx(0.01, abs=5e-3)
+    # Saved as a reference rank, and not in place of the out-of-fold percentile.
+    with zipfile.ZipFile(model.save(str(tmp_path / "m.zip"))) as z:
+        meta = json.loads(z.read("metadata.json"))
+    assert meta["decision_cutoff_rank"] == DECISION_RANK
+    assert meta["decision_cutoff_oof_percentile"] == inner.decision_cutoff_rank_
 
 
 def test_without_a_reference_the_cutoff_and_labels_are_unchanged(data):

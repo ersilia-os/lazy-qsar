@@ -40,7 +40,7 @@ You can install optional extras depending on your use case:
 
 | Extra | Command | Adds |
 |-------|---------|------|
-| `fit` | `pip install -e ".[fit]"` | Training dependencies (scikit-learn, XGBoost, scipy, ONNX conversion tools) |
+| `fit` | `pip install -e ".[fit]"` | Training dependencies (scikit-learn, XGBoost, scipy, ONNX conversion tools) and `eosvc`, which is what fetches the reference library — so `rank` needs this extra even if you bring your own descriptors |
 | `descriptors` | `pip install -e ".[descriptors]"` | Built-in molecular descriptors (RDKit, FPSim2, deep-learning models) |
 | `all` | `pip install -e ".[all]"` | Everything above |
 
@@ -72,6 +72,32 @@ It is deliberately **not** included in `--descriptors`. Inspect or manage it wit
 `LAZYQSAR_HOME` moves the cache (checkpoints and reference together);
 `LAZYQSAR_REFERENCE_DIR` points at a prepared copy; `LAZYQSAR_REFERENCE_OFFLINE=1` refuses
 to fetch rather than reaching for the network.
+
+`LAZYQSAR_REFERENCE_N` selects the reference *tier* — how many molecules the library holds.
+It changes what `rank` means, and the value is stamped into every checkpoint as
+`pooled_ranker.library.n`, so two models fitted under different tiers are not comparable
+on `rank` even though both report a number in [0, 1]. Leave it alone unless you know why
+you are changing it.
+
+`LAZYQSAR_FIT_SCRATCH` redirects where a fit stages its descriptor matrices. Worth setting
+on a node with a small `/tmp`: a slow-mode fit over many tasks stages one matrix per
+descriptor over the union of every task, which for 175,000 compounds across five
+descriptors is several gigabytes.
+
+## When a fit or a prediction refuses
+
+The library fails loudly in a few places rather than returning a number it cannot stand
+behind. Each of these is a deliberate refusal, not a bug:
+
+| What you see | What it means | What to do |
+|---|---|---|
+| `predict_rank needs a reference library` | The checkpoint carries no reference — either it predates 3.6, or it was fitted through `LazyClassifier` without `reference_X=`. | Refit with 3.6+, or pass `reference_X=`. `proba`, `logit`, `lift`, `score` and `binary` still work. |
+| `No reference matrix for ... and fetching is disabled` / `eosvc ... is not installed` | Checked *before* training so a long fit is not lost to it. | `lazyqsar setup --reference`, or point `LAZYQSAR_REFERENCE_DIR` at a copy, or `pip install "lazyqsar[fit]"` for `eosvc`. |
+| `class N has a single member` / `every label is N` | Stratified splitting cannot work, so no fold count exists. Raised from the labels before any descriptor is computed. | Add examples of the minority class, or stop treating the task as classification. |
+| `Invalid SMILES at position(s): ...` at fit | Training on a molecule that cannot be featurized is meaningless, so fit raises rather than guessing. Note an empty cell counts as invalid. | Clean the input. At *predict* time the same rows are NaN'd instead, and the rest of the library still scores. |
+| `This checkpoint's reference rank was built from [...] but [...] missing` | Descriptor directories have been removed from the checkpoint, so it would be scored with fewer descriptors than its reference describes. | Restore the directories or refit. |
+| A warning that the cutoff `admits X% of the reference library, not 1%` | The reference's probabilities are too concentrated for the anchors to separate, so this model's `rank` is not comparable with others. | Check `LAZYQSAR_REFERENCE_N` and whether the model saturates. |
+| A warning that the actives anchor was dropped | The model's known actives do not reach the top 0.1% of drug-like space. Informative, not an error — see the changelog's Known limitations. | Nothing; the scale runs straight to certainty above the last reference anchor. |
 
 ## Python API
 
@@ -243,11 +269,11 @@ The components under `lazyqsar/base/` can be used independently of the full pipe
 
 | Module | Description |
 |--------|-------------|
-| [`lazyqsar.base.preprocessing`](lazyqsar/base/preprocessing/) | Automatic scaler and feature reducer selection |
+| [`lazyqsar.base.preprocessing`](lazyqsar/base/preprocessing/README.md) | Automatic scaler and feature reducer selection |
 | [`lazyqsar.base.xgboost`](lazyqsar/base/xgboost/README.md) | Automatic XGBoost hyperparameter selection with portfolio comparison |
 | [`lazyqsar.base.linear`](lazyqsar/base/linear/README.md) | Automatic linear model selection (logistic/ridge/SGD) |
 | [`lazyqsar.base.randomforest`](lazyqsar/base/randomforest/README.md) | Random Forest classifier with zero-shot hyperparameter selection |
-| [`lazyqsar.base.svc`](lazyqsar/base/svc/) | Support Vector Classifier with automatic kernel and C selection |
+| [`lazyqsar.base.svc`](lazyqsar/base/svc/README.md) | Support Vector Classifier with automatic kernel and C selection |
 
 ## Running the tests
 
@@ -304,18 +330,24 @@ Basically, `lazyqsar fit` can be used to produce a `checkpoints` folder with one
 ```text
 checkpoints/
 └── task1/
-    ├── cddd/
+    ├── metadata.json          task-level: active mask, AUCs, cutoff, reference knots
+    ├── chemeleon/
     │   ├── featurizer.json
     │   ├── metadata.json
+    │   ├── applicability_domain/
+    │   │   └── applicability_domain.onnx
     │   └── batch_0/
     │       ├── preprocessor.onnx
     │       ├── xgboost.onnx
     │       └── pooler.json
-    ├── chemeleon/   (same structure)
-    ├── clamp/       (same structure)
-    ├── morgan/      (same structure)
-    └── rdkit/       (same structure)
+    ├── clamp/     (same structure)
+    └── morgan/    (same structure)
 ```
+
+Slow mode screens five descriptors and typically keeps **two or three** — the portfolio
+prunes the rest, and a pruned descriptor's directory is not written at all, so a real
+checkpoint is smaller than the descriptor list suggests. Which survived is recorded in the
+task-level `metadata.json` under `active_descriptors`.
 
 The `code/main.py` inference script:
 

@@ -28,6 +28,11 @@ import pytest
 _SHARED_ROOTS = {
     "checkpoint": lambda v: v.root,
     "pruned_checkpoint": lambda v: v["root"],
+    # Session-scoped too, and shared across test_rank_shortcut, test_pipeline_invariants
+    # and test_streaming_invariants -- so a test that wrote into either would poison the
+    # ones after it, which is exactly what this guard exists to prevent.
+    "pooled_checkpoint": lambda v: v["models"],
+    "streaming_checkpoint": lambda v: v["root"],
 }
 
 

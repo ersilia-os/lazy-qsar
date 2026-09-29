@@ -13,6 +13,7 @@ import numpy as np
 
 from lazyqsar.utils.ranking import (
     DECISION_CUTOFF_SOURCE,
+    NO_REFERENCE_MESSAGE,
     binarize,
     prepare_knots,
     rank_from_knots,
@@ -277,8 +278,6 @@ class LazyClassifierArtifact:
         """
         prepared = getattr(self, "_reference_prepared", None)
         if prepared is None:
-            from ..agnostic import NO_REFERENCE_MESSAGE
-
             raise ValueError(NO_REFERENCE_MESSAGE)
         rank_1 = rank_from_reference(
             self.predict_proba(X)[:, 1],

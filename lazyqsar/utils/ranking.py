@@ -45,6 +45,14 @@ ACTIVES_RANK = 0.95
 # does not wobble on a model fitted from 24 actives. Keep any retuned value <= 0.75.
 DECISION_RANK = 0.65
 
+# The share of the reference library the cutoff is *defined* to admit, derived from the
+# anchors rather than written down again: DECISION_RANK sits on a TAIL_ANCHORS percentile,
+# so this is 1 - p/100 for that anchor. Computed so that moving an anchor or the constant
+# cannot leave a stale 0.01 behind. None if DECISION_RANK is ever moved off an anchor.
+DECISION_HIT_RATE = next(
+    (1.0 - q / 100.0 for q, rank in TAIL_ANCHORS if rank == DECISION_RANK), None
+)
+
 # The value of the ``decision_cutoff_source`` metadata key that means "this checkpoint's
 # cutoff is :data:`DECISION_RANK` inverted against its reference library". `binary` and the
 # artifacts' `predict` threshold on the cutoff only when they see this, so a checkpoint
@@ -54,6 +62,31 @@ DECISION_RANK = 0.65
 # and are documented as numpy-only; this module is the shared floor both tiers already
 # import.
 DECISION_CUTOFF_SOURCE = "reference_rank"
+
+# Raised when there is no reference library to rank against. Here, not in
+# `ensemble.combine` or `agnostic`, for the same reason as DECISION_CUTOFF_SOURCE above:
+# the numpy-only inference artifacts raise it, and `lazyqsar/artifacts/` must not import
+# anything heavier than this module -- it used to reach up into `lazyqsar.agnostic`.
+#
+# One message, covering both ways of getting here. There were two, and the artifact raised
+# whichever one its module happened to import, so a task-level checkpoint was told to pass
+# `reference_X=` (not applicable) and a saved descriptor-matrix model was told to upgrade
+# (already current). Naming both conditions is shorter than guessing between them.
+NO_REFERENCE_MESSAGE = (
+    "predict_rank needs a reference library: this model has no reference-library rank. "
+    "`rank` is a position against a fixed library of drug-like molecules, so there is "
+    "nothing to measure against.\n"
+    "Two ways to end up here:\n"
+    "  - Fitted with lazyqsar < 3.6. Those checkpoints carry a percentile against their "
+    "own training set instead, which is not comparable and is not reported as though it "
+    "were. Refit with lazyqsar>=3.6.\n"
+    "  - Fitted through the descriptor-matrix entry point (`LazyClassifier`), which never "
+    "sees the molecules and so cannot featurize the library itself. Refit passing "
+    "`reference_X=` (or `reference_h5_file=`): get the molecule list with `lazyqsar "
+    "reference smiles --output ref.csv` (or `lazyqsar.reference.reference_smiles()`), "
+    "featurize it in that order, and pass the matrix.\n"
+    "Either way `proba`, `logit`, `lift`, `score` and `binary` are unaffected."
+)
 
 
 def binarize(scores, threshold):
@@ -180,7 +213,7 @@ def reference_anchor_table(knots=None, prepared=None, anchor_high=None):
     Notes
     -----
     The anchor probabilities are read off the collapsed knots by inverse interpolation, the
-    same way :func:`rank_from_reference` has always recovered its quartiles -- not with
+    same way :func:`rank_from_reference` recovers the anchors themselves -- not with
     ``np.percentile`` on the raw array. The two disagree on a library with tied knots, and
     only the former is consistent with the ECDF the forward map interpolates.
     """

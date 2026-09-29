@@ -84,11 +84,18 @@ def scored(tmp_path_factory):
             }
             for tag, obj in (("fit", model), ("onnx", exported))
         }
-        labels = {tag: np.asarray(obj.predict(query))
-                  for tag, obj in (("fit", model), ("onnx", exported))}
+        labels = {
+            tag: np.asarray(obj.predict(query))
+            for tag, obj in (("fit", model), ("onnx", exported))
+        }
 
-    return {"values": values, "labels": labels, "query": query, "n": len(query),
-            "descriptors": list(model.descriptor_types)}
+    return {
+        "values": values,
+        "labels": labels,
+        "query": query,
+        "n": len(query),
+        "descriptors": list(model.descriptor_types),
+    }
 
 
 @pytest.mark.parametrize("channel", sorted(CHANNEL_ATOL))
@@ -99,7 +106,10 @@ def test_the_export_agrees_with_the_model_it_came_from(scored, channel):
     diff = np.abs(a - b)
     worst = int(np.argmax(diff))
     np.testing.assert_allclose(
-        b, a, rtol=0, atol=CHANNEL_ATOL[channel],
+        b,
+        a,
+        rtol=0,
+        atol=CHANNEL_ATOL[channel],
         err_msg=(
             f"{channel}: export differs from the fitted model by "
             f"{diff.max():.3e} (tolerance {CHANNEL_ATOL[channel]:.0e}) on "

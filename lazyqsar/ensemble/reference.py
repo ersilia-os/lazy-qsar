@@ -1,15 +1,23 @@
-"""Build the pooled reference distribution that ``rank`` is measured against.
+"""Pooled out-of-fold reference distributions, and the pooled score map.
 
-``rank`` answers "where does this molecule sit relative to the model's training
-distribution". Until v3.5.0 the ensemble answered it by averaging each descriptor's
-answer, which is not the same question: an average of percentiles is not the percentile
-of the average, so ``rank`` could order two molecules one way and ``proba`` the other.
-Ranking the pooled probability against one pooled reference makes ``rank`` a monotone
+.. note::
+   ``build_pooled_rank_knots`` no longer backs the shipped ``rank``. Since v3.6 ``rank``
+   is a position against a fixed external library of drug-like molecules, built by
+   ``LazyClassifierQSAR._build_reference_rank_knots`` and read through the tail-anchored
+   table in ``lazyqsar.utils.ranking``. This module's pooled *out-of-fold* reference is
+   what ``_oof_percentile`` reports against -- a different quantity, kept because it is
+   the model's own view of its training distribution and is still written to every
+   checkpoint under ``oof_percentile``. The paragraph below therefore describes what this
+   function builds, not what ``rank`` means; the sentence that once said ranking against
+   an external fixed library "is deliberately not what this builds" was true when written
+   and is now a description of the road not taken.
+
+``_oof_percentile`` answers "where does this molecule sit relative to the model's own
+training distribution". Until v3.5.0 the ensemble answered it by averaging each
+descriptor's answer, which is not the same question: an average of percentiles is not the
+percentile of the average, so it could order two molecules one way and ``proba`` the
+other. Ranking the pooled probability against one pooled reference makes it a monotone
 view of ``proba`` instead, which is what every consumer already assumes it is.
-
-The reference is the model's own out-of-fold training distribution -- the same thing each
-head's knots already describe, one level up. Ranking against an external fixed library is
-a different feature and is deliberately not what this builds.
 
 Deliberately numpy-only, like the rest of ``lazyqsar.ensemble``: the knots it produces are
 re-applied on the inference path, which runs without scikit-learn or RDKit.

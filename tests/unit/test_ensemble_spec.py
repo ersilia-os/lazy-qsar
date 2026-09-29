@@ -7,6 +7,7 @@ descriptors. Numpy only.
 """
 
 import numpy as np
+import pytest
 
 from lazyqsar.ensemble import EnsembleSpec
 
@@ -63,6 +64,21 @@ def test_from_metadata_reads_the_pooled_rank_reference():
     spec, _ = EnsembleSpec.from_metadata(meta, ["a"])
     assert isinstance(spec.pooled_rank_knots, np.ndarray)
     assert spec.pooled_rank_knots.tolist() == [0.1, 0.4, 0.9]
+
+
+def test_a_checkpoint_missing_a_descriptor_its_reference_was_built_from_is_refused():
+    """The knots describe exactly one descriptor set; scoring with fewer would rank
+    against a distribution the model never had."""
+    meta = {
+        "pooled_ranker": {
+            "knots": [0.1, 0.4, 0.9],
+            "source": "reference_library",
+            "descriptors": ["a", "b"],
+        }
+    }
+    with pytest.raises(ValueError, match=r"\['b'\] is missing"):
+        EnsembleSpec.from_metadata(meta, ["a"])
+    EnsembleSpec.from_metadata(meta, ["a", "b"])
 
 
 def test_from_metadata_treats_an_empty_pooled_reference_as_absent():

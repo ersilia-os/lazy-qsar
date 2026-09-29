@@ -25,8 +25,11 @@ from .ensemble.combine import (
     read_pooled_rank_knots,
     read_pooled_score_knots,
 )
+from .utils.archives import unpack_to_scratch
+from .utils.splits import check_trainable
 from .utils.logging import logger
 from .utils.ranking import (
+    DECISION_HIT_RATE,
     DECISION_RANK,
     prepare_knots,
     proba_from_reference_rank,
@@ -57,6 +60,27 @@ def _has_onnx(descriptor_dir):
         if any(f.endswith(".onnx") for f in files):
             return True
     return False
+
+
+def _quality_weight(oof_auc, train_auc):
+    """The skill term the ensemble weights descriptors by: ``2*oof - train``, clipped.
+
+    The subtraction penalises a descriptor that fits its training data far better than its
+    held-out folds. Two ways it used to misbehave:
+
+    *Unclipped*, it is not bounded by 1. ``train < oof`` happens on small data, and a
+    failed training-AUC computation used to stand in as 0.5, which on a strong descriptor
+    gives ``2*0.9 - 0.5 = 1.3`` -- so the failure earned roughly double the weight of a
+    genuinely good descriptor. The clip makes the term mean what its name says.
+
+    *With an unknown input*, there is no honest gap to charge, so the descriptor is
+    weighted on its out-of-fold AUC alone rather than on a guess.
+    """
+    if oof_auc is None:
+        return None
+    if train_auc is None:
+        return float(np.clip(oof_auc, 0.0, 1.0))
+    return float(np.clip(2.0 * oof_auc - train_auc, 0.0, 1.0))
 
 
 def validate_smiles(smiles_list):
@@ -100,6 +124,12 @@ def _optional(fn, X):
             f"{type(exc).__name__}: {exc}"
         )
         return None
+
+
+def _empty_channels(n_descriptors):
+    """Correctly shaped ``(Y, R, S, A)`` for a query of no molecules."""
+    zero = np.zeros((0, n_descriptors), dtype=np.float64)
+    return zero, zero.copy(), zero.copy(), zero.copy()
 
 
 def _stack_channels(y_hats, rank_preds, score_preds, ad_scores):
@@ -187,18 +217,39 @@ class _EnsemblePredictMixin:
         return self._combined(smiles_list).values["logit"]
 
     def predict_rank(self, smiles_list):
-        """Percentile against the reference library, shape (n_samples, 2).
+        """Position against the reference library, shape (n_samples, 2).
 
-        ``0.99`` means the molecule scores above 99% of a fixed 50,000-molecule sample of
-        drug-like chemical space -- not above 99% of this model's training set, which is
-        what versions before 3.6 reported.
+        Measured against a fixed 50,000-molecule sample of drug-like chemical space, not
+        against this model's own training set, which is what versions before 3.6 reported.
+
+        **Not a raw percentile.** The probability is read through the anchor table in
+        :mod:`lazyqsar.utils.ranking`, which pins four reference percentiles to fixed
+        ranks so that the same rank means the same thing on every model:
+
+        =====================  =====
+        beats this much of     rank
+        the reference library
+        =====================  =====
+        50%                    0.25
+        90%                    0.50
+        99%                    0.65
+        99.9%                  0.75
+        =====================  =====
+
+        So ``0.65`` -- not ``0.99`` -- is the molecule that beats 99% of drug-like space,
+        and it is also :data:`~lazyqsar.utils.ranking.DECISION_RANK`, the cutoff
+        ``predict`` uses. Above 0.75 the scale runs on to the model's own strongest
+        out-of-fold actives at 0.95 and to certainty at 1.0, so values there say "beyond
+        anything the reference contains" rather than naming a percentile. Between the
+        anchors it interpolates linearly, which is why the bottom half of the scale is
+        deliberately compressed: half of a generic library lands below 0.25.
 
         Raises ``ValueError`` on a checkpoint that carries no reference library. The other
         five outputs still work; only this one changed meaning.
         """
         values = self._combined(smiles_list).values
         if "rank" not in values:
-            from .ensemble.combine import NO_REFERENCE_MESSAGE
+            from .utils.ranking import NO_REFERENCE_MESSAGE
 
             raise ValueError(NO_REFERENCE_MESSAGE)
         return values["rank"]
@@ -480,6 +531,16 @@ class ArtifactWrapper(_EnsemblePredictMixin):
         if not active_indices:
             active_indices = list(range(len(self.descriptors)))
 
+        if not smiles_list:
+            # Scoring nothing is a legitimate request -- an empty shard, a query whose
+            # every row was filtered upstream -- and `combine` handles zero rows. Without
+            # this the chunked scorer returned None per descriptor and `_stack_channels`
+            # raised AxisError on `np.stack([None], axis=1)`, so the caller got an
+            # internal numpy error instead of an empty result.
+            return _empty_channels(len(active_indices)) + (
+                self._spec_for(active_indices),
+            )
+
         # Featurize and score in chunks rather than transforming the whole list first.
         # A million compounds against a 2048-dimensional descriptor is ~8 GB of float32,
         # and this is the entry point used to score large libraries from Python.
@@ -511,8 +572,14 @@ class ArtifactWrapper(_EnsemblePredictMixin):
             if ad is not None:
                 ad_scores.append(channels.a)
 
+        return _stack_channels(y_hats, rank_preds, score_preds, ad_scores) + (
+            self._spec_for(active_indices),
+        )
+
+    def _spec_for(self, active_indices):
+        """The ensemble spec for *active_indices*, independent of what was scored."""
         names = self.descriptor_types or [str(i) for i in range(len(self.descriptors))]
-        spec = _spec_from_attributes(
+        return _spec_from_attributes(
             names,
             active_indices,
             self.oof_aucs,
@@ -525,7 +592,6 @@ class ArtifactWrapper(_EnsemblePredictMixin):
             getattr(self, "pooled_rank_anchors", None),
             getattr(self, "decision_cutoff", None),
         )
-        return _stack_channels(y_hats, rank_preds, score_preds, ad_scores) + (spec,)
 
 
 class LazyClassifierQSAR(_EnsemblePredictMixin):
@@ -567,7 +633,6 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
         self.mode = mode
         self.descriptor_types = DESCRIPTORS_MODE[mode]
         self.descriptors = []  # populated in fit() after applicability check
-        self.is_saved = False
         self._feature_cache = {}
         self._ensemble_cache = {}
 
@@ -613,6 +678,10 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
         self._ensemble_cache.clear()
 
         y = np.array(y, dtype=int)
+        # Before the descriptor portfolio runs, for the same reason `require_fetchable`
+        # is checked early: both conditions are knowable up front and both would
+        # otherwise surface only after the whole featurization pass.
+        check_trainable(y, where="LazyClassifierQSAR.fit")
         if validate:
             validate_smiles(smiles_list)
         n = len(smiles_list)
@@ -639,6 +708,12 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
             f"mode={self.mode}  descriptors={self.descriptor_types}  "
             f"n={n:,}  pos_rate={pos_rate:.1%}"
         )
+
+        # Before any training: the reference is read only at the end of fit, and a missing
+        # one would otherwise cost the whole fit to discover.
+        from .reference import require_fetchable
+
+        require_fetchable(self.descriptor_types)
 
         self.models = []
         self.ad_models = []
@@ -688,8 +763,7 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
 
             oof_auc = model.oof_auc_
             train_auc = model.train_auc_
-            gap = train_auc - oof_auc
-            quality = oof_auc - gap  # α=1: quality = 2*oof - train
+            quality = _quality_weight(oof_auc, train_auc)
 
             self.oof_aucs_.append(oof_auc)
             self.train_aucs_.append(train_auc)
@@ -704,9 +778,13 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
             _train_ad.append(train_ad)
             _ad_hard_cutoffs_raw.append(float(np.percentile(train_ad, 5)))
 
+            def _fmt(value):
+                return "unknown" if value is None else f"{value:.4f}"
+
+            gap = None if oof_auc is None or train_auc is None else train_auc - oof_auc
             logger.info(
-                f"[{desc_name}] OOF={oof_auc:.4f}  train={train_auc:.4f}  "
-                f"gap={gap:.4f}  quality={quality:.4f}  "
+                f"[{desc_name}] OOF={_fmt(oof_auc)}  train={_fmt(train_auc)}  "
+                f"gap={_fmt(gap)}  quality={_fmt(quality)}  "
                 f"AD comps={ad.pca_.n_components_}"
             )
 
@@ -726,10 +804,15 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
             )
 
         # Descriptor-level pruning: drop if OOF AUC < floor OR < best - gap
-        best_oof = max(self.oof_aucs_)
+        # An unknown out-of-fold AUC keeps its descriptor rather than pruning it: the
+        # measurement failed, which says nothing about the descriptor. Pruning on a
+        # stand-in value is how a failed computation used to delete a good descriptor.
+        _known = [auc for auc in self.oof_aucs_ if auc is not None]
+        best_oof = max(_known) if _known else 0.0
         _floor, _gap = 0.55, 0.10
         active_mask = [
-            (auc >= _floor) and (auc >= best_oof - _gap) for auc in self.oof_aucs_
+            True if auc is None else ((auc >= _floor) and (auc >= best_oof - _gap))
+            for auc in self.oof_aucs_
         ]
         if not any(active_mask):
             active_mask = [True] * len(self.oof_aucs_)
@@ -1046,6 +1129,24 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
             # check that inverting the rank landed where it claims. It no longer
             # discriminates between models -- `sensitivity_at_cutoff` does that.
             out["generic_hit_rate"] = float((reference >= p_cut).mean())
+            # ...and now it is acted on, not merely recorded. The construction fails when
+            # the reference's probabilities are nearly all equal: the four TAIL_ANCHORS
+            # then interpolate to the same value, `_collapse_anchors` keeps only the
+            # topmost, and inverting DECISION_RANK lands below the whole library -- a 100%
+            # generic hit rate instead of 1%. Unreachable on a healthy 50,000-molecule
+            # library; reachable with a small LAZYQSAR_REFERENCE_N tier or a saturated
+            # model, and silent when it happens, which is the part worth fixing.
+            _expected = DECISION_HIT_RATE
+            if _expected and abs(out["generic_hit_rate"] - _expected) > 10 * _expected:
+                logger.warning(
+                    f"The decision cutoff admits {out['generic_hit_rate']:.1%} of the "
+                    f"reference library, not the {_expected:.1%} that rank "
+                    f"{DECISION_RANK} is defined to mean. The reference's pooled "
+                    "probabilities are too concentrated for the anchors to separate, so "
+                    "`rank` and the binary cutoff are not comparable with other models. "
+                    "Check the reference tier (LAZYQSAR_REFERENCE_N) and whether this "
+                    "model saturates."
+                )
             # The share of its own known actives the model catches while calling that 1% of
             # drug-like space active. Sensitivity at a fixed generic hit rate: the standard
             # screening statistic, and the signal `generic_hit_rate` gives up.
@@ -1076,7 +1177,7 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
         about 1.2 GB for a value that is consumed row by row.
         """
         from .reference import ReferenceUnavailable, iter_chunks
-        from .reference.identity import DEFAULT_N, REFERENCE_ID
+        from .reference.identity import REFERENCE_ID, default_n
         from .reference.manifest import manifest_sha256
 
         active_indices = self._active_indices()
@@ -1117,7 +1218,8 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
         meta = {
             "library": {
                 "id": REFERENCE_ID,
-                "n": DEFAULT_N,
+                # The tier the matrices were read from, which `LAZYQSAR_REFERENCE_N` picks.
+                "n": default_n(),
                 "manifest_sha256": manifest_sha256(),
             },
             "descriptors": list(names),
@@ -1233,9 +1335,12 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
             if self.models
             else None,
             "decision_cutoff_source": None,
+            # An AUC that could not be computed is omitted, exactly as `proxy_aucs`
+            # already does, so the reader sees "unknown" rather than a stand-in number.
             "oof_aucs": {
                 name: float(auc)
                 for name, auc in zip(self.descriptor_types, self.oof_aucs_)
+                if auc is not None
             }
             if hasattr(self, "oof_aucs_")
             else {},
@@ -1246,15 +1351,21 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
             }
             if hasattr(self, "proxy_aucs_")
             else {},
+            # An AUC that could not be computed is omitted, exactly as `proxy_aucs`
+            # already does, so the reader sees "unknown" rather than a stand-in number.
             "train_aucs": {
                 name: float(auc)
                 for name, auc in zip(self.descriptor_types, self.train_aucs_)
+                if auc is not None
             }
             if hasattr(self, "train_aucs_")
             else {},
+            # An AUC that could not be computed is omitted, exactly as `proxy_aucs`
+            # already does, so the reader sees "unknown" rather than a stand-in number.
             "quality_aucs": {
                 name: float(auc)
                 for name, auc in zip(self.descriptor_types, self.quality_aucs_)
+                if auc is not None
             }
             if hasattr(self, "quality_aucs_")
             else {},
@@ -1373,7 +1484,6 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
             if self.ad_models:
                 ad_subdir = os.path.join(model_subdir, "applicability_domain")
                 self.ad_models[i].save(ad_subdir)
-        self.is_saved = True
 
     @classmethod
     def load_raw(cls, model_dir: str):
@@ -1416,7 +1526,6 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
         obj.descriptors = descriptors
         obj.models = models
         obj.ad_models = ad_models if any(a is not None for a in ad_models) else []
-        obj.is_saved = True
         if os.path.isfile(meta_path):
             with open(meta_path) as f:
                 meta = json.load(f)
@@ -1474,9 +1583,14 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
             obj.decision_cutoff_ = None
         return obj
 
-    def save_onnx(self, model_dir: str, clean: bool = True):
-        # ONNX is already written by save_raw() via LazyClassifier.save().
-        pass
+    def save_onnx(self, model_dir: str):
+        """No-op, kept so ``save`` reads as raw-then-onnx.
+
+        There is nothing to do: ``save_raw`` already writes the ONNX graphs, because the
+        per-descriptor ``LazyClassifier.save`` it delegates to exports them. The name is
+        retained because it is the obvious counterpart to ``load_onnx`` and removing it
+        would break any caller that mirrors ``save_raw``/``save_onnx``.
+        """
 
     @classmethod
     def load_onnx(cls, model_dir: str):
@@ -1582,30 +1696,28 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
 
     @classmethod
     def load(cls, model_dir: str):
-        if model_dir.endswith(".zip"):
-            zip = True
-        else:
-            zip = False
-        if zip:
-            base_dir = model_dir[:-4]
-            if os.path.exists(base_dir):
-                shutil.rmtree(base_dir)
-            shutil.unpack_archive(model_dir, base_dir)
-            model_dir = base_dir
-        descriptor_types = []
-        for fn in os.listdir(model_dir):
-            if fn in DESCRIPTOR_TYPES.keys():
-                descriptor_types += [fn]
-        descriptor_types = sorted(descriptor_types)
-        if any(
-            _has_onnx(os.path.join(model_dir, descriptor_type))
-            for descriptor_type in descriptor_types
-        ):
-            return cls.load_onnx(model_dir=model_dir)
-        obj = cls.load_raw(model_dir=model_dir)
-        if zip:
-            shutil.rmtree(base_dir)
-        return obj
+        # The scratch copy is removed once loading is done: onnxruntime reads a graph
+        # into memory when the session is constructed, so the sessions outlive the files
+        # they came from. The old code deleted a sibling directory instead, and cleaned
+        # up on only one of its two branches.
+        scratch = None
+        try:
+            if model_dir.endswith(".zip"):
+                scratch, model_dir = unpack_to_scratch(model_dir)
+            descriptor_types = []
+            for fn in os.listdir(model_dir):
+                if fn in DESCRIPTOR_TYPES.keys():
+                    descriptor_types += [fn]
+            descriptor_types = sorted(descriptor_types)
+            if any(
+                _has_onnx(os.path.join(model_dir, descriptor_type))
+                for descriptor_type in descriptor_types
+            ):
+                return cls.load_onnx(model_dir=model_dir)
+            return cls.load_raw(model_dir=model_dir)
+        finally:
+            if scratch is not None:
+                shutil.rmtree(scratch, ignore_errors=True)
 
 
 class LazyRegressorQSAR:

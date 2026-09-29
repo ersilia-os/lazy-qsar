@@ -19,6 +19,7 @@ from ..heads.classification.rf import Head as RFHead
 from ..heads.classification.svc import Head as SVCHead
 from ..poolers.classification import InnerPooler
 from lazyqsar.utils.logging import logger
+from lazyqsar.utils.splits import check_trainable
 
 
 def _correct_prior(p1, train_prior, population_prior):
@@ -332,6 +333,7 @@ class LazyClassifier(object):
         per batch in sequence.
         """
         logger.rule("LazyClassifier — fit")
+        check_trainable(y, where="LazyClassifier.fit")
         self.population_prior_ = float(np.mean(y == 1))
 
         p = Portfolio()
@@ -399,20 +401,36 @@ class LazyClassifier(object):
         self._build_oof_percentile(X)
         self.oof_auc_ = self._compute_oof_auc(X, y, batch_indices)
         self.train_auc_ = self._compute_train_auc(X, y)
+
+        def _auc(value):
+            return "unknown" if value is None else f"{value:.4f}"
+
         logger.success(
             f"LazyClassifier fitted — "
             f"{n_batches} batch(es)  portfolio={self.portfolio}  "
-            f"OOF AUC={self.oof_auc_:.4f}  train AUC={self.train_auc_:.4f}"
+            f"OOF AUC={_auc(self.oof_auc_)}  train AUC={_auc(self.train_auc_)}"
         )
 
     def _compute_train_auc(self, X, y) -> float:
+        """Training-set AUC, or ``None`` when it could not be computed.
+
+        It used to return 0.5 on failure, which is indistinguishable from a genuine
+        coin-flip AUC and is *rewarded* downstream: `LazyClassifierQSAR` derives
+        ``quality = 2*oof - train``, so a failed computation on a strong descriptor gives
+        it a quality above 1 and the largest weight in the ensemble. `None` propagates the
+        ignorance instead, and the failure is logged rather than swallowed.
+        """
         from sklearn.metrics import roc_auc_score
 
         try:
             train_proba = self.predict_proba(X)[:, 1]
             return float(roc_auc_score(y, train_proba))
-        except Exception:
-            return 0.5
+        except Exception as exc:  # noqa: BLE001 - reported, then degraded deliberately
+            logger.warning(
+                f"Training AUC could not be computed ({type(exc).__name__}: {exc}); "
+                "this descriptor's quality weight falls back to its out-of-fold AUC."
+            )
+            return None
 
     def _build_oof_percentile(self, X):
         """Learn the out-of-fold probability distribution ``_oof_percentile`` reports against.
@@ -518,15 +536,26 @@ class LazyClassifier(object):
                 if not all(
                     hasattr(getattr(h, "model", None), "oof_probas_") for h in heads
                 ):
-                    return 0.5
+                    logger.warning(
+                        "A head in this batch kept no out-of-fold probabilities, so the "
+                        "out-of-fold AUC is unknown for this descriptor."
+                    )
+                    return None
                 S = np.column_stack([h.model.oof_probas_ for h in heads])
                 X_prep = batch_clf.prep.transform(X[indices])
                 W_oof = batch_clf.pooler.get_weights(X_prep)
                 pooled = (W_oof * S).sum(axis=1)
                 batch_aucs.append(roc_auc_score(y[indices], pooled))
             return float(np.mean(batch_aucs))
-        except Exception:
-            return 0.5
+        except Exception as exc:  # noqa: BLE001 - reported, then degraded deliberately
+            # Not 0.5: that sits below the 0.55 pruning floor in `LazyClassifierQSAR`, so
+            # a failed computation silently *deleted* the descriptor rather than
+            # admitting it did not know.
+            logger.warning(
+                f"Out-of-fold AUC could not be computed ({type(exc).__name__}: {exc}); "
+                "this descriptor is kept, with an unknown out-of-fold AUC."
+            )
+            return None
 
     def predict_proba(self, X):
         """Return prior-corrected calibrated probabilities, shape (n, 2)."""
@@ -629,6 +658,11 @@ class LazyClassifier(object):
             # artifact's `predict` can branch on data rather than guessing from the value.
             "decision_cutoff_source": getattr(self, "decision_cutoff_source_", None),
         }
+        reference_rank = getattr(self, "decision_cutoff_reference_rank_", None)
+        if reference_rank is not None:
+            # Only when the cutoff was placed against a reference library, and under the
+            # same key the task level uses for that position.
+            metadata["decision_cutoff_rank"] = float(reference_rank)
         knots = getattr(self, "oof_percentile_knots_", None)
         if knots is not None and len(knots):
             # A new key, not a redefinition of `pooled_ranker`. That name means the

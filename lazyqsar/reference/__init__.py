@@ -1,4 +1,4 @@
-"""The fixed reference library `predict_rank` reports percentiles against.
+"""The fixed reference library `predict_rank` reports a position against.
 
 Fit-time only. A trained checkpoint carries its reference as knots in ``metadata.json``, so
 scoring molecules never needs anything here -- which is what keeps inference on numpy and
@@ -13,6 +13,7 @@ from .store import (
     iter_chunks,
     load,
     reference_smiles,
+    require_fetchable,
     status,
 )
 
@@ -27,5 +28,6 @@ __all__ = [
     "load",
     "reference_dir",
     "reference_smiles",
+    "require_fetchable",
     "status",
 ]
