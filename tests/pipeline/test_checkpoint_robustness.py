@@ -155,10 +155,22 @@ def test_scoring_no_molecules_returns_empty_columns(pooled_checkpoint):
         assert np.asarray(model.predict([])).shape == (0,)
 
 
-def test_scoring_one_molecule_matches_scoring_it_in_a_batch(pooled_checkpoint):
+# The chunk-invariance tolerance the suite already uses. Not bit-identity: onnxruntime
+# picks kernels by batch size, so a query of one and a query of six present different
+# input shapes and the last few digits move. `_block_size` documents this, and the
+# bit-identity that *is* asserted elsewhere is for blocking -- whole numbers of chunks,
+# which preserves the shapes each graph actually sees.
+BATCH_SIZE_ATOL = 1e-6
+
+
+def test_scoring_one_molecule_agrees_with_scoring_it_in_a_batch(pooled_checkpoint):
     """A single molecule is the smallest real request, and the one most likely to hit an
-    edge in code written with arrays in mind. It must also agree with itself: the same
-    molecule scored alone and scored inside a batch is the same molecule."""
+    edge in code written with arrays in mind.
+
+    Asserted to a tolerance rather than exactly, and the difference is the point: an
+    earlier version of this test demanded bit-identity, passed on arm64 and failed on
+    x86 at 6e-08, because it was asserting a property the code documents as false.
+    """
     smiles = list(pooled_checkpoint["smiles"][:6])
     with contextlib.redirect_stdout(io.StringIO()):
         model = LazyClassifierQSAR.load_onnx(
@@ -167,7 +179,28 @@ def test_scoring_one_molecule_matches_scoring_it_in_a_batch(pooled_checkpoint):
         alone = model.predict_proba([smiles[0]])
         batch = model.predict_proba(smiles)
     assert alone.shape == (1, 2)
-    np.testing.assert_allclose(alone[0], batch[0], rtol=0, atol=0)
+    np.testing.assert_allclose(alone[0], batch[0], rtol=0, atol=BATCH_SIZE_ATOL)
+
+
+def test_a_one_molecule_query_lands_on_the_same_side_of_the_cutoff(pooled_checkpoint):
+    """What the tolerance above must not be allowed to hide.
+
+    A probability that moves in its eighth decimal is harmless; a label that flips with
+    the size of the batch it was scored in is not, because it makes a screening result
+    depend on how the caller happened to chunk its library.
+    """
+    smiles = list(pooled_checkpoint["smiles"][:6])
+    with contextlib.redirect_stdout(io.StringIO()):
+        model = LazyClassifierQSAR.load_onnx(
+            _task_dir(pooled_checkpoint["models"], "alpha")
+        )
+        alone = np.asarray([model.predict([s])[0] for s in smiles])
+        batch = np.asarray(model.predict(smiles))
+    moved = np.flatnonzero(alone != batch)
+    assert moved.size == 0, (
+        f"{moved.size} of {len(smiles)} molecules change label depending on whether they "
+        f"were scored alone or in a batch, at positions {moved.tolist()}"
+    )
 
 
 def test_a_repeated_molecule_scores_the_same_every_time(pooled_checkpoint):
@@ -185,8 +218,13 @@ def test_a_repeated_molecule_scores_the_same_every_time(pooled_checkpoint):
         )
         out = model.predict_proba(query)[:, 1]
         clean = model.predict_proba(smiles[:3])[:, 1]
+    # Exact within the one query: identical rows go through the same graph in the same
+    # batch, so nothing may separate them.
     assert out[0] == out[2] == out[4], "copies of one molecule scored differently"
-    np.testing.assert_allclose(out[[0, 1, 3]], clean, rtol=0, atol=0)
+    # Across the two queries, only to tolerance -- five molecules and three are different
+    # batch sizes, and onnxruntime chooses kernels by batch size. Asserting equality here
+    # would be the same mistake as demanding a query of one match a query of six.
+    np.testing.assert_allclose(out[[0, 1, 3]], clean, rtol=0, atol=BATCH_SIZE_ATOL)
 
 
 # -------------------------------------------------------------------------- the zip route
