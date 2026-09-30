@@ -19,7 +19,7 @@ in ways real chemistry does not, which is the regime this test is least able to 
 *how many* descriptors survive the portfolio is data- and version-dependent -- scikit-learn
 1.6 keeps rdkit on this data and 1.9 prunes it -- so the multi-descriptor pooling that
 motivated the change is pinned deterministically in
-``tests/unit/test_pooled_rank_reference.py`` instead. What this file is for is the
+``tests/unit/test_monotone_outputs.py`` instead. What this file is for is the
 end-to-end plumbing on real chemistry: that the reference is built during a genuine fit,
 survives every load route, and holds on molecules the model never trained on.
 """
@@ -41,10 +41,15 @@ pytest.importorskip("scipy")
 
 CUTS = (0.01, 0.05, 0.10)
 
-# `load_raw` and `load_onnx` are different numeric paths and differ by ~3e-08 on `proba`.
-# `rank` is an ECDF of `proba`, and an ECDF's slope is the reciprocal of the local density
-# of training scores, so it multiplies that gap by ~100x here. Measured max across routes
-# is 4.1e-06; 1e-04 leaves a margin without being loose enough to hide a real change.
+# `load_raw` and `load_onnx` are *both* ONNX -- `agnostic.LazyClassifier.load` raises
+# `NotImplementedError` for a genuinely raw load, so each returns a `LazyClassifierArtifact`
+# over the same onnxruntime sessions. What separates them is the wrapper: chunking and the
+# order floating-point sums accumulate in, worth ~3e-08 on `proba`. (The scikit-learn
+# against ONNX comparison is a different measurement and lives in
+# `tests/fit/test_ensemble_export_fidelity.py`.) `rank` is an ECDF of `proba`, and an
+# ECDF's slope is the reciprocal of the local density of training scores, so it multiplies
+# that gap by ~100x here. Measured max across routes is 4.1e-06; 1e-04 leaves a margin
+# without being loose enough to hide a real change.
 # Whether a route *kept* the reference at all is checked structurally below, not by
 # tolerance -- on a single-descriptor model the two poolings coincide to ~4e-06, so no
 # tolerance on this value could tell them apart.
@@ -189,10 +194,16 @@ def test_the_pooled_reference_is_uniform_on_the_training_set(scored):
 
 
 def test_the_checkpoint_carries_the_reference_and_a_matching_cutoff(scored):
-    """Without the stored reference a loaded model silently reverts to the old rank."""
+    """Without the stored reference a loaded model silently reverts to the old rank, and
+    without a cutoff on the rank scale `binary` silently reverts to `proba >= 0.5`."""
     import json
 
-    from lazyqsar.utils.ranking import prepare_knots, rank_from_knots
+    from lazyqsar.utils.ranking import (
+        DECISION_CUTOFF_SOURCE,
+        DECISION_RANK,
+        prepare_knots,
+        rank_from_reference,
+    )
 
     with open(os.path.join(scored["task_dir"], "metadata.json")) as f:
         meta = json.load(f)
@@ -200,14 +211,40 @@ def test_the_checkpoint_carries_the_reference_and_a_matching_cutoff(scored):
     knots = meta["pooled_ranker"]["knots"]
     assert len(knots) > 0
     assert knots == sorted(knots), "knots must be stored ascending"
-    # decision_cutoff_rank is reported, never thresholded on, but it should still be the
-    # learned probability cutoff expressed in the units `rank` now uses.
-    expected = float(
-        rank_from_knots(
-            meta["decision_cutoff_proba"], prepared=prepare_knots(np.asarray(knots))
+
+    # The direction of travel is now the other way round: the cutoff is DECISION_RANK
+    # inverted against the reference, so `decision_cutoff_rank` is that constant exactly
+    # and `decision_cutoff_proba` is whatever it inverted to. `binary` thresholds on it, so
+    # this is no longer a report-only value.
+    assert meta["decision_cutoff_rank"] == DECISION_RANK
+    assert meta["decision_cutoff_source"] == DECISION_CUTOFF_SOURCE
+
+    # And the forward map must send that probability back to the constant. This is the one
+    # place the inverse is checked against the forward on a real checkpoint -- through the
+    # actives anchor as well, not just the knots, because recomputing without it is how a
+    # checkpoint ends up disagreeing with its own scale.
+    block = meta["pooled_ranker"]
+    anchors = (
+        block.get("anchor_low") if block.get("anchor_low_used") else None,
+        block.get("anchor_high") if block.get("anchor_high_used") else None,
+    )
+    round_tripped = float(
+        rank_from_reference(
+            meta["decision_cutoff_proba"],
+            prepared=prepare_knots(np.asarray(knots)),
+            anchors=anchors if any(a is not None for a in anchors) else None,
         )
     )
-    assert meta["decision_cutoff_rank"] == pytest.approx(expected)
+    assert round_tripped == pytest.approx(DECISION_RANK, abs=1e-9)
+
+    # A 1% generic hit rate, by construction. The knots are a uniform subsample of the
+    # reference, so the tolerance is one knot spacing.
+    reference = np.asarray(knots, dtype=float)
+    hit_rate = float((reference >= meta["decision_cutoff_proba"]).mean())
+    assert hit_rate == pytest.approx(0.01, abs=2e-3)
+
+    assert meta["pooled_ranker"]["source"] == "reference_library"
+    assert meta["pooled_ranker"]["descriptors"]
 
 
 def test_every_load_route_carries_the_reference(scored):
@@ -237,9 +274,10 @@ def test_every_load_route_carries_the_reference(scored):
 def test_every_load_route_agrees_on_rank(scored):
     """And the values agree, to a tolerance the ECDF's slope explains.
 
-    `load_raw` is a different numeric path from `load_onnx` and differs from it by ~3e-08
-    on `proba`; ranking amplifies that by the reciprocal of the local training-score
-    density. The tolerance is sized for that, not tuned to pass.
+    Both routes run the same ONNX sessions, so this is not an export check -- they differ
+    only in chunking and summation order, worth ~3e-08 on `proba`; ranking amplifies that
+    by the reciprocal of the local training-score density. The tolerance is sized for
+    that, not tuned to pass.
     """
     from lazyqsar.api.classifier_predict import predict
 
@@ -271,18 +309,16 @@ def test_every_load_route_agrees_on_rank(scored):
     )
 
 
-def test_a_checkpoint_without_the_reference_falls_back_to_the_old_rank(
-    scored, tmp_path
-):
-    """Backward compatibility, on a real checkpoint rather than a synthetic spec.
+def test_a_checkpoint_without_the_reference_refuses_to_rank(scored, tmp_path):
+    """Strip the reference and `rank` must refuse, while everything else keeps working.
 
-    Strip the key and the model must reproduce the pre-v3.5.0 weighted mean of
-    per-descriptor percentiles exactly -- that is what every published checkpoint does.
+    Every checkpoint published before v3.6 is in this state. Its `pooled_ranker` holds
+    out-of-fold knots, which are indistinguishable from library knots once read, so
+    reporting them would answer "beats 99% of drug-like space" with a training-set
+    percentile. The other five outputs did not change meaning and are not withheld.
     """
     import json
     import shutil
-
-    from lazyqsar.ensemble import combine
 
     legacy_dir = str(tmp_path / "legacy")
     shutil.copytree(scored["task_dir"], legacy_dir)
@@ -295,16 +331,11 @@ def test_a_checkpoint_without_the_reference_falls_back_to_the_old_rank(
 
     with contextlib.redirect_stdout(io.StringIO()):
         legacy = LazyClassifierQSAR.load(legacy_dir)
-        Y, R, S, A, spec = legacy._channels(scored["query"])
-        got = legacy.predict_rank(scored["query"])[:, 1]
+        proba = legacy.predict_proba(scored["query"])[:, 1]
+        legacy.predict_logit(scored["query"])
+        legacy.predict_lift(scored["query"])
+        legacy.predict(scored["query"])
+        with pytest.raises(ValueError, match="no reference-library rank"):
+            legacy.predict_rank(scored["query"])
 
-    assert spec.pooled_rank_knots is None
-    expected = (combine(Y, R, S, A, spec=spec, outputs=("rank",)).weights * R).sum(
-        axis=1
-    )
-    np.testing.assert_array_equal(got, expected)
-    # Deliberately no assertion that this differs from the pooled answer. On a
-    # single-descriptor model the weighted mean has one term and the two poolings
-    # coincide to ~4e-06, so such an assertion would pass on noise and say nothing. The
-    # case where they genuinely diverge needs more than one descriptor, and is pinned in
-    # tests/unit/test_pooled_rank_reference.py.
+    assert np.all(np.isfinite(proba)), "proba must survive a missing reference"

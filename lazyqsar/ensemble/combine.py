@@ -13,9 +13,11 @@ How each output is pooled
 ``proba``, ``logit``, ``lift`` and ``binary`` come from one weighted sum in logit space.
 ``score`` is a weighted mean of the raw scores. ``rank`` is *not* a weighted mean of the
 per-descriptor ranks -- averaging percentiles does not give the percentile of the average,
-and the two orderings genuinely disagreed -- it is the pooled probability read off one
-pooled out-of-fold reference, so it is a monotone view of ``proba``. Checkpoints fitted
-before that reference existed fall back to the old weighted mean.
+and the two orderings genuinely disagreed -- it is the pooled probability read through the
+external reference library's anchor table, so it is a monotone view of ``proba``. A
+checkpoint that carries no such reference does **not** fall back to the old weighted mean:
+``rank`` is refused, because a percentile against a model's own training set is a
+different quantity and reporting it under the same name is what the refusal prevents.
 
 Weights, not just averages
 --------------------------
@@ -34,7 +36,13 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from ..utils.ranking import prepare_knots, rank_from_knots, score_from_knots
+from ..utils.ranking import (
+    DECISION_CUTOFF_SOURCE,
+    NO_REFERENCE_MESSAGE,
+    prepare_knots,
+    rank_from_reference,
+    score_from_knots,
+)
 
 OUTPUT_NAMES = ("proba", "logit", "rank", "score", "lift", "binary")
 
@@ -43,6 +51,17 @@ _EPS = 1e-7
 
 POOLED_RANKER_KEY = "pooled_ranker"
 POOLED_SCORER_KEY = "pooled_scorer"
+
+# The only `pooled_ranker.source` that means a percentile against drug-like chemical
+# space. Anything else -- notably "oof", written by v3.5.x -- is a training-set
+# percentile and is not comparable with one.
+REFERENCE_SOURCE = "reference_library"
+
+# `binary` thresholds on the cutoff only when the checkpoint names this source -- see
+# `read_decision_cutoff`. Defined in `utils.ranking` beside `DECISION_RANK`, because the
+# numpy-only inference artifacts branch on it too.
+
+# Defined in `utils.ranking`; re-exported here, which is where callers already look.
 
 
 def read_pooled_rank_knots(metadata):
@@ -57,16 +76,54 @@ def read_pooled_rank_knots(metadata):
     metadata : dict or None
         Parsed ``metadata.json``. Every key is optional.
 
+    Only a reference-library block is accepted. Checkpoints fitted before v3.6 carry
+    out-of-fold knots under this same key, and the two are indistinguishable once read --
+    both monotone, both in [0, 1] -- so reading an old one would report "beats 99% of
+    drug-like space" about a training-set percentile. Those checkpoints are treated as
+    having no reference, and asking them for ``rank`` raises.
+
+    Parameters
+    ----------
+    metadata : dict or None
+        Parsed ``metadata.json``. Every key is optional.
+
     Returns
     -------
     ndarray or None
-        Ascending float64 knots, or ``None`` when the key is absent or empty.
+        Ascending float64 knots, or ``None`` when the key is absent, empty, or not a
+        reference-library block.
     """
     block = (metadata or {}).get(POOLED_RANKER_KEY) or {}
     knots = block.get("knots")
     if knots is None or len(knots) == 0:
         return None
+    if block.get("source") != REFERENCE_SOURCE:
+        return None
     return np.asarray(knots, dtype=np.float64)
+
+
+def read_pooled_rank_anchors(metadata):
+    """Pull the rank scale's top anchor out of a task-level ``metadata.json``.
+
+    ``(p05_inactives, p95_actives)`` in probability units, either of which may be ``None``.
+    Only the second shapes the scale -- the tail table has no low anchor -- but the pair is
+    the shape every checkpoint stores, and ``p05`` is still worth reporting. They cannot be
+    derived at predict time, because only the reference knots travel in the checkpoint, not
+    the out-of-fold molecules.
+
+    A checkpoint without a usable ``p95`` ranks straight from the reference's p99.9 to
+    certainty; see :func:`lazyqsar.utils.ranking.reference_anchor_table`.
+    """
+    block = (metadata or {}).get(POOLED_RANKER_KEY) or {}
+    if block.get("source") != REFERENCE_SOURCE:
+        return None
+    low, high = block.get("anchor_low"), block.get("anchor_high")
+    if low is None and high is None:
+        return None
+    return (
+        None if low is None else float(low),
+        None if high is None else float(high),
+    )
 
 
 def read_pooled_score_knots(metadata):
@@ -83,6 +140,27 @@ def read_pooled_score_knots(metadata):
     if x is None or y is None or len(x) == 0 or len(x) != len(y):
         return None
     return np.asarray(x, dtype=np.float64), np.asarray(y, dtype=np.float64)
+
+
+def read_decision_cutoff(metadata):
+    """The probability threshold ``binary`` uses, or ``None`` when the checkpoint has none.
+
+    ``None`` means "keep the historical behaviour", which is ``proba >= 0.5``. That is what
+    every checkpoint fitted before the cutoff was placed on the rank scale gets, so their
+    labels do not move.
+
+    Returns
+    -------
+    float or None
+        The cutoff, or ``None`` when ``decision_cutoff_source`` is absent or is not
+        :data:`DECISION_CUTOFF_SOURCE`.
+    """
+    meta = metadata or {}
+    if meta.get("decision_cutoff_source") != DECISION_CUTOFF_SOURCE:
+        return None
+    cutoff = meta.get("decision_cutoff_proba")
+    # `is None`, not falsy: 0.0 is a legal cutoff and must not fall back to 0.5.
+    return None if cutoff is None else float(cutoff)
 
 
 @dataclass(frozen=True)
@@ -112,12 +190,15 @@ class EnsembleSpec:
     decision_cutoff : float
         Probability threshold for ``binary``.
     pooled_rank_knots : ndarray, or None
-        Ascending ECDF knots over the pooled out-of-fold probability, built at fit time
-        by :func:`lazyqsar.ensemble.reference.build_pooled_rank_knots`. When present,
-        ``rank`` is this ECDF evaluated at the pooled probability. ``None`` -- the state
-        of every checkpoint fitted before v3.5.0 -- keeps the earlier weighted mean of
-        per-descriptor ranks. Not per-descriptor, so it is never sliced: it is written
-        after the active set is settled and describes exactly that set.
+        Ascending knots over the *reference library's* pooled probability, built at fit
+        time by ``LazyClassifierQSAR._build_reference_rank_knots``. When present, ``rank``
+        is the anchor table of :mod:`lazyqsar.utils.ranking` evaluated at the pooled
+        probability. ``None`` means this checkpoint has no reference -- every checkpoint
+        fitted before v3.6, and every 3.5.x one, whose block lacks
+        ``source: "reference_library"`` and is rejected by
+        :func:`read_pooled_rank_knots`. There is no fallback: ``rank`` is refused, and the
+        other five outputs are unaffected. Not per-descriptor, so it is never sliced: it
+        is written after the active set is settled and describes exactly that set.
     """
 
     descriptor_names: tuple[str, ...] = ()
@@ -128,6 +209,7 @@ class EnsembleSpec:
     population_prior: float = 0.5
     decision_cutoff: float = _DEFAULT_CUTOFF
     pooled_rank_knots: np.ndarray | None = None
+    pooled_rank_anchors: tuple | None = None
     pooled_score_knots: tuple[np.ndarray, np.ndarray] | None = None
 
     @classmethod
@@ -181,12 +263,28 @@ class EnsembleSpec:
 
         prior = metadata.get("population_prior", 0.5)
         pooled_knots = read_pooled_rank_knots(metadata)
+        # The knots describe the pooled probability of exactly the descriptor set they were
+        # built from. A checkpoint missing one of those directories would otherwise be
+        # scored with fewer descriptors and ranked against a distribution it never had.
+        built_from = (metadata.get("pooled_ranker") or {}).get("descriptors")
+        if pooled_knots is not None and built_from:
+            # Against what is on disk, not the active mask: a descriptor switched off in
+            # the metadata is a choice, a directory that is not there is damage.
+            missing = sorted(set(built_from) - set(descriptor_names))
+            if missing:
+                raise ValueError(
+                    f"This checkpoint's reference rank was built from {sorted(built_from)}, "
+                    f"but {missing} {'is' if len(missing) == 1 else 'are'} missing from "
+                    "its directory. The checkpoint is incomplete; restore the missing "
+                    "descriptor directories or refit."
+                )
+        pooled_anchors = read_pooled_rank_anchors(metadata)
         pooled_score = read_pooled_score_knots(metadata)
-        # decision_cutoff is deliberately NOT read from metadata["decision_cutoff_proba"].
-        # That learned, balanced-accuracy-optimal threshold exists in every checkpoint but
-        # has never been used by either prediction path, and adopting it would move the
-        # binary output on every deployed model. Whether to switch is its own change, with
-        # its own held-out evaluation; until then binary means proba >= 0.5 as it always has.
+        # `binary` thresholds on the cutoff only when the checkpoint places it on the
+        # reference rank scale -- see `read_decision_cutoff` for why the older
+        # balanced-accuracy cutoff is not adopted. A checkpoint without the key keeps
+        # `proba >= 0.5`, so its labels are bit-identical to what it always produced.
+        cutoff = read_decision_cutoff(metadata)
 
         return (
             cls(
@@ -202,7 +300,9 @@ class EnsembleSpec:
                     else None
                 ),
                 population_prior=float(prior if prior is not None else 0.5),
+                decision_cutoff=_DEFAULT_CUTOFF if cutoff is None else cutoff,
                 pooled_rank_knots=pooled_knots,
+                pooled_rank_anchors=pooled_anchors,
                 pooled_score_knots=pooled_score,
             ),
             active_names,
@@ -232,7 +332,7 @@ class CombineResult:
     values: dict[str, np.ndarray] = field(default_factory=dict)
     weights: np.ndarray | None = None
     base: np.ndarray | None = None
-    ranks: np.ndarray | None = None
+    oof_percentiles: np.ndarray | None = None
     diagnostics: list[dict] | None = None
 
 
@@ -395,7 +495,10 @@ def combine(Y, R=None, S=None, A=None, *, spec, outputs=OUTPUT_NAMES, cutoff=Non
     W, base = build_weight_matrix(Y, R, A, spec)
 
     diagnostics = None
-    if A is not None:
+    # Every entry below is a reduction over the query rows, so there is nothing to report
+    # for a query of no molecules -- and `.min()` on a zero-size array raises rather than
+    # returning a neutral value.
+    if A is not None and B > 0:
         names = spec.descriptor_names or tuple(str(j) for j in range(D))
         oof_aucs, proxy_aucs = spec.oof_aucs, spec.proxy_aucs
         diagnostics = [
@@ -454,13 +557,23 @@ def combine(Y, R=None, S=None, A=None, *, spec, outputs=OUTPUT_NAMES, cutoff=Non
     if "logit" in wanted:
         values["logit"] = np.vstack((-l1, l1)).T
     if "rank" in wanted:
-        if pooled_rank:
-            r1 = rank_from_knots(p1, prepared=prepare_knots(pooled_knots))
-        else:
-            # Pre-v3.5.0 checkpoints carry no pooled reference. Silently, because a
-            # missing key is their normal state, and because this module deliberately
-            # has no logger.
-            r1 = (W * R).sum(axis=1)
+        if not pooled_rank:
+            # No silent fallback. The weighted mean of per-descriptor training percentiles
+            # this used to compute answers a different question, and returning it under the
+            # same name would mean one `rank` column meant "beats 99% of drug-like space"
+            # on one checkpoint and "beats 99% of its own training set" on another, with
+            # nothing in the output to tell them apart. An uncalibrated rank is worse than
+            # an error, because it gets believed.
+            raise ValueError(NO_REFERENCE_MESSAGE)
+        # `rank_from_reference`, not `rank_from_knots`: the knots come from a reference
+        # library, whose pooled probabilities stop well below 1 for any selective model
+        # (measured: 0.065 to 0.334). Clamping would tie every active at exactly 1.0 and
+        # break the invariant that rank orders molecules exactly as proba does.
+        r1 = rank_from_reference(
+            p1,
+            prepared=prepare_knots(pooled_knots),
+            anchors=getattr(spec, "pooled_rank_anchors", None),
+        )
         values["rank"] = np.vstack((1 - r1, r1)).T
     if "score" in wanted:
         if pooled_score:
@@ -486,5 +599,9 @@ def combine(Y, R=None, S=None, A=None, *, spec, outputs=OUTPUT_NAMES, cutoff=Non
         values["binary"] = (p1 >= threshold).astype(int)
 
     return CombineResult(
-        values=values, weights=W, base=base, ranks=R, diagnostics=diagnostics
+        values=values,
+        weights=W,
+        base=base,
+        oof_percentiles=R,
+        diagnostics=diagnostics,
     )

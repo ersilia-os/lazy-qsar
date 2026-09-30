@@ -7,6 +7,7 @@ descriptors. Numpy only.
 """
 
 import numpy as np
+import pytest
 
 from lazyqsar.ensemble import EnsembleSpec
 
@@ -53,10 +54,31 @@ def test_from_metadata_empty_metadata_gives_working_defaults():
 
 
 def test_from_metadata_reads_the_pooled_rank_reference():
-    meta = {"pooled_ranker": {"knots": [0.1, 0.4, 0.9], "n_train": 3, "source": "oof"}}
+    meta = {
+        "pooled_ranker": {
+            "knots": [0.1, 0.4, 0.9],
+            "n_train": 3,
+            "source": "reference_library",
+        }
+    }
     spec, _ = EnsembleSpec.from_metadata(meta, ["a"])
     assert isinstance(spec.pooled_rank_knots, np.ndarray)
     assert spec.pooled_rank_knots.tolist() == [0.1, 0.4, 0.9]
+
+
+def test_a_checkpoint_missing_a_descriptor_its_reference_was_built_from_is_refused():
+    """The knots describe exactly one descriptor set; scoring with fewer would rank
+    against a distribution the model never had."""
+    meta = {
+        "pooled_ranker": {
+            "knots": [0.1, 0.4, 0.9],
+            "source": "reference_library",
+            "descriptors": ["a", "b"],
+        }
+    }
+    with pytest.raises(ValueError, match=r"\['b'\] is missing"):
+        EnsembleSpec.from_metadata(meta, ["a"])
+    EnsembleSpec.from_metadata(meta, ["a", "b"])
 
 
 def test_from_metadata_treats_an_empty_pooled_reference_as_absent():
@@ -66,11 +88,31 @@ def test_from_metadata_treats_an_empty_pooled_reference_as_absent():
         assert spec.pooled_rank_knots is None
 
 
+def test_an_out_of_fold_reference_is_not_read_as_a_library_reference():
+    """v3.5.x wrote out-of-fold knots under this key, with `source: "oof"`.
+
+    Once read the two are indistinguishable -- both monotone, both in [0, 1] -- so an
+    ungated reader would report a training-set percentile as "beats 99% of drug-like
+    space". Those checkpoints must present as having no reference at all.
+    """
+    meta = {"pooled_ranker": {"knots": [0.1, 0.4, 0.9], "source": "oof"}}
+    spec, _ = EnsembleSpec.from_metadata(meta, ["a"])
+    assert spec.pooled_rank_knots is None
+
+
+def test_a_reference_with_no_source_is_not_trusted():
+    """Absent `source` means it predates the gate, so it is not a library reference."""
+    spec, _ = EnsembleSpec.from_metadata(
+        {"pooled_ranker": {"knots": [0.1, 0.4, 0.9]}}, ["a"]
+    )
+    assert spec.pooled_rank_knots is None
+
+
 def test_the_pooled_rank_reference_is_not_sliced_to_active_descriptors():
     """It describes the pooled probability of the active set as a whole, not one column."""
     meta = {
         "active_descriptors": {"a": True, "b": False},
-        "pooled_ranker": {"knots": [0.2, 0.5, 0.8]},
+        "pooled_ranker": {"knots": [0.2, 0.5, 0.8], "source": "reference_library"},
     }
     spec, active = EnsembleSpec.from_metadata(meta, ["a", "b"])
     assert active == ["a"]
@@ -92,3 +134,48 @@ def test_from_metadata_slices_curves_and_cutoffs_to_active():
     assert spec.ad_hard_cutoffs == (0.1, 0.3)
     assert len(spec.rank_error_curves) == 2
     assert np.array_equal(spec.rank_error_curves[1][1], np.array([0.3, 0.3]))
+
+
+# ------------------------------------------------------- the decision cutoff gate
+#
+# `binary` thresholds on the checkpoint's cutoff only when the checkpoint says the cutoff
+# was placed on the reference rank scale. Gated on its own key because *every* checkpoint
+# carries a `decision_cutoff_proba` -- the balanced-accuracy threshold learned from
+# out-of-fold scores -- and adopting that one would call most of drug-like chemical space
+# active (measured: 60% to 99% across six real antimicrobial models).
+
+
+def test_a_reference_rank_cutoff_is_read():
+    meta = {
+        "decision_cutoff_source": "reference_rank",
+        "decision_cutoff_proba": 0.2041,
+    }
+    spec, _ = EnsembleSpec.from_metadata(meta, ["a"])
+    assert spec.decision_cutoff == 0.2041
+
+
+def test_a_cutoff_without_the_source_key_is_ignored():
+    """The shape of every checkpoint fitted before the cutoff moved onto the rank scale.
+
+    Its `decision_cutoff_proba` is the balanced-accuracy threshold. Reading it would move
+    `binary` on a model nobody refitted, so it stays at 0.5.
+    """
+    meta = {"decision_cutoff_proba": 0.2041}
+    spec, _ = EnsembleSpec.from_metadata(meta, ["a"])
+    assert spec.decision_cutoff == 0.5
+
+
+def test_an_unrecognised_cutoff_source_is_ignored():
+    meta = {
+        "decision_cutoff_source": "oof_balanced_accuracy",
+        "decision_cutoff_proba": 0.2041,
+    }
+    spec, _ = EnsembleSpec.from_metadata(meta, ["a"])
+    assert spec.decision_cutoff == 0.5
+
+
+def test_a_zero_cutoff_is_honoured_rather_than_falling_back():
+    """`0.0` is falsy and a legal cutoff; an `or`-style default would silently give 0.5."""
+    meta = {"decision_cutoff_source": "reference_rank", "decision_cutoff_proba": 0.0}
+    spec, _ = EnsembleSpec.from_metadata(meta, ["a"])
+    assert spec.decision_cutoff == 0.0

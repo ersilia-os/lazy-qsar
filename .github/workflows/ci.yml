@@ -40,11 +40,11 @@ jobs:
 
       # Gate 1: the standard this repo already maintains.
       - name: Format check
-        run: ruff format --check lazyqsar tests dev
+        run: ruff format --check lazyqsar tests dev scripts
 
       # Gate 2: bugs, not style. These must be zero on any healthy tree.
       - name: Lint (errors only, whole repo)
-        run: ruff check --select E9,F821,F822,F823 lazyqsar tests dev
+        run: ruff check --select E9,F821,F822,F823 lazyqsar tests dev scripts
 
       # Gate 3: the ratchet. Full rule set, but only on what this PR touched, so the
       # pre-existing findings in lazyqsar/ never block an unrelated change.
@@ -117,19 +117,27 @@ jobs:
   full:
     # Everything the PR path covers: fitting, ONNX export, the pipeline and real RDKit.
     # No FPSim2 -- only descriptors/cddd.py needs it and nothing in the suite reaches cddd.
-    name: full (fit + rdkit)
+    #
+    # Across every Python `requires-python` admits. It used to run 3.12 alone, so 3.11 and
+    # 3.13 were supported on paper and never executed -- and the pinned dependency set is
+    # exactly the thing that breaks first on a new interpreter.
+    name: full (fit + rdkit, py${{ matrix.python-version }})
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
       - uses: actions/cache@v4
         with:
           path: ~/.cache/pip
-          key: pip-${{ runner.os }}-py3.12-full-${{ hashFiles('pyproject.toml') }}
-          restore-keys: pip-${{ runner.os }}-py3.12-full-
+          key: pip-${{ runner.os }}-py${{ matrix.python-version }}-full-${{ hashFiles('pyproject.toml') }}
+          restore-keys: pip-${{ runner.os }}-py${{ matrix.python-version }}-full-
 
       - name: Install with [fit] plus rdkit
         run: pip install ".[fit,test]" "rdkit==2025.9.1"

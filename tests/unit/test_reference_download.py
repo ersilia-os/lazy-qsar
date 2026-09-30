@@ -1,0 +1,177 @@
+"""Fetching the reference bundle, and refusing clearly when it cannot be fetched.
+
+Nothing here reaches the network. The suite sets `LAZYQSAR_REFERENCE_OFFLINE`, and the one
+test that exercises the eosvc call substitutes a fake binary on PATH -- the thing worth
+pinning is the contract with eosvc (which repo, which path, anonymous), not eosvc itself.
+"""
+
+import json
+import os
+import pathlib
+import stat
+
+import pytest
+
+from lazyqsar.reference import identity
+from lazyqsar.reference.download import (
+    EOSVC_REPO,
+    EOSVC_ROOT,
+    ReferenceDownloadError,
+    download,
+    offline,
+)
+
+
+def test_offline_follows_the_environment(monkeypatch):
+    monkeypatch.setenv("LAZYQSAR_REFERENCE_OFFLINE", "1")
+    assert offline()
+    monkeypatch.delenv("LAZYQSAR_REFERENCE_OFFLINE")
+    assert not offline()
+
+
+def test_offline_refuses_instead_of_hanging(monkeypatch, tmp_path):
+    """An air-gapped node should get an answer, not a stalled socket."""
+    monkeypatch.setenv("LAZYQSAR_REFERENCE_OFFLINE", "1")
+    monkeypatch.setenv("LAZYQSAR_REFERENCE_DIR", str(tmp_path))
+    with pytest.raises(ReferenceDownloadError, match="OFFLINE"):
+        download(["morgan_n50000.h5"])
+
+
+def test_a_cached_file_is_not_re_fetched(monkeypatch, tmp_path):
+    monkeypatch.setenv("LAZYQSAR_REFERENCE_OFFLINE", "1")
+    monkeypatch.setenv("LAZYQSAR_REFERENCE_DIR", str(tmp_path))
+    (tmp_path / "morgan_n50000.h5").write_bytes(b"already here")
+    # Offline and yet it succeeds, which is only possible if nothing was fetched.
+    assert download(["morgan_n50000.h5"])[0].read_bytes() == b"already here"
+
+
+def test_a_missing_eosvc_says_how_to_get_it(monkeypatch, tmp_path):
+    monkeypatch.delenv("LAZYQSAR_REFERENCE_OFFLINE", raising=False)
+    monkeypatch.setenv("LAZYQSAR_REFERENCE_DIR", str(tmp_path))
+    monkeypatch.setattr("shutil.which", lambda _: None)
+    with pytest.raises(ReferenceDownloadError) as exc:
+        download(["morgan_n50000.h5"])
+    assert "lazyqsar[fit]" in str(exc.value)
+
+
+def test_the_eosvc_contract(monkeypatch, tmp_path):
+    """What is asked of eosvc: this repo, this path, and no credentials.
+
+    A fake binary stands in, because the point is the arguments and the staged repo -- the
+    bundle is not published yet, and a test that depended on S3 would be a flake anyway.
+    """
+    monkeypatch.delenv("LAZYQSAR_REFERENCE_OFFLINE", raising=False)
+    cache = tmp_path / "cache"
+    monkeypatch.setenv("LAZYQSAR_REFERENCE_DIR", str(cache))
+
+    log = tmp_path / "call.json"
+    fake = tmp_path / "bin" / "eosvc"
+    fake.parent.mkdir()
+    fake.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, os, pathlib, sys\n"
+        f"json.dump({{'argv': sys.argv[1:], 'cwd': os.getcwd(),\n"
+        "  'repo': os.environ.get('EVC_REPO_NAME'),\n"
+        "  'access': pathlib.Path('access.json').read_text()},\n"
+        f"  open({str(log)!r}, 'w'))\n"
+        "p = pathlib.Path(sys.argv[sys.argv.index('--path') + 1])\n"
+        "p.parent.mkdir(parents=True, exist_ok=True)\n"
+        "p.write_bytes(b'matrix')\n"
+    )
+    fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+    monkeypatch.setenv("PATH", str(fake.parent) + os.pathsep + os.environ["PATH"])
+
+    name = identity.descriptor_filename("morgan")
+    got = download([name])
+
+    call = json.loads(log.read_text())
+    assert call["repo"] == EOSVC_REPO, "the repo name is what maps to the S3 prefix"
+    assert call["argv"][:2] == ["download", "--path"]
+    assert call["argv"][2] == f"{EOSVC_ROOT}/{identity.REFERENCE_ID}/{name}"
+    assert json.loads(call["access"]) == {"data": "public"}, (
+        "the staged repo must declare data public, or eosvc resolves the wrong bucket"
+    )
+    assert got[0] == cache / name
+    assert got[0].read_bytes() == b"matrix"
+
+
+def test_a_corrupt_download_does_not_stay_cached(monkeypatch, tmp_path):
+    """A file that fails its hash is removed, or the next run would use it unchecked:
+    a cached file is never fetched, so it is never verified either."""
+    from lazyqsar.reference.manifest import ReferenceDriftError
+
+    monkeypatch.delenv("LAZYQSAR_REFERENCE_OFFLINE", raising=False)
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    monkeypatch.setenv("LAZYQSAR_REFERENCE_DIR", str(cache))
+    name = identity.descriptor_filename("morgan")
+    (cache / "manifest.json").write_text(
+        json.dumps({"files": {name: {"sha256": "0" * 64}}})
+    )
+
+    fake = tmp_path / "bin" / "eosvc"
+    fake.parent.mkdir()
+    fake.write_text(
+        "#!/usr/bin/env python3\n"
+        "import pathlib, sys\n"
+        "p = pathlib.Path(sys.argv[sys.argv.index('--path') + 1])\n"
+        "p.parent.mkdir(parents=True, exist_ok=True)\n"
+        "p.write_bytes(b'corrupt')\n"
+    )
+    fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+    monkeypatch.setenv("PATH", str(fake.parent) + os.pathsep + os.environ["PATH"])
+
+    with pytest.raises(ReferenceDriftError, match="removed from the cache"):
+        download([name])
+    assert not (cache / name).exists()
+
+
+def test_fit_is_refused_up_front_when_the_reference_cannot_be_fetched(
+    monkeypatch, tmp_path
+):
+    """Checked before training, so no fit is lost to a reference it could never read."""
+    from lazyqsar.reference import ReferenceUnavailable, require_fetchable
+
+    monkeypatch.setenv("LAZYQSAR_REFERENCE_OFFLINE", "1")
+    monkeypatch.setenv("LAZYQSAR_REFERENCE_DIR", str(tmp_path))
+    with pytest.raises(ReferenceUnavailable, match="morgan"):
+        require_fetchable(["morgan"])
+    (tmp_path / identity.descriptor_filename("morgan")).write_bytes(b"cached")
+    require_fetchable(["morgan"])
+
+
+def test_the_staging_repo_does_not_outlive_the_download(monkeypatch, tmp_path):
+    monkeypatch.setenv("LAZYQSAR_REFERENCE_OFFLINE", "1")
+    monkeypatch.setenv("LAZYQSAR_REFERENCE_DIR", str(tmp_path))
+    before = set(pathlib.Path(tempfile_dir()).glob("lazyqsar-eosvc-*"))
+    with pytest.raises(ReferenceDownloadError):
+        download(["morgan_n50000.h5"])
+    assert set(pathlib.Path(tempfile_dir()).glob("lazyqsar-eosvc-*")) == before
+
+
+def tempfile_dir():
+    import tempfile
+
+    return tempfile.gettempdir()
+
+
+def test_the_public_url_is_where_eosvc_puts_the_bundle():
+    """The URL an error message offers must be the object the download reads."""
+    url = identity.descriptor_url("morgan", 50_000)
+    assert url == (
+        f"https://eosvc-public.s3.amazonaws.com/{EOSVC_REPO}/{EOSVC_ROOT}/"
+        f"{identity.REFERENCE_ID}/morgan_n50000.h5"
+    )
+
+
+def test_the_manifest_hash_names_the_bundle(monkeypatch, tmp_path):
+    """One hash pins every file, because the manifest pins each of them."""
+    import hashlib
+
+    from lazyqsar.reference.manifest import manifest_sha256
+
+    monkeypatch.setenv("LAZYQSAR_REFERENCE_DIR", str(tmp_path))
+    assert manifest_sha256() is None
+    payload = json.dumps({"reference_id": identity.REFERENCE_ID}).encode()
+    (tmp_path / "manifest.json").write_bytes(payload)
+    assert manifest_sha256() == hashlib.sha256(payload).hexdigest()

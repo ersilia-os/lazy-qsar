@@ -4,6 +4,7 @@ import numpy as np
 from rdkit import Chem
 from rdkit.Chem import rdFingerprintGenerator
 from rdkit import RDLogger
+from ._validate import parse_molecule
 from ..utils.logging import logger
 
 RDLogger.DisableLog("rdApp.*")
@@ -43,8 +44,16 @@ class MorganFingerprint(object):
         logger.debug("Transforming Morgan fingerprints...")
         result = np.zeros((len(smiles), self.n_dim), dtype=np.float32)
         for row, smi in enumerate(smiles):
-            mol = Chem.MolFromSmiles(smi)
             try:
+                # Shared with `_validate`, for two reasons. It puts parsing inside the
+                # try, so a non-string cell NaNs one row instead of taking the whole
+                # transform down with a TypeError. And it rejects the zero-atom molecule
+                # RDKit returns for "", which otherwise became an all-zero fingerprint --
+                # breaking the `_NAN_FAITHFUL` promise that these rows are a superset of
+                # the unparseable ones, and hiding blank cells from the predict scan.
+                mol = parse_molecule(smi)
+                if mol is None:
+                    raise ValueError(f"not a molecule: {smi!r}")
                 v = self.mfpgen.GetCountFingerprint(mol)
                 for i, val in v.GetNonzeroElements().items():
                     result[row, i] = val if val < 255 else 255

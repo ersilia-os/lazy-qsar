@@ -24,16 +24,22 @@ def _curves(rng, D, how_many_none=0):
 
 
 def _pooled_knots(rng, kind):
-    """An ECDF reference for the pooled probability, or None for the legacy branch.
+    """A reference-library ECDF for the pooled probability.
 
-    ``wide`` spans the whole probability range, so nothing clamps and `rank` is the
-    interpolated interior. ``degenerate`` is one distinct value, the case where the
-    reference carries no resolution and `rank` collapses to a step.
+    Every scenario carries one. There is no longer a referenceless arm to freeze: `rank`
+    is a percentile against a reference library, and a checkpoint without one raises
+    rather than reporting a training-set percentile under the same name.
+
+    ``wide`` spans the whole probability range, so nothing extrapolates and `rank` is the
+    interpolated interior. ``narrow`` stops at 0.35, which is what a real library looks
+    like to a selective model -- measured 0.065 to 0.334 -- so most of the batch lands in
+    the extrapolated upper tail. ``degenerate`` is one distinct value, carrying no
+    resolution at all.
     """
-    if kind is None:
-        return None
     if kind == "degenerate":
         return np.full(16, 0.4)
+    if kind == "narrow":
+        return np.sort(rng.uniform(0.02, 0.35, size=250))
     return np.sort(rng.uniform(0.01, 0.99, size=250))
 
 
@@ -253,6 +259,20 @@ SCENARIOS += [
         },
     ),
     (
+        # The realistic shape: a selective model scores generic chemistry low, so most of
+        # the batch lands above the library's ceiling and in the extrapolated tail. This is
+        # the case that used to tie every active at exactly 1.0.
+        "pooled__narrow_reference_tail",
+        {
+            **_BRANCH_OPTS["ad_rank_curves"],
+            "D": 3,
+            "B": 7,
+            "curve_mode": "all",
+            "no_skill": False,
+            "pooled_mode": "narrow",
+        },
+    ),
+    (
         "pooled__degenerate_single_knot",
         {
             **_BRANCH_OPTS["ad_rank_curves"],
@@ -280,7 +300,7 @@ def build_case(case_id):
     B = opts.pop("B")
     curve_mode = opts.pop("curve_mode")
     no_skill = opts.pop("no_skill")
-    pooled_mode = opts.pop("pooled_mode", None)
+    pooled_mode = opts.pop("pooled_mode", "wide")
 
     rng = np.random.default_rng(
         int.from_bytes(case_id.encode(), "little", signed=False) % 2**32

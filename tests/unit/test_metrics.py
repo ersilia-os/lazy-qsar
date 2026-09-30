@@ -6,8 +6,12 @@ RIE range that depends on prevalence, so an error shows up as a plausible-lookin
 rather than an exception.
 
 The tests pin the two ends of that normalisation (a perfect ranking is 1, a reversed one is
-0) and the expected value under random ranking. Numpy only -- ``aupr_score`` and
-``composite_metrics`` reach for sklearn and are tested in ``tests/fit``.
+0) and the expected value under random ranking. Numpy only. ``aupr_score`` and ``composite_metrics`` reach for sklearn and are **not**
+tested -- anywhere. This sentence used to claim they were covered in ``tests/fit``, which
+was worse than saying nothing, because it answers the question a reader came to ask with
+the wrong answer. ``composite_score`` is exercised indirectly through the pooler, and
+``composite_metrics`` on an empty or single-class input returns hard-coded baselines that
+nothing checks.
 """
 
 import numpy as np

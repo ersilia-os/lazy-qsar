@@ -1,4 +1,4 @@
-"""``tests/unit`` and ``tests/packaging`` must keep running on a base install.
+"""``tests/unit``, ``tests/packaging`` and the machinery they load must run on a base install.
 
 The tier markers in ``tests/conftest.py`` are applied by directory, so a test under
 ``tests/unit`` is *declared* to need nothing beyond numpy, onnxruntime and pandas. Nothing
@@ -18,7 +18,15 @@ import pytest
 from _helpers.stubs import STUB_MODULE  # noqa: F401  (import sanity)
 
 TESTS_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-BASE_TIER_DIRS = ("unit", "packaging")
+# ``_helpers`` is in here because ``tests/conftest.py`` imports ``_helpers.stubs`` and
+# ``_helpers.tiers`` at module level, and conftest is loaded for *every* test. A tiered
+# import added under ``_helpers/`` therefore errors the entire base tier -- 308 tests at
+# once -- while a guard that scanned only the test directories stayed green.
+BASE_TIER_DIRS = ("unit", "packaging", "_helpers")
+
+# Scanned as well as the directories above, for the same reason: it is imported before
+# every test in the suite.
+BASE_TIER_FILES = ("conftest.py",)
 
 # Anything outside the core install. `tests/conftest.py` may reference these by *name* for
 # the tier gating, but no base-tier module may import one.
@@ -44,6 +52,8 @@ def _base_tier_files():
         for name in sorted(os.listdir(root)):
             if name.endswith(".py"):
                 yield os.path.join(root, name)
+    for name in BASE_TIER_FILES:
+        yield os.path.join(TESTS_ROOT, name)
 
 
 def _module_level_imports(path):

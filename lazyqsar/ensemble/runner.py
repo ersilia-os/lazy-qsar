@@ -44,7 +44,7 @@ from rich.progress import (
 from ..registry import DESCRIPTOR_TYPES, get_descriptor_type
 from ..utils.logging import logger
 from .channels import required_channels, score_chunkwise
-from .combine import EnsembleSpec, combine
+from .combine import NO_REFERENCE_MESSAGE, EnsembleSpec, combine
 
 _DEFAULT_CHUNK = 1000
 
@@ -186,13 +186,12 @@ def _descriptor_dirs(task_dir: str):
 
 
 def _read_metadata(task_dir: str) -> dict:
-    import json
+    from ..utils.archives import read_json
 
     path = os.path.join(task_dir, "metadata.json")
     if not os.path.isfile(path):
         return {}
-    with open(path) as f:
-        return json.load(f)
+    return read_json(path)
 
 
 def _load_artifact(directory: str):
@@ -285,6 +284,13 @@ def predict_tasks(
         chunk_size = get_chunk_size()
 
     plans = [_plan(s) for s in sources]
+    # Checked before featurizing, not after: `combine` would raise the same error, but only
+    # once every molecule had been featurized and scored.
+    if "rank" in outputs:
+        for plan in plans:
+            knots = plan.spec.pooled_rank_knots
+            if knots is None or not len(knots):
+                raise ValueError(f"{plan.source.task_dir}: {NO_REFERENCE_MESSAGE}")
     nan_rows = scan.setdefault("nan_rows", set()) if scan is not None else None
 
     # Union across every task: this is what makes scoring N models cost one featurization

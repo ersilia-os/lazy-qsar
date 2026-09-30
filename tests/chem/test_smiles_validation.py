@@ -55,20 +55,34 @@ def test_non_string_input_is_reported_not_raised(hostile):
     assert invalid_smiles_indices(hostile) == list(range(len(hostile)))
 
 
-def test_the_empty_string_is_accepted_as_a_zero_atom_molecule():
-    """Characterization, not endorsement.
+def test_the_empty_string_is_not_a_molecule():
+    """The decision this file used to leave open, now taken.
 
-    ``Chem.MolFromSmiles("")`` returns a real Mol with no atoms, so an empty cell in an input
-    CSV is *not* flagged and does not get the NaN treatment that an unparseable string gets.
-    It is featurized as an empty molecule and scored like any other row.
+    ``Chem.MolFromSmiles("")`` returns a real Mol with no atoms, so an empty cell used to
+    pass validation and be scored like any other row -- morgan handed back an all-zero
+    fingerprint, which looks like a perfectly ordinary feature vector. That is the same
+    failure the NaN masking exists to prevent: something that is not a molecule receiving
+    an ordinary-looking score. A blank cell is far more likely to be a shifted column, a
+    trailing comma or a NaN written as ``""`` than a deliberate query about nothing.
 
-    That is arguably the same failure the NaN masking exists to prevent -- something that is
-    not a molecule receiving an ordinary-looking score -- but it is current behaviour, and
-    changing it is a decision about the API rather than something a test should assume. This
-    pins it so the decision is at least visible.
+    So a zero-atom molecule is now invalid, and an empty cell gets the NaN treatment.
+    :func:`parse_molecule` is the single place that decides this, shared with the
+    descriptors so the ``_NAN_FAITHFUL`` fast path in predict stays a true superset.
     """
-    assert invalid_smiles_indices([""]) == []
-    assert validate_smiles([""]) is None
+    assert invalid_smiles_indices([""]) == [0]
+    with pytest.raises(ValueError, match="position"):
+        validate_smiles([""])
+
+
+def test_a_single_atom_is_still_a_molecule():
+    """The boundary the zero-atom rule must not cross.
+
+    ``"C"`` and ``"*"`` are one-atom molecules and legitimate queries; only the zero-atom
+    case is rejected. Worth pinning separately, because "reject tiny molecules" is the
+    obvious wrong way to implement the test above.
+    """
+    assert invalid_smiles_indices(["C", "*", "O"]) == []
+    assert validate_smiles(["C", "*", "O"]) is None
 
 
 def test_empty_input_is_not_an_error():
@@ -97,3 +111,43 @@ def test_the_two_checks_agree(good, bad):
         validate_smiles(mixed)
     for i in positions:
         assert f"[{i}]" in str(exc.value)
+
+
+# Only the descriptors this tier can actually build. `chemeleon` needs torch and
+# `cddd` needs FPSim2 plus a 431 MB checkpoint download, and the chem tier requires
+# neither -- it is gated on rdkit alone. Instantiating them here is what made the `full`
+# CI job fail: it installs no torch, and no FPSim2 on the stated grounds that "nothing in
+# the suite reaches cddd".
+#
+# Covering those three means restoring the `deep` tier that `_helpers/tiers.py` describes,
+# *together with a CI job that runs it* -- which is the rule that file sets out, and the
+# reason it was removed. Widening this list without that job would assert a boundary
+# around coverage that does not exist.
+LOCAL_DESCRIPTORS = ("morgan", "rdkit")
+
+
+@pytest.mark.parametrize("name", LOCAL_DESCRIPTORS)
+def test_every_descriptor_reports_its_width_the_same_way(name):
+    """`n_dim` is what callers read, and RDKit's was missing.
+
+    `LazyClassifierQSAR` asks the reference library for a matrix of the right width via
+    `descriptors[i].n_dim`, so a slow-mode fit with RDKit active raised AttributeError the
+    moment it reached the reference. Nothing caught it because the fitting tests run in fast
+    mode; the bundle verification gate did, by comparing the published dimension against the
+    installed descriptor's.
+
+    RDKit's count is not a constant -- it is however many descriptors the installed version
+    defines -- so this asserts the attribute agrees with `features`, not a number.
+    """
+    from lazyqsar.registry import get_descriptor_type
+
+    descriptor = get_descriptor_type(name)()
+    n_dim = getattr(descriptor, "n_dim", None)
+    assert isinstance(n_dim, int) and n_dim > 0, f"{name} has no usable n_dim"
+    # `features` is not universal -- CDDD has none -- so it is only cross-checked
+    # where it exists, which is where the two could disagree.
+    features = getattr(descriptor, "features", None)
+    if features is not None:
+        assert n_dim == len(features), (
+            f"{name}: n_dim {n_dim} disagrees with {len(features)} features"
+        )

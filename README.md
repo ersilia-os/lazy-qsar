@@ -40,7 +40,7 @@ You can install optional extras depending on your use case:
 
 | Extra | Command | Adds |
 |-------|---------|------|
-| `fit` | `pip install -e ".[fit]"` | Training dependencies (scikit-learn, XGBoost, scipy, ONNX conversion tools) |
+| `fit` | `pip install -e ".[fit]"` | Training dependencies (scikit-learn, XGBoost, scipy, ONNX conversion tools) and `eosvc`, which is what fetches the reference library — so `rank` needs this extra even if you bring your own descriptors |
 | `descriptors` | `pip install -e ".[descriptors]"` | Built-in molecular descriptors (RDKit, FPSim2, deep-learning models) |
 | `all` | `pip install -e ".[all]"` | Everything above |
 
@@ -51,6 +51,53 @@ The first time you use deep-learning descriptors (Chemeleon, CLAMP, CDDD), their
 ```bash
 lazyqsar setup --descriptors
 ```
+
+Fitting also needs the reference library that `rank` is reported against. It is fetched on
+first use, or in advance:
+
+```bash
+lazyqsar setup --reference                    # all five descriptors, 267 MB
+lazyqsar setup --reference --only morgan      # fast mode needs only this, 6.5 MB
+```
+
+It is deliberately **not** included in `--descriptors`. Inspect or manage it with:
+
+| command | |
+|---|---|
+| `lazyqsar reference status` | what is cached, and how big |
+| `lazyqsar reference fetch [--only LIST] [--force]` | download it |
+| `lazyqsar reference verify` | check what is cached is well formed |
+| `lazyqsar reference smiles --output ref.csv` | the molecule list, which is all a bring-your-own-descriptor caller needs |
+
+`LAZYQSAR_HOME` moves the cache (checkpoints and reference together);
+`LAZYQSAR_REFERENCE_DIR` points at a prepared copy; `LAZYQSAR_REFERENCE_OFFLINE=1` refuses
+to fetch rather than reaching for the network.
+
+`LAZYQSAR_REFERENCE_N` selects the reference *tier* — how many molecules the library holds.
+It changes what `rank` means, and the value is stamped into every checkpoint as
+`pooled_ranker.library.n`, so two models fitted under different tiers are not comparable
+on `rank` even though both report a number in [0, 1]. Leave it alone unless you know why
+you are changing it.
+
+`LAZYQSAR_FIT_SCRATCH` redirects where a fit stages its descriptor matrices. Worth setting
+on a node with a small `/tmp`: a slow-mode fit over many tasks stages one matrix per
+descriptor over the union of every task, which for 175,000 compounds across five
+descriptors is several gigabytes.
+
+## When a fit or a prediction refuses
+
+The library fails loudly in a few places rather than returning a number it cannot stand
+behind. Each of these is a deliberate refusal, not a bug:
+
+| What you see | What it means | What to do |
+|---|---|---|
+| `predict_rank needs a reference library` | The checkpoint carries no reference — either it predates 3.6, or it was fitted through `LazyClassifier` without `reference_X=`. | Refit with 3.6+, or pass `reference_X=`. `proba`, `logit`, `lift`, `score` and `binary` still work. |
+| `No reference matrix for ... and fetching is disabled` / `eosvc ... is not installed` | Checked *before* training so a long fit is not lost to it. | `lazyqsar setup --reference`, or point `LAZYQSAR_REFERENCE_DIR` at a copy, or `pip install "lazyqsar[fit]"` for `eosvc`. |
+| `class N has a single member` / `every label is N` | Stratified splitting cannot work, so no fold count exists. Raised from the labels before any descriptor is computed. | Add examples of the minority class, or stop treating the task as classification. |
+| `Invalid SMILES at position(s): ...` at fit | Training on a molecule that cannot be featurized is meaningless, so fit raises rather than guessing. Note an empty cell counts as invalid. | Clean the input. At *predict* time the same rows are NaN'd instead, and the rest of the library still scores. |
+| `This checkpoint's reference rank was built from [...] but [...] missing` | Descriptor directories have been removed from the checkpoint, so it would be scored with fewer descriptors than its reference describes. | Restore the directories or refit. |
+| A warning that the cutoff `admits X% of the reference library, not 1%` | The reference's probabilities are too concentrated for the anchors to separate, so this model's `rank` is not comparable with others. | Check `LAZYQSAR_REFERENCE_N` and whether the model saturates. |
+| A warning that the actives anchor was dropped | The model's known actives do not reach the top 0.1% of drug-like space. Informative, not an error — see the changelog's Known limitations. | Nothing; the scale runs straight to certainty above the last reference anchor. |
 
 ## Python API
 
@@ -69,12 +116,50 @@ from lazyqsar.qsar import LazyClassifierQSAR
 model = LazyClassifierQSAR(mode="slow") # default is "slow"
 model.fit(smiles_list=smiles_train, y=y_train)
 
-ranks = model.predict_rank(smiles_list=smiles_test)[:, 1]  # percentile within the model's own training distribution
+ranks = model.predict_rank(smiles_list=smiles_test)[:, 1]  # position against 50,000 drug-like reference molecules; 0.65 = beats 99%
 ```
 
 Other prediction methods are `predict_proba`, `predict_logit`, `predict_score`, `predict_lift` and `predict` (binary labels). All six share one implementation with the CLI, so a checkpoint gives the same answer through either entry point.
 
-> `predict_rank` is a percentile against the *training* distribution of that model, so ranks are not comparable between models and compress on chemistry unlike the training set. Use `predict_proba` when you need a calibrated value. Within one model `rank` is a monotone view of `proba`: they order molecules identically, so any ordering-only metric (AUROC, AUPRC, BEDROC) gives the same answer from either.
+> `predict_rank` positions a molecule against a **fixed reference library** of 50,000
+> drug-like molecules, anchored on that library's **upper tail**. Each step of rank is a 10x
+> shrink of the tail:
+>
+> | rank | means |
+> |---|---|
+> | 0.25 | beats half of drug-like chemical space |
+> | 0.50 | beats 90% -- the top tenth |
+> | **0.65** | beats 99% -- **the decision cutoff** |
+> | 0.75 | beats 99.9% |
+> | 0.95 | at the top of what this model's known actives reach |
+>
+> Within one model it is a monotone view of `proba` -- they order molecules identically, so
+> any ordering-only metric (AUROC, AUPRC, BEDROC) gives the same answer from either.
+>
+> **The axis is spent on the top of the list**, because that is a bioactivity model's
+> product. Measured across six antimicrobial models, the top 1% of a screened library sits
+> between the reference's p98.9 and p100; anchoring on quartiles instead gave that top 1% a
+> mean span of 0.069 of the axis against 0.215 here, and on one model the 113 best-scoring
+> compounds shared a span of 0.003 -- effectively one value.
+>
+> **The cost is the bottom.** Roughly a third of a generic library can land below 0.25, so
+> `rank` says little about *how* inactive something is. Do not read low ranks
+> quantitatively.
+>
+> Above the reference's p99.9 the library is too sparse to resolve anything, so the last
+> stretch is pinned on the model's own out-of-fold actives -- `0.95` is their 95th
+> percentile. When a model's actives do not even reach p99.9 that anchor is dropped and
+> reported, which is a statement about the model: its actives look like generic chemistry.
+>
+> The top of the scale therefore does not distinguish a strong model from a weak one. That
+> signal lives in `oof_diagnostics.screening_auc` and `sensitivity_at_cutoff`, both reported
+> in every checkpoint.
+>
+> And a rank says nothing on its own about model skill -- a random model still puts 1% of the
+> reference above the cutoff, because the cutoff is *defined* as 1%. Every output is a
+> monotone transform of one probability, so none of them can separate a false positive from a
+> true positive that scores the same. Report `proba`, `lift` and the out-of-fold AUC
+> alongside it.
 
 ### LazyClassifier (custom descriptors)
 
@@ -87,6 +172,14 @@ from lazyqsar.agnostic import LazyClassifier
 model = LazyClassifier()
 model.fit(X=X_train, y=y_train)
 y_hat = model.predict_proba(X=X_test)[:, 1]
+
+# `rank` needs a reference library. This entry point never sees the molecules, so it
+# cannot featurize one -- pass the descriptors of the reference set yourself:
+from lazyqsar.reference import reference_smiles
+
+X_ref = my_featurizer(reference_smiles())        # same featurizer, same order
+model.fit(X=X_train, y=y_train, reference_X=X_ref)   # or reference_h5_file="ref.h5"
+ranks = model.predict_rank(X=X_test)[:, 1]
 
 # From an Ersilia .h5 file
 model.fit(h5_file="descriptors.h5", y=y_train)
@@ -143,11 +236,11 @@ The output CSV contains one column per task, ordered alphabetically by task name
 | type | meaning |
 |------|---------|
 | `proba` (default) | calibrated probability of the positive class |
-| `rank` | percentile within the model's own training distribution |
+| `rank` | position against the 50,000-molecule reference library, on its upper tail: 0.50 is the top 10%, 0.65 the top 1%, 0.75 the top 0.1% |
 | `logit` | log-odds of the calibrated probability |
 | `lift` | probability divided by the training-set positive rate |
 | `score` | the pre-calibration scale, read off the calibrated probability |
-| `binary` | 0/1 label, thresholded at probability 0.5 |
+| `binary` | 0/1 label, thresholded at the decision cutoff -- `rank >= 0.65`, i.e. beats 99% of drug-like space. Checkpoints without a reference-rank cutoff keep `proba >= 0.5` |
 
 All six rank molecules identically — they are different scales on one quantity, so sorting
 by any of them gives the same order. `score` reports what the model looked like before
@@ -176,11 +269,11 @@ The components under `lazyqsar/base/` can be used independently of the full pipe
 
 | Module | Description |
 |--------|-------------|
-| [`lazyqsar.base.preprocessing`](lazyqsar/base/preprocessing/) | Automatic scaler and feature reducer selection |
+| [`lazyqsar.base.preprocessing`](lazyqsar/base/preprocessing/README.md) | Automatic scaler and feature reducer selection |
 | [`lazyqsar.base.xgboost`](lazyqsar/base/xgboost/README.md) | Automatic XGBoost hyperparameter selection with portfolio comparison |
 | [`lazyqsar.base.linear`](lazyqsar/base/linear/README.md) | Automatic linear model selection (logistic/ridge/SGD) |
 | [`lazyqsar.base.randomforest`](lazyqsar/base/randomforest/README.md) | Random Forest classifier with zero-shot hyperparameter selection |
-| [`lazyqsar.base.svc`](lazyqsar/base/svc/) | Support Vector Classifier with automatic kernel and C selection |
+| [`lazyqsar.base.svc`](lazyqsar/base/svc/README.md) | Support Vector Classifier with automatic kernel and C selection |
 
 ## Running the tests
 
@@ -237,18 +330,24 @@ Basically, `lazyqsar fit` can be used to produce a `checkpoints` folder with one
 ```text
 checkpoints/
 └── task1/
-    ├── cddd/
+    ├── metadata.json          task-level: active mask, AUCs, cutoff, reference knots
+    ├── chemeleon/
     │   ├── featurizer.json
     │   ├── metadata.json
+    │   ├── applicability_domain/
+    │   │   └── applicability_domain.onnx
     │   └── batch_0/
     │       ├── preprocessor.onnx
     │       ├── xgboost.onnx
     │       └── pooler.json
-    ├── chemeleon/   (same structure)
-    ├── clamp/       (same structure)
-    ├── morgan/      (same structure)
-    └── rdkit/       (same structure)
+    ├── clamp/     (same structure)
+    └── morgan/    (same structure)
 ```
+
+Slow mode screens five descriptors and typically keeps **two or three** — the portfolio
+prunes the rest, and a pruned descriptor's directory is not written at all, so a real
+checkpoint is smaller than the descriptor list suggests. Which survived is recorded in the
+task-level `metadata.json` under `active_descriptors`.
 
 The `code/main.py` inference script:
 

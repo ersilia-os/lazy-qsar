@@ -199,20 +199,26 @@ def test_only_one_descriptor_matrix_is_on_disk_at_a_time(
 def test_fit_holds_one_featurizer_at_a_time(tmp_path, stub_descriptors, monkeypatch):
     """Construct, featurize, drop — then the next descriptor.
 
-    In slow mode that is five featurizers, two of which (Chemeleon, CLAMP) carry torch
-    models. Building them all up front reads like a tidy-up and would cost several GB.
+    In slow mode that is five featurizers in production, two of which (Chemeleon, CLAMP)
+    carry torch models. Building them all up front reads like a tidy-up and would cost
+    several GB.
 
     The same hook pins the opposite property at the other end: when the last descriptor
     finishes, every staged matrix must still be there, because phase 2 slices each task's
     rows out of all of them. Someone generalising the runner's delete-as-you-go rule to
     fit would break it.
+
+    Three stubbed descriptors, not five: the assertion is that the log reads
+    ``construct, persist`` repeated once per descriptor, which any count above one proves
+    just as completely. The two extra fits bought no coverage.
     """
     import csv
 
     from lazyqsar.api import classifier_fit
     from lazyqsar.registry import DESCRIPTORS_MODE
 
-    descriptors = DESCRIPTORS_MODE["slow"]
+    descriptors = ["cddd", "morgan", "rdkit"]
+    monkeypatch.setitem(DESCRIPTORS_MODE, "slow", descriptors)
     stub_descriptors(*descriptors)
 
     data_dir = tmp_path / "data"

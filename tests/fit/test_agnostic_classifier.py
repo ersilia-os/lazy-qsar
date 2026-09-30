@@ -6,6 +6,9 @@ else: that the ``X=`` and ``h5_file=`` paths are genuinely the same code, and th
 survives the zip round trip that the README tells people to use.
 """
 
+import contextlib
+import io
+import json
 import os
 import zipfile
 
@@ -14,6 +17,11 @@ import numpy as np
 import pytest
 
 from lazyqsar.agnostic import LazyClassifier, LazyRegressor, _load_h5
+from lazyqsar.utils.ranking import (
+    DECISION_CUTOFF_SOURCE,
+    DECISION_RANK,
+    TAIL_ANCHORS,
+)
 
 N, P = 200, 30
 
@@ -128,7 +136,13 @@ def test_the_h5_path_and_the_array_path_are_the_same_model(data, h5_path):
 
 @pytest.mark.parametrize(
     "method",
-    ["predict_proba", "predict_logit", "predict_score", "predict_lift", "predict_rank"],
+    [
+        "predict_proba",
+        "predict_logit",
+        "predict_score",
+        "predict_lift",
+        "_oof_percentile",
+    ],
 )
 def test_every_predictor_accepts_both_input_forms(data, h5_path, fitted, method):
     X, _ = data
@@ -201,3 +215,165 @@ def test_loading_a_raw_directory_is_explicitly_unsupported(tmp_path):
 def test_regression_is_not_implemented():
     with pytest.raises(NotImplementedError):
         LazyRegressor()
+
+
+def _reference_matrix(n=400, seed=7):
+    """Stand-in for the published reference library, in the same feature space as `data`."""
+    return np.random.default_rng(seed).normal(size=(n, P)).astype(np.float32)
+
+
+@pytest.fixture(scope="module")
+def fitted_with_reference(data):
+    """One fit carrying a reference, shared by the tests that only read it.
+
+    The same argument the ``fitted`` fixture above makes: there are no descriptors, so no
+    featurization cache can make a later assertion pass vacuously, and ``save()`` delegates
+    to ``self._model.save`` without rebinding anything on the instance. Four tests used to
+    fit their own model purely to have one with a reference attached, at ~1.4 s each.
+
+    The two tests that still fit their own do so because the *comparison of two fits* is
+    the assertion.
+    """
+    X, y = data
+    reference = _reference_matrix()
+    model = LazyClassifier()
+    model.fit(X=X, y=y, reference_X=reference)
+    return model, reference
+
+
+def test_predict_rank_is_refused_without_a_reference(data, fitted):
+    """`rank` is a position against a fixed set of drug-like molecules, and this entry
+    point takes a descriptor matrix -- it never sees the molecules, so it cannot featurize
+    that set itself.
+
+    What earlier versions returned here was a percentile against the model's own training
+    distribution. That survives as `_oof_percentile`, where it weights the ensemble, and is
+    deliberately not offered as a public rank: it is not comparable with a reference rank
+    and would be read as one.
+    """
+    X, y = data
+    with pytest.raises(ValueError, match="needs a reference library"):
+        fitted.predict_rank(X=X)
+    assert fitted._oof_percentile(X=X).shape == (len(y), 2)
+
+
+def test_the_refusal_names_the_way_forward(fitted, data):
+    """An error a caller cannot act on is barely better than a wrong number."""
+    X, _ = data
+    with pytest.raises(ValueError) as exc:
+        fitted.predict_rank(X=X)
+    message = str(exc.value)
+    assert "reference_X" in message
+    assert "reference_smiles" in message
+
+
+def test_a_reference_makes_rank_available(data, fitted_with_reference):
+    X, y = data
+    model, _ = fitted_with_reference
+    ranks = model.predict_rank(X=X)
+    assert ranks.shape == (len(y), 2)
+    assert np.all((ranks[:, 1] >= 0) & (ranks[:, 1] <= 1))
+    np.testing.assert_allclose(ranks.sum(axis=1), 1.0, atol=1e-9)
+
+
+def test_the_reference_tail_percentiles_land_on_their_ranks(fitted_with_reference):
+    """The anchoring, checked through the public entry point rather than the helper.
+
+    Distribution-free: whatever the reference looks like, the fraction of it above each
+    anchor rank is the anchor's own tail fraction. Half above 0.25, a tenth above 0.50.
+    """
+    model, reference = fitted_with_reference
+    reference_ranks = model.predict_rank(X=reference)[:, 1]
+    for q, rank in TAIL_ANCHORS:
+        assert float((reference_ranks > rank).mean()) == pytest.approx(
+            1.0 - q / 100.0, abs=0.02
+        )
+
+
+def test_the_agnostic_cutoff_is_on_the_rank_scale(fitted_with_reference, tmp_path):
+    """With a reference, `predict` thresholds proba against the rank-derived cutoff.
+
+    The agnostic path used to threshold `predict_score` against a mean of per-head
+    balanced-accuracy cutoffs, which made it disagree with `LazyClassifierQSAR.predict` on
+    the same underlying model.
+    """
+    model, reference = fitted_with_reference
+    inner = model._model
+    assert inner.decision_cutoff_source_ == DECISION_CUTOFF_SOURCE
+    assert inner.decision_cutoff_reference_rank_ == DECISION_RANK
+    # A 1% generic hit rate on the library it was inverted against.
+    knots = np.asarray(inner.reference_rank_knots_, dtype=float)
+    hit = float((knots >= inner.decision_cutoff_proba_).mean())
+    assert hit == pytest.approx(0.01, abs=5e-3)
+    # Saved as a reference rank, and not in place of the out-of-fold percentile.
+    with zipfile.ZipFile(model.save(str(tmp_path / "m.zip"))) as z:
+        meta = json.loads(z.read("metadata.json"))
+    assert meta["decision_cutoff_rank"] == DECISION_RANK
+    assert meta["decision_cutoff_oof_percentile"] == inner.decision_cutoff_rank_
+
+
+def test_without_a_reference_the_cutoff_and_labels_are_unchanged(data):
+    """No reference means no rank scale to place a cutoff on, so nothing moves."""
+    X, y = data
+    model = LazyClassifier()
+    with contextlib.redirect_stdout(io.StringIO()):
+        model.fit(X=X, y=y)
+    inner = model._model
+    assert getattr(inner, "decision_cutoff_source_", None) is None
+    labels = model.predict(X=X)
+    expected = (
+        inner.predict_score(X)[:, 1] >= inner.decision_cutoff_raw_ - 1e-6
+    ).astype(int)
+    assert np.array_equal(labels, expected)
+
+
+def test_rank_orders_molecules_exactly_as_proba_does(data, fitted_with_reference):
+    X, _ = data
+    model, _ = fitted_with_reference
+    rank = model.predict_rank(X=X)[:, 1]
+    proba = model.predict_proba(X=X)[:, 1]
+    assert np.array_equal(np.argsort(np.argsort(rank)), np.argsort(np.argsort(proba)))
+
+
+def test_a_reference_h5_matches_the_same_matrix_in_memory(data, tmp_path):
+    """The chunked reader must not change the answer -- it exists only so a large
+    reference is never held whole."""
+    X, y = data
+    reference = _reference_matrix()
+    path = str(tmp_path / "ref.h5")
+    with h5py.File(path, "w") as f:
+        f.create_dataset("X", data=reference)
+
+    from_array = LazyClassifier()
+    from_array.fit(X=X, y=y, reference_X=reference)
+    from_h5 = LazyClassifier()
+    from_h5.fit(X=X, y=y, reference_h5_file=path)
+    np.testing.assert_allclose(
+        from_array.predict_rank(X=X), from_h5.predict_rank(X=X), atol=1e-6
+    )
+
+
+def test_the_reference_survives_save_and_load(data, tmp_path, fitted_with_reference):
+    """`LazyClassifier.load` returns the ONNX artifact, so the reference has to travel into
+    it -- otherwise a saved model silently loses the one output that needed it."""
+    X, _ = data
+    model, _ = fitted_with_reference
+    directory = str(tmp_path / "with_reference")
+    model.save(directory)
+
+    loaded = LazyClassifier.load(directory)
+    np.testing.assert_allclose(
+        model.predict_rank(X=X)[:, 1], loaded.predict_rank(X)[:, 1], atol=1e-4
+    )
+
+
+def test_a_saved_model_without_a_reference_still_refuses(data, tmp_path, fitted):
+    X, _ = data
+    model = fitted
+    directory = str(tmp_path / "no_reference")
+    model.save(directory)
+
+    loaded = LazyClassifier.load(directory)
+    assert np.all(np.isfinite(loaded.predict_proba(X)[:, 1]))
+    with pytest.raises(ValueError, match="needs a reference library"):
+        loaded.predict_rank(X)

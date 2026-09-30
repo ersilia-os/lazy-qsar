@@ -65,6 +65,9 @@ def test_requesting_one_output_matches_requesting_all():
         veto="partial",
         no_skill=False,
     )
+    # A reference, because these assert over every output and `rank` is a percentile
+    # against one -- a checkpoint without it refuses rather than inventing a number.
+    kw["pooled_knots"] = np.sort(rng.uniform(0.01, 0.99, size=250))
     spec = _spec(3, kw)
     everything = combine(Y, R, S, A, spec=spec, outputs=OUTPUT_NAMES).values
     for name in OUTPUT_NAMES:
@@ -117,6 +120,7 @@ def test_rows_are_independent():
         veto="partial",
         no_skill=False,
     )
+    kw["pooled_knots"] = np.sort(rng.uniform(0.01, 0.99, size=250))
     spec = _spec(3, kw)
     whole = combine(Y, R, S, A, spec=spec, outputs=OUTPUT_NAMES).values
     halves = [

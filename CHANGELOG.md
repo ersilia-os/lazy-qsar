@@ -1,5 +1,303 @@
 # Changelog
 
+All notable changes to this project are documented here. Versions follow
+[semantic versioning](https://semver.org/); the reference library `rank` is measured
+against is versioned separately and its id is recorded in every checkpoint's
+`pooled_ranker.library`.
+
+## [Unreleased]
+
+Nothing yet.
+
+## 3.6.0
+
+`predict_rank` now positions a molecule against a fixed reference library of 50,000
+drug-like molecules, anchored on that library's **upper tail**: 0.50 means the top 10% of
+drug-like chemical space, 0.65 the top 1%, 0.75 the top 0.1%. Each step is a 10x shrink of
+the tail. Before this release it was a percentile against the model's own training set,
+which sounds similar and is not.
+
+`binary` and the decision cutoff follow from that scale. The cutoff is fixed at **rank
+0.65** -- "to be called a hit, beat 99% of drug-like space" -- so a model calls 1% of
+generic chemistry active by construction, and `proba`, `logit`, `lift` and `score` cutoffs
+are all derived from that one probability.
+
+The old behaviour was not a bug in the ranking arithmetic. A trained model's out-of-fold
+scores are bimodal -- inactives crushed near 0, actives near 1, almost nothing between --
+so real screening compounds land in the empty middle where the training ECDF is flat.
+Measured on a simulated screening library, the entire top decile spanned 0.0014 of rank
+and 53.6% of the library compressed into [0.75, 0.95]: everything came back at roughly 0.9
+and users could not tell their best compounds from their mediocre ones. The training ECDF
+was correct; the training set simply contained nothing in that score range, so no change
+to the interpolation could manufacture resolution there. Two cheaper fixes were measured
+and rejected -- correcting tie handling moved the mean from 0.670 to 0.669, and ranking
+against training negatives made it worse at 0.748.
+
+### Why the tail and not the quartiles
+
+Quartile anchors spend three quarters of the axis below the library's median, on compounds
+nobody will order. A bioactivity model's product is the top of the list, and measured across
+six real antimicrobial models the top 1% of a screened library sits between the reference's
+p98.9 and p100 -- exactly where the quartile scale had no resolution left. The rank-axis span
+given to the top 1% of DrugBank went from a mean of 0.069 to 0.215; on one model the 113
+best-scoring compounds had shared a span of 0.003, effectively a single value, and now have
+0.096.
+
+The cost is taken deliberately: **the bottom of the scale is flattened.** Roughly a third of
+a generic library can land below rank 0.25. That is the right trade for a hit list, but it
+means `rank` carries little information about *how* inactive something is, and nothing
+downstream should read low ranks quantitatively.
+
+An earlier measurement scored the scales by how *evenly* they spread a whole screening
+library, and on that basis the tail anchors looked worst. That metric values resolving
+inactives, which for a bioactivity model is worth nothing; scored on the top of the list
+instead, the ordering reverses and the tail anchors win on every model at every cut.
+
+### Why the cutoff is a constant
+
+The cutoff used to be learned: `balanced_accuracy_score` maximised over out-of-fold raw
+scores, whose argmax is Youden's J. That is optimal against the inactives *measured in the
+same assay* -- usually close analogues from one programme -- and says nothing about generic
+chemistry. Measured on six real models it gave generic hit rates of **0.60 to 0.99**: every
+one called most of drug-like space active, and one called 98.3% of DrugBank a hit.
+
+Deriving it from the rank scale instead needs no new data -- the reference library is already
+scored at fit time to build the knots -- and 0.65 sits below the last reference anchor, so
+inverting it never touches the out-of-fold actives anchor. The cutoff is therefore a pure
+function of the reference library and does not wobble on a model fitted from 24 actives.
+
+Note that maximising an *ordering-based* criterion on the rank scale would have changed
+nothing: rank is a monotone transform of `proba`, so Youden's J picks the identical split
+either way and only the printed number moves. A fixed point on the scale is the only version
+of this that has any effect.
+
+At fit time the model now scores the reference library and stores the sorted pooled
+probabilities as its knots. Inference is unchanged: still one interpolation against knots
+in `metadata.json`, so deployed models need no new data and inference still requires only
+numpy and onnxruntime.
+
+### Breaking
+
+- **`rank` changes meaning, and old checkpoints refuse to report it.** Checkpoints fitted
+  before 3.6 carry out-of-fold knots, which are indistinguishable from library knots once
+  read -- both monotone, both in [0, 1]. Rather than report a training-set percentile as
+  though it were a library percentile, `predict_rank` and `--predict_type rank` raise and
+  name the fix. **`proba`, `logit`, `lift`, `score` and `binary` are unaffected** and keep
+  working on existing checkpoints; refit to get `rank` back.
+- **The pre-3.5 fallback is gone.** `combine` no longer falls back to the weighted mean of
+  per-descriptor training percentiles. It answered a different question, and keeping it
+  would have meant one `rank` column meaning two different things depending on when the
+  checkpoint was fitted, with nothing in the output to say which.
+- **`decision_cutoff_rank` is now exactly `0.65` on every model**, and `binary`
+  thresholds on it. What moves is `decision_cutoff_proba`, which is whatever 0.65 inverts
+  to for that model's reference. On the six antimicrobial models measured, the share of
+  DrugBank called active drops from 68-98% to 0.9-3.6%.
+
+  Gated on a new `decision_cutoff_source: "reference_rank"` key rather than on the presence
+  of `decision_cutoff_proba`, because every checkpoint has one of those. A checkpoint
+  without the key keeps `proba >= 0.5`, so **its labels are bit-identical to before.**
+- **`decision_cutoff_raw` changes scale.** It was a mean of per-head raw cutoffs living on
+  different quantities -- XGB raw probability, RF vote fraction, SVC sigmoid-of-margin, LR
+  probability -- which corresponded to nothing any output emits. It is now the cutoff in the
+  units the task's `score` output emits. Reporting only: `score_from_knots` is a running-max
+  staircase, so `score >= decision_cutoff_raw` is **not** equivalent to `binary`.
+- **`LazyClassifierQSAR.predict()` returns `combine`'s `binary`.** It used to recompute the
+  label from `proba` against a hardcoded 0.5, ignoring the `binary` it had just computed, so
+  the Python API and `--predict_type binary` could disagree. Pass `threshold=` to override.
+- **`LazyClassifier.predict()` (agnostic) thresholds proba, not score.** With a reference it
+  compares `predict_proba` against the rank-derived cutoff; without one it keeps comparing
+  `predict_score` against the balanced-accuracy cutoff, unchanged. The two entry points
+  agreed with neither each other nor the CLI before this.
+- **`anchor_low` no longer shapes the scale.** The tail table has no low anchor, so
+  `anchor_low_used` is always `False`. `p05` of the out-of-fold inactives is still measured
+  and recorded, because where a model's inactives sit is worth reporting.
+- **Fitting requires the reference library.** `lazyqsar setup --reference` fetches it, and
+  only the descriptors a model actually uses are downloaded -- 6.5 MB for a `fast` model,
+  267 MB for all five.
+
+### Added
+
+- **`sensitivity_at_cutoff` in `oof_diagnostics`** -- the share of a model's own known
+  actives it still catches while calling 1% of drug-like chemical space active. Sensitivity
+  at a fixed generic hit rate, the standard screening statistic.
+
+  This carries the signal `generic_hit_rate` gives up: now that the cutoff is a fixed point
+  on the rank scale, the hit rate is 0.01 by construction on every model. `generic_hit_rate`
+  is kept anyway, because it is a one-line check that inverting the rank landed where it
+  claims. Measured across six models `sensitivity_at_cutoff` reads 0.042 to 0.622, which
+  ranks them sensibly; a model fitted on shuffled labels catches almost none.
+
+  Precision at the cutoff is deliberately *not* reported. The out-of-fold inactives are
+  assay-matched analogues rather than generic chemistry, so a precision here would look
+  usable and not be -- the same trap the `oof_auc`-versus-`screening_auc` note describes.
+
+- **`oof_diagnostics` in every checkpoint, and in the fit log.** A rank on its own cannot be
+  judged, so a fitted model now records how it treats molecules whose labels are known:
+  where its out-of-fold actives and inactives land on the rank scale (quartiles, with
+  counts), a `screening_auc`, and a `generic_hit_rate`.
+
+  `screening_auc` is the out-of-fold actives against the reference library, and it answers a
+  question `oof_auc` does not. `oof_auc` separates actives from *measured inactives for that
+  target*, usually close analogues from the same assay; a screen instead asks whether actives
+  rise above generic chemical space. A model can do the first well and the second badly, and
+  then a real screen drowns in false positives.
+
+  `generic_hit_rate` is the share of drug-like chemical space the model would call active.
+  On the ChEMBL fixture a working model reports 0.6%; the same model fitted on shuffled
+  labels reports 34.9%, which is a more actionable statement about it than any accuracy
+  metric.
+
+  These are advisory and never enter the rank scale. Anchoring the scale on the out-of-fold
+  actives -- so that "0.95 means looks like a known active" -- was considered and rejected,
+  because it would put every model's median active at 0.95 by construction and make a model
+  with AUC 0.95 indistinguishable from one with AUC 0.55. Reported rather than anchored, the
+  numbers keep that signal: on shuffled labels the actives' band collapses onto the
+  inactives' instead of being pinned high.
+
+### Distribution
+
+- **Every checkpoint records `pooled_ranker.library.manifest_sha256`** -- one hash naming
+  the exact reference bundle the model was fitted against. The reference id cannot do that
+  job: it is a promise that a published bundle never changes, and nothing enforces it. A
+  bundle re-uploaded under the same id would leave every checkpoint ranking against a
+  different distribution than it claims, with nothing able to detect it. The manifest pins
+  each file by hash, so hashing the manifest collapses the whole bundle to one checkable
+  value.
+
+  It does not catch a changed *featurizer*. `manifest.check_environment`, the
+  descriptor-drift canary, still runs only from `scripts/verify_reference_bundle.py` and
+  never at fit time, so an install whose RDKit or neural checkpoints have moved will still
+  fit and rank against matrices it cannot reproduce.
+
+- **Fixed: the published URL was missing a path segment.** `PUBLIC_BASE_URL` read
+  `.../lazy-qsar/reference/`, but `eosvc` puts the bundle at `.../lazy-qsar/data/reference/`
+  -- `data/` is the prefix it treats as public. Any error message offering a user a download
+  URL pointed at nothing. It is now built from `EOSVC_REPO` and `EOSVC_ROOT`, the same two
+  constants the download itself uses, so the URL a client is pointed at is the object it
+  reads. A second, also-wrong copy in `scripts/reference/config.py` that nothing read has
+  been removed rather than corrected.
+
+- **The reference library is fetched with `eosvc`**, the same tool that publishes it, so
+  there is one path and one set of conventions rather than a publisher and an unrelated
+  reader that can disagree. No AWS credentials are needed: `eosvc` falls back to anonymous
+  access, which is all a public bucket read requires.
+
+  `eosvc` resolves its S3 prefix from the repository it runs inside, and an installed
+  package is not inside a checkout, so the client stages a minimal one and moves the files
+  into the cache afterwards. The cache layout owes `eosvc` nothing.
+
+- **`lazyqsar setup --reference [--only LIST]`**, plus a `lazyqsar reference` subcommand
+  with `status`, `fetch`, `verify` and `smiles`. Not implied by `--descriptors`: a
+  fast-mode model needs one 6.5 MB matrix and the whole bundle is 267 MB.
+
+- **Matrices are fetched lazily at fit**, once the portfolio has settled which descriptors
+  survive, so only what a model actually uses is downloaded.
+
+- `LAZYQSAR_REFERENCE_OFFLINE=1` refuses to fetch instead of reaching for the network,
+  which is what the test suite runs under and what an air-gapped node wants.
+
+### Renamed
+
+- **The out-of-fold percentile is no longer called a rank.** It is a different quantity from
+  `rank`: relative to a model's own training data, not comparable across models, and not
+  comparable with a position against the reference library. Both were `predict_rank`, which
+  is how one gets believed to be the other. It is now `_oof_percentile` throughout the
+  pipeline, where it serves its only real purpose -- weighting descriptors by how reliable
+  each looks at a given percentile.
+
+  The leaf estimators under `lazyqsar/base/` keep `predict_rank`. They are documented as
+  usable independently, each owns its own ECDF, and a percentile is a reasonable thing for a
+  standalone estimator to offer; the rename stops at the wrappers above them.
+
+- **`LazyClassifier.fit` accepts `reference_X=` / `reference_h5_file=`.** Pass the
+  descriptors of the molecules in `lazyqsar.reference.reference_smiles()`, computed with
+  your own featurizer and in that order, and `predict_rank` becomes available on the
+  descriptor-agnostic path with the same meaning it has everywhere else. A `.h5` reference
+  is read in chunks, so a large one is never held whole. The reference travels through
+  `save()` into the ONNX artifact, which `load()` returns.
+- **`LazyClassifier.predict_rank` raises when no reference was given at fit.** It used to
+  return the training-relative percentile under a name that promised a position against
+  drug-like chemical space. The error names `reference_X` and `reference_smiles()`; the
+  percentile itself survives as `_oof_percentile`.
+
+- **Descriptor-level metadata keys.** `pooled_ranker` becomes `oof_percentile` and
+  `decision_cutoff_rank` becomes `decision_cutoff_oof_percentile`. The first is a new key
+  rather than a redefinition: `pooled_ranker` means the reference library at the task level,
+  and a v3.5.x descriptor checkpoint carries out-of-fold knots under it, so reusing the name
+  would let the two be read as the same thing. An older checkpoint is therefore treated as
+  having no descriptor-level percentile and falls back to the graph, which is correct. The
+  cutoff's meaning did not change, so its old value is still read.
+
+- **`--predict_type rank` costs one pass, not two**, on a checkpoint without an
+  applicability domain. `required_channels` no longer requests the percentile channel for a
+  rank output, because a reference rank is read off the pooled probability.
+
+### Known limitations
+
+- **A loaded checkpoint does not reproduce the fitted model exactly.** The preprocessor
+  does -- `BasePreprocessor._bind_onnx_runtime` makes the fitted pipeline run its own
+  exported graph -- but the heads are not bound, so they compute float32 in ONNX against
+  scikit-learn's float64. Measured at the ensemble level over three antimicrobial datasets
+  and 4,000 DrugBank molecules in fast mode: **every molecule's `proba` differs, by at
+  most 1.8e-07**, `rank` by 2.9e-07, `score` by 8.0e-06, and **no `binary` label moves**.
+  Raising the export to double precision does not fix it (`svc` accepts
+  `DoubleTensorType` and silently stays float32; `xgb` has no double converter; `lr` in
+  double still lands at 2.2e-16 rather than 0), so the only route to bit-identity is
+  binding the heads the way the preprocessor is bound, which would shift every fitted
+  number. Until then the guarantee is bounded and enforced by
+  `tests/fit/test_ensemble_export_fidelity.py`. If you compare `predict_proba` before and
+  after a `save()`/`load()` round trip, expect to see this.
+- **The top of the scale is anchored on known molecules.** `0.95` is the 95th percentile
+  of the model's out-of-fold actives. Past the reference's p99.9 the library is too sparse
+  to resolve anything -- for a selective model the whole top 1% of a screen can sit inside a
+  single knot interval -- so the last stretch is pinned on molecules whose labels are known.
+  An anchor that does not clear p99.9 is dropped and the scale runs straight to certainty;
+  `anchor_high_used` records which branch was taken. That case is itself a finding: it means
+  the model's known actives do not reach the top 0.1% of drug-like chemical space. The cost
+  is that every model's top actives read 0.95 by construction, so the top of the scale does
+  not distinguish model quality -- `oof_diagnostics.screening_auc` and
+  `sensitivity_at_cutoff` carry that instead.
+- **The bottom of the scale is flattened.** Roughly a third of a generic library can land
+  below rank 0.25. That is the deliberate trade for spending the axis on the top of the
+  list, but it means `rank` carries little information about *how* inactive something is,
+  and nothing downstream should read low ranks quantitatively.
+- **A rank says nothing on its own about model skill.** A random model still puts 1% of the
+  reference above the cutoff, because the cutoff is defined that way. If the real problem is
+  that top-ranked compounds are not active, this relabels it rather than fixing it -- and
+  since every output is a monotone transform of one probability, none of them can separate a
+  false positive from a true positive that scores the same.
+- **The reference knot subsample caps the tail at p99.99.** `subsample_knots` thins 50,000
+  reference probabilities to 10,000 spaced evenly *in rank*, so 7,500 of them sit below the
+  third quartile -- the part of the library this scale discards. For a selective model the
+  binding constraint on tail resolution is therefore the subsample, not the anchor table: its
+  top 1% of compounds can fall inside one knot spacing. A tail-weighted subsample would cost
+  nothing in file size and is the obvious next step.
+- **`proba` remains conditioned on the training prior**, not the screening library's, so
+  this release does not make probabilities real-world-calibrated.
+- **The applicability-domain veto stays train-relative**, so diverse library compounds trip
+  it constantly and the per-sample gating largely degenerates in real screening.
+
+### The reference library
+
+50,000 molecules selected from the 1,355,109-molecule `ersilia_reference_library_v0`, by
+`scripts/select_reference_subset.py`. Two clusterings in two spaces: BitBIRCH on Morgan
+fingerprints collapses near-duplicates, so no two reference molecules are analogues, and
+MiniBatchKMeans on physchem descriptors supplies density strata. Slots per stratum are
+proportional to `size ** 0.5`, which compresses crowded regions without flattening the
+density that the percentile is quoted against -- proportional allocation left 52 of 10,000
+strata unrepresented, and equal allocation would answer "beats 99% of chemotypes" instead.
+
+Every selected molecule is CDDD-calculable by construction, which matters because CDDD
+refuses a dataset failing more than 0.1% of its filters and the library's own rate is
+1.88% -- a random 50,000-molecule slice would have made CDDD inapplicable.
+
+The anchoring is exact by construction and checked directly: whatever shape the reference
+has, 1% of it falls above rank 0.65 and 0.1% above 0.75, because those ranks *are* its p99
+and p99.9. (An earlier draft of this entry claimed a quarter above 0.75 and a quarter
+below 0.25 -- true of the quartile scale this release replaced, and the opposite of the
+point made under "Why the tail and not the quartiles" above: under tail anchoring half the
+reference sits below 0.25.)
+
 ## 3.5.0
 
 The CLI and the Python API now share one implementation. Before this release they fitted
@@ -68,7 +366,10 @@ This release removes an inconsistency, it does not claim a better model.
 
 ### Fixed
 
-- **The exported ONNX checkpoint now matches the model it was exported from.** It did not:
+- **The exported ONNX checkpoint now matches the model it was exported from, to a bounded
+  tolerance rather than exactly** — the heading in the released 3.5.0 notes omitted that
+  qualification; see 3.6.0's Known limitations for the measured bound. What follows is the
+  part that *is* exact. It did not:
   the exported preprocessor ran in float32 while scikit-learn ran it in float64, and
   although the two agreed to about one float32 ULP, the tree heads downstream are
   piecewise constant — a value landing a hair either side of a learned split fell into a

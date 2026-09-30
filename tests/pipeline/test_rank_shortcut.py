@@ -2,7 +2,7 @@
 
 On a pooled-reference checkpoint a rank is the training-set ECDF evaluated at the pooled
 probability — a table lookup, once that probability exists. The scoring loop computes the
-probability for every chunk anyway, so asking ``predict_rank`` for the rank re-ran every
+probability for every chunk anyway, so asking ``_oof_percentile`` for it re-ran every
 preprocessor and every head to arrive at a number already in hand.
 
 That is not a rounding-error saving. ``rank`` is the ``predict_type`` the Ersilia template
@@ -62,19 +62,60 @@ def test_a_cli_checkpoint_carries_the_pooled_reference(pooled_checkpoint):
     artifact = LazyClassifierArtifact.load(
         os.path.join(pooled_checkpoint["models"], "alpha", "morgan")
     )
-    assert artifact._pooled_rank_prepared is not None
+    assert artifact._oof_percentile_prepared is not None
+
+
+def test_the_descriptor_level_percentile_has_its_own_key(pooled_checkpoint):
+    """`pooled_ranker` means the reference library, and only at the task level.
+
+    The descriptor level stores the out-of-fold percentile the weighting uses, under
+    `oof_percentile`. Both were once called `pooled_ranker`, which is how one gets read as
+    the other.
+    """
+    path = os.path.join(pooled_checkpoint["models"], "alpha", "morgan", "metadata.json")
+    with open(path) as f:
+        meta = json.load(f)
+    assert (meta.get("oof_percentile") or {}).get("knots")
+    assert "pooled_ranker" not in meta
+    assert "decision_cutoff_oof_percentile" in meta
+
+
+def test_a_v35_descriptor_checkpoint_is_ignored_rather_than_misread(
+    pooled_checkpoint, tmp_path
+):
+    """The reason the key was minted new instead of redefined.
+
+    v3.5.x wrote out-of-fold knots under `pooled_ranker` at this level. Reusing that name
+    would have let them be read as the reference library -- monotone, in [0, 1], and wrong
+    in a way nothing downstream could detect. Under the new name they are simply absent, and
+    the artifact falls back to the graph, which is correct.
+    """
+    import shutil
+
+    source = os.path.join(pooled_checkpoint["models"], "alpha", "morgan")
+    legacy = str(tmp_path / "legacy")
+    shutil.copytree(source, legacy)
+    path = os.path.join(legacy, "metadata.json")
+    with open(path) as f:
+        meta = json.load(f)
+    meta["pooled_ranker"] = meta.pop("oof_percentile")
+    with open(path, "w") as f:
+        json.dump(meta, f)
+
+    artifact = LazyClassifierArtifact.load(legacy)
+    assert artifact._oof_percentile_prepared is None
 
 
 def test_the_shortcut_gives_the_graph_s_answer_exactly(scored):
     """Equal, not close. The shortcut is the same computation with the graph skipped.
 
-    ``predict_rank`` interpolates the ECDF at ``predict_proba(X)[:, 1]``; the shortcut
+    ``_oof_percentile`` interpolates the ECDF at ``predict_proba(X)[:, 1]``; the shortcut
     interpolates it at the probability the caller already computed from the same rows. If
     these ever diverge, the ranks LazyQSAR deploys with have changed.
     """
     artifact, X = scored
-    from_proba = artifact.rank_from_proba(artifact.predict_proba(X)[:, 1])
-    from_graph = artifact.predict_rank(X)[:, 1]
+    from_proba = artifact._oof_percentile_from_proba(artifact.predict_proba(X)[:, 1])
+    from_graph = artifact._oof_percentile(X)[:, 1]
     np.testing.assert_array_equal(from_proba, from_graph)
 
 
@@ -100,9 +141,9 @@ def test_asking_for_the_rank_channel_costs_no_extra_onnx_runs(scored, onnx_calls
 def test_a_checkpoint_without_the_reference_still_ranks(scored, monkeypatch):
     """Pre-v3.5.0 checkpoints have no ECDF, so their rank really does need the graph."""
     artifact, X = scored
-    monkeypatch.setattr(artifact, "_pooled_rank_prepared", None)
+    monkeypatch.setattr(artifact, "_oof_percentile_prepared", None)
 
-    assert artifact.rank_from_proba(artifact.predict_proba(X)[:, 1]) is None
+    assert artifact._oof_percentile_from_proba(artifact.predict_proba(X)[:, 1]) is None
     channels = _score_chunks([X], artifact, None, {"y", "r"})
     assert channels.r is not None and channels.r.shape == (len(X),)
 
@@ -183,13 +224,21 @@ def test_a_checkpoint_without_the_map_keeps_the_old_score(pooled_checkpoint, tmp
     )
 
 
-def test_score_agrees_with_proba_across_several_descriptors(tmp_path, stub_descriptors):
+def test_score_agrees_with_proba_across_several_descriptors(
+    tmp_path, stub_descriptors, monkeypatch
+):
     """The multi-descriptor case, which is the only one where this can actually fail.
 
     With a single descriptor the weights collapse to one column and the pre-3.5.0 fallback
     degenerates to ``score == proba``, so a fast-mode fixture cannot tell a working pooled
-    map from a broken one. Slow mode over five stubbed descriptors is where independent raw
-    pooling genuinely reorders, and therefore where the map has to do its job.
+    map from a broken one. Independent raw pooling has to genuinely reorder, which needs
+    more than one descriptor -- but not all five. Slow mode is narrowed to three here: it
+    was the slowest single call in the suite at 4.4 s, and the third descriptor adds no
+    argument the second does not already make.
+
+    The mode list is narrowed rather than the stub set, because ``fit(mode="slow")`` reads
+    that list -- stubbing only three of five would leave the other two real, which is how
+    this test would start needing RDKit and torch.
     """
     import contextlib
     import io
@@ -198,7 +247,9 @@ def test_score_agrees_with_proba_across_several_descriptors(tmp_path, stub_descr
     from lazyqsar.api.classifier_predict import predict
     from lazyqsar.registry import DESCRIPTORS_MODE
 
-    stub_descriptors(*DESCRIPTORS_MODE["slow"])
+    narrowed = ["cddd", "morgan", "rdkit"]
+    monkeypatch.setitem(DESCRIPTORS_MODE, "slow", narrowed)
+    stub_descriptors(*narrowed)
     smiles = make_smiles(80)
     rng = np.random.default_rng(17)
     y = rng.integers(0, 2, len(smiles))
@@ -226,5 +277,5 @@ def test_score_agrees_with_proba_across_several_descriptors(tmp_path, stub_descr
     for other in ("logit", "rank", "score"):
         assert flipped(out["proba"], out[other]) == 0, (
             f"{other} disagrees with proba about "
-            f"{flipped(out['proba'], out[other])} pairs across five descriptors"
+            f"{flipped(out['proba'], out[other])} pairs across several descriptors"
         )

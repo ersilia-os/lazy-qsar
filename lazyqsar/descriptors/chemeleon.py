@@ -3,10 +3,10 @@ import json
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor
 from rdkit import Chem
+from ..utils.checkpoints import CHECKPOINT_SHA256, CHEMELEON_URL, checkpoint_dir
+from ..utils.fetch import fetch
 from ..utils.logging import logger
 
-from pathlib import Path
-from urllib.request import urlretrieve
 
 try:
     import torch
@@ -43,14 +43,18 @@ class _CheMeleonFingerprint:
     def __init__(self, device: str | torch.device | None = None):
         self.featurizer = featurizers.SimpleMoleculeMolGraphFeaturizer()
         agg = nn.MeanAggregation()
-        ckpt_dir = Path().home() / ".lazyqsar"
-        ckpt_dir.mkdir(exist_ok=True)
+        ckpt_dir = checkpoint_dir()
+        ckpt_dir.mkdir(parents=True, exist_ok=True)
         mp_path = ckpt_dir / "chemeleon_mp.pt"
-        if not mp_path.exists():
-            urlretrieve(
-                r"https://zenodo.org/records/15460715/files/chemeleon_mp.pt",
-                mp_path,
-            )
+        # `fetch`, not `urlretrieve`: this used to write straight to the final path, so an
+        # interrupted first predict left a truncated checkpoint that `exists()` then
+        # considered done forever.
+        fetch(
+            CHEMELEON_URL,
+            mp_path,
+            sha256=CHECKPOINT_SHA256.get("chemeleon_mp.pt"),
+            description="chemeleon_mp.pt",
+        )
         chemeleon_mp = torch.load(mp_path, weights_only=True)
         mp = nn.BondMessagePassing(**chemeleon_mp["hyper_parameters"])
         mp.load_state_dict(chemeleon_mp["state_dict"])

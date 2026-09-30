@@ -38,7 +38,26 @@ if _sys.platform == "darwin":
 
 from .utils.logging import logger as _logger  # noqa: E402
 
+# Read from the installed distribution rather than hardcoded, so it cannot drift from
+# pyproject.toml -- which the release workflow already asserts against the git tag. There
+# was no `__version__` at all before 3.6, which mattered precisely because 3.6 changed
+# what `rank` means: a user holding a checkpoint and a set of numbers had no way to ask
+# which version produced them.
+try:
+    from importlib.metadata import PackageNotFoundError as _PackageNotFoundError
+    from importlib.metadata import version as _version
+
+    try:
+        __version__ = _version("lazyqsar")
+    except _PackageNotFoundError:  # pragma: no cover - running from a source tree
+        __version__ = "unknown"
+except ImportError:  # pragma: no cover - importlib.metadata is stdlib on 3.11+
+    __version__ = "unknown"
+
 
 def set_verbosity(verbose: bool) -> None:
     """Enable (True) or disable (False) verbose logging globally."""
     _logger.set_verbosity(verbose)
+
+
+__all__ = ["__version__", "set_verbosity"]

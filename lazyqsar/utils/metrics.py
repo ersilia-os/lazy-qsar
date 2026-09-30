@@ -113,8 +113,13 @@ def bedroc_score(y_true: np.ndarray, y_score: np.ndarray, alpha: float = 20.0) -
     rie = ri_sum / denom
 
     rie_min, rie_max = _bedroc_rie_components(n=n, n_a=n_a, alpha=alpha)
-
-    return float((rie - rie_min) / (rie_max - rie_min))
+    # The same guard `bedroc_random_baseline` already carries. Without it a tiny input
+    # (n=4, n_a=3) returned -1.3e-18 -- outside the documented [0, 1] -- because the
+    # normalising range collapses when almost every molecule is active.
+    denom = rie_max - rie_min
+    if denom <= 0.0 or not np.isfinite(denom):
+        return 0.0
+    return _clip01((rie - rie_min) / denom)
 
 
 def aupr_score(y_true: np.ndarray, y_score: np.ndarray) -> float:

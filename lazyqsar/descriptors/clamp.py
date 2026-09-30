@@ -2,14 +2,14 @@ import os
 import json
 import numpy as np
 import onnxruntime as ort
-from pathlib import Path
-from urllib.request import urlretrieve
 
 from rdkit import Chem
 from rdkit.Chem import AllChem
 from rdkit.Chem.rdmolops import FastFindRings
 from rdkit import RDLogger
 
+from ..utils.checkpoints import CHECKPOINT_SHA256, checkpoint_dir
+from ..utils.fetch import fetch
 from ..utils.logging import logger
 
 RDLogger.DisableLog("rdApp.*")
@@ -70,15 +70,17 @@ class ClampDescriptor:
     def _ensure_model(self):
         if self._session is not None:
             return
-        ckpt_dir = Path.home() / ".lazyqsar"
-        ckpt_dir.mkdir(exist_ok=True)
+        ckpt_dir = checkpoint_dir()
+        ckpt_dir.mkdir(parents=True, exist_ok=True)
         model_path = ckpt_dir / "clamp_encoder.onnx"
-        if not model_path.exists():
-            logger.info(
-                f"Downloading CLAMP encoder model (~167 MB) to {model_path} ..."
-            )
-            urlretrieve(_CLAMP_ONNX_URL, model_path)
-            logger.info("CLAMP model downloaded.")
+        # Verified and atomic: a half-written 167 MB encoder used to be cached forever and
+        # fail later as an opaque ONNX parse error rather than as a failed download.
+        fetch(
+            _CLAMP_ONNX_URL,
+            model_path,
+            sha256=CHECKPOINT_SHA256.get("clamp_encoder.onnx"),
+            description="clamp_encoder.onnx",
+        )
         self._session = ort.InferenceSession(
             str(model_path), providers=["CPUExecutionProvider"]
         )

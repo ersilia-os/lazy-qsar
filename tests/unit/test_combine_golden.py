@@ -18,12 +18,12 @@ IEEE-754 pins exactly". Two holes in that. ``build_weight_matrix`` ends in
 ``W /= W.sum(axis=1, keepdims=True)``, and a sum is a reduction whose blocking numpy picks
 per SIMD width; and since ``rank`` became the pooled reference evaluated at the pooled
 probability it is computed *from* ``p1``, so it inherits ``np.exp`` -- as ``score`` does now
-that it is read off the same probability through a stored map. 17 of the 31 scenarios failed
+that it is read off the same probability through a stored map. 17 of the scenarios then in the file failed
 on x86 against a file frozen on arm64, printing identically to eight significant figures.
 
 How far apart the two architectures can actually be, measured rather than assumed: the
-arithmetic was reimplemented, checked to reproduce ``combine()`` bit-for-bit on all 31
-scenarios, then re-run with every ``axis=1`` reduction replaced by ``math.fsum`` (exactly
+arithmetic was reimplemented, checked to reproduce ``combine()`` bit-for-bit on every
+scenario, then re-run with every ``axis=1`` reduction replaced by ``math.fsum`` (exactly
 rounded, so it brackets any SIMD width a numpy build can choose) and every ``np.log``/
 ``np.exp`` result nudged one ULP away from zero (the worst libm disagreement). Worst case
 over all scenarios, both perturbations at once:

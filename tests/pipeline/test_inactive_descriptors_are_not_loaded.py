@@ -22,50 +22,23 @@ from _helpers.smiles import make_smiles
 
 from lazyqsar.qsar import LazyClassifierQSAR
 
-INACTIVE = "rdkit"
-
-
-@pytest.fixture
-def pruned(tmp_path, stub_descriptors):
-    """A three-descriptor checkpoint with one marked inactive, as a fit would leave it."""
-    descriptors = ["morgan", "rdkit", "cddd"]
-    stub_descriptors(*descriptors)
-    rng = np.random.default_rng(7)
-    smiles = make_smiles(70)
-    y = rng.integers(0, 2, len(smiles))
-    y[:8] = 1
-    y[-8:] = 0
-
-    root = str(tmp_path / "models")
-    task_dir = build_checkpoint(root, "task", descriptors, smiles, y)
-    meta_path = os.path.join(task_dir, "metadata.json")
-    with open(meta_path) as f:
-        meta = json.load(f)
-    meta["active_descriptors"] = {d: d != INACTIVE for d in descriptors}
-    with open(meta_path, "w") as f:
-        json.dump(meta, f)
-    return {
-        "root": root,
-        "task_dir": task_dir,
-        "smiles": smiles,
-        "descriptors": descriptors,
-    }
-
 
 @pytest.mark.parametrize("loader", ["load", "load_raw"])
-def test_the_rejected_descriptor_is_never_opened(pruned, loader):
+def test_the_rejected_descriptor_is_never_opened(pruned_checkpoint, loader):
     """Its slot comes back empty, and its featurizer is never asked for a single row."""
     from _helpers.stubs import CountingStub
 
     CountingStub.reset()
-    model = getattr(LazyClassifierQSAR, loader)(pruned["task_dir"])
+    model = getattr(LazyClassifierQSAR, loader)(pruned_checkpoint["task_dir"])
     assert CountingStub.calls == [], "loading a checkpoint featurized something"
 
     held = model.artifacts if loader == "load" else model.models
     # Both loaders sort the descriptor directories, so positions are in sorted order --
     # ask the object rather than assuming the order the checkpoint was built in.
-    position = model.descriptor_types.index(INACTIVE)
-    assert held[position] is None, f"{INACTIVE} was loaded despite being inactive"
+    position = model.descriptor_types.index(pruned_checkpoint["inactive"])
+    assert held[position] is None, (
+        f"{pruned_checkpoint['inactive']} was loaded despite being inactive"
+    )
     assert model.descriptors[position] is None
     assert all(i == position or held[i] is not None for i in range(len(held))), (
         "an active descriptor was skipped"
@@ -73,22 +46,22 @@ def test_the_rejected_descriptor_is_never_opened(pruned, loader):
 
 
 @pytest.mark.parametrize("loader", ["load", "load_raw"])
-def test_the_lists_stay_index_aligned(pruned, loader):
+def test_the_lists_stay_index_aligned(pruned_checkpoint, loader):
     """The skipped slot is kept, not dropped.
 
     ``_spec_from_attributes`` and both ``_channels`` implementations index the
     per-descriptor lists by full position, so compacting them would silently pair a
     descriptor with another one's AUC.
     """
-    model = getattr(LazyClassifierQSAR, loader)(pruned["task_dir"])
-    n = len(pruned["descriptors"])
+    model = getattr(LazyClassifierQSAR, loader)(pruned_checkpoint["task_dir"])
+    n = len(pruned_checkpoint["descriptors"])
     held = model.artifacts if loader == "load" else model.models
     assert len(held) == n
     assert len(model.descriptors) == n
-    assert model.descriptor_types == sorted(pruned["descriptors"])
+    assert model.descriptor_types == sorted(pruned_checkpoint["descriptors"])
 
 
-def test_predictions_are_unchanged_by_not_loading_it(pruned):
+def test_predictions_are_unchanged_by_not_loading_it(pruned_checkpoint):
     """Skipping the load must not move a number: it was never scored in the first place.
 
     Checked against the runner, which resolves the active set independently from the same
@@ -97,12 +70,12 @@ def test_predictions_are_unchanged_by_not_loading_it(pruned):
     """
     from lazyqsar.ensemble.runner import predict_tasks, sources_from_parent
 
-    query = pruned["smiles"][:20]
-    wrapper = LazyClassifierQSAR.load(pruned["task_dir"])
+    query = pruned_checkpoint["smiles"][:20]
+    wrapper = LazyClassifierQSAR.load(pruned_checkpoint["task_dir"])
     from_wrapper = wrapper.predict_proba(query)[:, 1]
 
     results = predict_tasks(
-        sources_from_parent(pruned["root"]), query, outputs=("proba",)
+        sources_from_parent(pruned_checkpoint["root"]), query, outputs=("proba",)
     )
     from_runner = results[0].values["proba"][:, 1]
 

@@ -4,6 +4,7 @@ import time as _time
 import numpy as np
 
 from lazyqsar.utils.ranking import (
+    DECISION_CUTOFF_SOURCE,
     binarize,
     prepare_knots,
     rank_from_knots,
@@ -18,6 +19,7 @@ from ..heads.classification.rf import Head as RFHead
 from ..heads.classification.svc import Head as SVCHead
 from ..poolers.classification import InnerPooler
 from lazyqsar.utils.logging import logger
+from lazyqsar.utils.splits import check_trainable
 
 
 def _correct_prior(p1, train_prior, population_prior):
@@ -249,10 +251,10 @@ class _BatchLazyClassifier(object):
         score_1 = (W * R).sum(axis=1)
         return np.column_stack([1 - score_1, score_1])
 
-    def predict_rank(self, X):
+    def _oof_percentile(self, X):
         """Return gated rank quantiles (0–1), shape (n, 2)."""
         X_prep = self.prep.transform(X)
-        R = np.column_stack([head.predict_rank(X_prep)[:, 1] for head in self.heads])
+        R = np.column_stack([head._oof_percentile(X_prep)[:, 1] for head in self.heads])
         W = self.pooler.get_weights(X_prep)
         rank_1 = (W * R).sum(axis=1)
         return np.column_stack([1 - rank_1, rank_1])
@@ -331,6 +333,7 @@ class LazyClassifier(object):
         per batch in sequence.
         """
         logger.rule("LazyClassifier — fit")
+        check_trainable(y, where="LazyClassifier.fit")
         self.population_prior_ = float(np.mean(y == 1))
 
         p = Portfolio()
@@ -395,38 +398,54 @@ class LazyClassifier(object):
             if _prior and _prior > 0
             else None
         )
-        self._build_pooled_rank_reference(X)
+        self._build_oof_percentile(X)
         self.oof_auc_ = self._compute_oof_auc(X, y, batch_indices)
         self.train_auc_ = self._compute_train_auc(X, y)
+
+        def _auc(value):
+            return "unknown" if value is None else f"{value:.4f}"
+
         logger.success(
             f"LazyClassifier fitted — "
             f"{n_batches} batch(es)  portfolio={self.portfolio}  "
-            f"OOF AUC={self.oof_auc_:.4f}  train AUC={self.train_auc_:.4f}"
+            f"OOF AUC={_auc(self.oof_auc_)}  train AUC={_auc(self.train_auc_)}"
         )
 
     def _compute_train_auc(self, X, y) -> float:
+        """Training-set AUC, or ``None`` when it could not be computed.
+
+        It used to return 0.5 on failure, which is indistinguishable from a genuine
+        coin-flip AUC and is *rewarded* downstream: `LazyClassifierQSAR` derives
+        ``quality = 2*oof - train``, so a failed computation on a strong descriptor gives
+        it a quality above 1 and the largest weight in the ensemble. `None` propagates the
+        ignorance instead, and the failure is logged rather than swallowed.
+        """
         from sklearn.metrics import roc_auc_score
 
         try:
             train_proba = self.predict_proba(X)[:, 1]
             return float(roc_auc_score(y, train_proba))
-        except Exception:
-            return 0.5
+        except Exception as exc:  # noqa: BLE001 - reported, then degraded deliberately
+            logger.warning(
+                f"Training AUC could not be computed ({type(exc).__name__}: {exc}); "
+                "this descriptor's quality weight falls back to its out-of-fold AUC."
+            )
+            return None
 
-    def _build_pooled_rank_reference(self, X):
-        """Learn the out-of-fold probability distribution ``predict_rank`` reports against.
+    def _build_oof_percentile(self, X):
+        """Learn the out-of-fold probability distribution ``_oof_percentile`` reports against.
 
-        Sets ``pooled_rank_knots_``, which is persisted, and its prepared form. Both stay
-        ``None`` when out-of-fold data is unavailable, and ``predict_rank`` then keeps its
+        Sets ``oof_percentile_knots_``, which is persisted, and its prepared form. Both stay
+        ``None`` when out-of-fold data is unavailable, and ``_oof_percentile`` then keeps its
         pre-v3.5.0 behaviour.
         """
-        self.pooled_rank_knots_ = None
-        self._pooled_rank_prepared_ = None
+        self.oof_percentile_knots_ = None
+        self._oof_percentile_prepared_ = None
         pooled = self._oof_accumulate(X)
         if pooled is None:
             return
-        self.pooled_rank_knots_ = subsample_knots(np.sort(pooled[0]))
-        self._pooled_rank_prepared_ = prepare_knots(self.pooled_rank_knots_)
+        self.oof_percentile_knots_ = subsample_knots(np.sort(pooled[0]))
+        self._oof_percentile_prepared_ = prepare_knots(self.oof_percentile_knots_)
 
     def _oof_accumulate(self, X):
         """Pooled out-of-fold ``(proba, score)`` per training row, or None.
@@ -500,7 +519,7 @@ class LazyClassifier(object):
         evaluated at ``proba``, so it is uniform by construction -- which is what makes it
         a usable self-check on the reference rather than a second opinion about it.
         """
-        prepared = getattr(self, "_pooled_rank_prepared_", None)
+        prepared = getattr(self, "_oof_percentile_prepared_", None)
         pooled = self._oof_accumulate(X)
         if pooled is None or prepared is None:
             return None
@@ -517,15 +536,26 @@ class LazyClassifier(object):
                 if not all(
                     hasattr(getattr(h, "model", None), "oof_probas_") for h in heads
                 ):
-                    return 0.5
+                    logger.warning(
+                        "A head in this batch kept no out-of-fold probabilities, so the "
+                        "out-of-fold AUC is unknown for this descriptor."
+                    )
+                    return None
                 S = np.column_stack([h.model.oof_probas_ for h in heads])
                 X_prep = batch_clf.prep.transform(X[indices])
                 W_oof = batch_clf.pooler.get_weights(X_prep)
                 pooled = (W_oof * S).sum(axis=1)
                 batch_aucs.append(roc_auc_score(y[indices], pooled))
             return float(np.mean(batch_aucs))
-        except Exception:
-            return 0.5
+        except Exception as exc:  # noqa: BLE001 - reported, then degraded deliberately
+            # Not 0.5: that sits below the 0.55 pruning floor in `LazyClassifierQSAR`, so
+            # a failed computation silently *deleted* the descriptor rather than
+            # admitting it did not know.
+            logger.warning(
+                f"Out-of-fold AUC could not be computed ({type(exc).__name__}: {exc}); "
+                "this descriptor is kept, with an unknown out-of-fold AUC."
+            )
+            return None
 
     def predict_proba(self, X):
         """Return prior-corrected calibrated probabilities, shape (n, 2)."""
@@ -561,7 +591,7 @@ class LazyClassifier(object):
         proba = R.mean(axis=0)
         return np.array([1 - proba, proba]).T
 
-    def predict_rank(self, X):
+    def _oof_percentile(self, X):
         """Return the training-set percentile of the pooled probability, shape (n, 2).
 
         Not an average of the batches' percentiles: averaging percentiles does not give
@@ -573,20 +603,34 @@ class LazyClassifier(object):
 
         Falls back to the batch average for models fitted before the reference existed.
         """
-        prepared = getattr(self, "_pooled_rank_prepared_", None)
+        prepared = getattr(self, "_oof_percentile_prepared_", None)
         if prepared is None:
-            knots = getattr(self, "pooled_rank_knots_", None)
+            knots = getattr(self, "oof_percentile_knots_", None)
             if knots is not None and len(knots):
-                prepared = self._pooled_rank_prepared_ = prepare_knots(knots)
+                prepared = self._oof_percentile_prepared_ = prepare_knots(knots)
         if prepared is not None:
             rank_1 = rank_from_knots(self.predict_proba(X)[:, 1], prepared=prepared)
             return np.column_stack([1 - rank_1, rank_1])
-        R = np.array([model.predict_rank(X)[:, 1] for model in self.models])
+        R = np.array([model._oof_percentile(X)[:, 1] for model in self.models])
         rank_1 = R.mean(axis=0)
         return np.column_stack([1 - rank_1, rank_1])
 
     def predict(self, X, cutoff=None):
-        """Return binary labels using the OOF-learned decision cutoff."""
+        """Return binary labels using this model's decision cutoff.
+
+        Two paths, branching on what the cutoff *is* rather than on any setting:
+
+        - A cutoff placed on the reference rank scale exists in probability units only, so
+          it is compared against ``predict_proba``. The model then calls a known fraction of
+          drug-like chemical space active.
+        - Without a reference there is no such cutoff, and the out-of-fold
+          balanced-accuracy threshold is compared against ``predict_score`` exactly as
+          before, so a model fitted without one labels bit-identically.
+        """
+        if cutoff is None and getattr(self, "decision_cutoff_source_", None) == (
+            DECISION_CUTOFF_SOURCE
+        ):
+            return binarize(self.predict_proba(X)[:, 1], self.decision_cutoff_proba_)
         threshold = self.decision_cutoff_raw_ if cutoff is None else cutoff
         return binarize(self.predict_score(X)[:, 1], threshold)
 
@@ -604,20 +648,45 @@ class LazyClassifier(object):
             "batch_priors": self.batch_priors_,
             "decision_cutoff_raw": self.decision_cutoff_raw_,
             "decision_cutoff_proba": self.decision_cutoff_proba_,
-            "decision_cutoff_rank": self.decision_cutoff_rank_,
+            # Named for what it is: a percentile against this model's own out-of-fold
+            # scores, not a position against the reference library. The task-level
+            # `decision_cutoff_rank` is the latter, and the two must not be confused.
+            "decision_cutoff_oof_percentile": self.decision_cutoff_rank_,
             "decision_cutoff_logit": self.decision_cutoff_logit_,
             "decision_cutoff_lift": self.decision_cutoff_lift_,
+            # Names which of the two cutoff conventions this checkpoint carries, so the
+            # artifact's `predict` can branch on data rather than guessing from the value.
+            "decision_cutoff_source": getattr(self, "decision_cutoff_source_", None),
         }
-        knots = getattr(self, "pooled_rank_knots_", None)
+        reference_rank = getattr(self, "decision_cutoff_reference_rank_", None)
+        if reference_rank is not None:
+            # Only when the cutoff was placed against a reference library, and under the
+            # same key the task level uses for that position.
+            metadata["decision_cutoff_rank"] = float(reference_rank)
+        knots = getattr(self, "oof_percentile_knots_", None)
         if knots is not None and len(knots):
-            # The distribution `predict_rank` reports against. Without it a loaded
-            # checkpoint would fall back to averaging the batches' percentiles and stop
-            # agreeing with the model it came from.
-            metadata["pooled_ranker"] = {
+            # A new key, not a redefinition of `pooled_ranker`. That name means the
+            # reference library at the task level, and a v3.5.x descriptor checkpoint
+            # carries out-of-fold knots under it -- so reusing it here would let the two be
+            # read as the same thing. Under the new name an old checkpoint simply has none,
+            # and falls back to the graph, which is correct.
+            metadata["oof_percentile"] = {
                 "knots": np.asarray(knots, dtype=np.float64).tolist(),
                 "n_train": int(len(knots)),
-                "source": "oof",
             }
+        ref = getattr(self, "reference_rank_knots_", None)
+        if ref is not None and len(ref):
+            # `pooled_ranker` means the reference library wherever it appears, so the
+            # agnostic path writes the same block the task level does and is read by the
+            # same code. The out-of-fold percentile lives under `oof_percentile` above.
+            metadata["pooled_ranker"] = {
+                "knots": np.asarray(ref, dtype=np.float64).tolist(),
+                "n_train": int(len(ref)),
+                "source": "reference_library",
+            }
+            anchors = getattr(self, "reference_rank_anchors_", None)
+            if anchors:
+                metadata["pooled_ranker"].update(anchors)
         with open(f"{directory}/metadata.json", "w") as f:
             json.dump(metadata, f, indent=4)
         logger.success(f"Saved {len(self.models)} batch(es) to {directory!r}")

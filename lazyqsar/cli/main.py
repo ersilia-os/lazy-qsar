@@ -3,21 +3,44 @@ lazyqsar — unified CLI entry point.
 
 Subcommands
 -----------
-lazyqsar setup [--descriptors] [--fit] [--only LIST] [--target-dir DIR]
-    Install optional dependencies and download model checkpoints.
-    --only       Comma-separated subset of descriptors to download: chemeleon, cddd, clamp.
-                 Default: all three. Only meaningful with --descriptors.
-    --target-dir Directory to write checkpoint files into (default: ~/.lazyqsar/).
-                 Only meaningful with --descriptors.
+lazyqsar setup [--descriptors] [--fit] [--reference] [--only LIST] [--target-dir DIR]
+               [--cpu-torch]
+    Install optional dependencies and download what the descriptors and `rank` need.
+    --descriptors  Install the descriptor extra and download the Chemeleon / CDDD
+                   checkpoints.
+    --fit          Install the fit extra (scikit-learn, xgboost, scipy, skl2onnx,
+                   onnxmltools, joblib, eosvc). Read out of the package metadata, so it
+                   cannot drift from `pip install lazyqsar[fit]`.
+    --reference    Download the reference library `rank` is reported against. Not implied
+                   by --descriptors: a fast-mode model needs one 6.5 MB matrix and the
+                   whole bundle is 267 MB.
+    --only         Comma-separated subset. With --descriptors: chemeleon, cddd, clamp.
+                   With --reference: any descriptor in the registry, so also morgan and
+                   rdkit.
+    --target-dir   Where to write. Sets LAZYQSAR_HOME, so it moves the reference cache as
+                   well as the descriptor checkpoints (default: ~/.lazyqsar/).
+    --cpu-torch    Reinstall torch from PyTorch's CPU index, replacing a CUDA wheel pip
+                   may have pulled from PyPI. Only meaningful with --descriptors.
+
+lazyqsar reference {status,fetch,verify,smiles} [--only LIST] [--output FILE] [--force]
+    Inspect or fetch the reference library `rank` is a position against.
+    status   What is cached, and what it would cost to complete.
+    fetch    Download it. --force re-downloads what is already cached.
+    verify   Check what is cached against the published manifest.
+    smiles   Write the molecule list, which is all a bring-your-own-descriptor caller
+             needs in order to pass `reference_X=` to LazyClassifier.fit.
 
 lazyqsar fit --task classification --input DATA_DIR --output MODEL_DIR [--mode MODE] [--models_txt FILE]
-    Fit a classifier on CSV data.
+    Fit a classifier on CSV data. One CSV per task, SMILES first column, label second.
 
 lazyqsar predict --input INPUT_CSV --model MODEL_DIR --output OUTPUT_CSV [--models_txt FILE]
+                 [--predict_type TYPE]
     Run predictions with a saved model.
+    --predict_type  One of proba, rank, logit, lift, score, binary (default: proba).
 """
 
 import argparse
+import os
 import sys
 
 
@@ -30,27 +53,79 @@ _ALL_DESCRIPTORS = {"chemeleon", "cddd", "clamp"}
 
 
 def _cmd_setup(args):
-    if not args.descriptors and not args.fit:
-        print("Nothing to do. Use --descriptors, --fit, or both.", file=sys.stderr)
+    reference = getattr(args, "reference", False)
+    if not args.descriptors and not args.fit and not reference:
+        print(
+            "Nothing to do. Use --descriptors, --fit, --reference, or a combination.",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
-    if not args.descriptors:
+    if not args.descriptors and not reference:
         for flag, name in [
             (args.only, "--only"),
             (args.target_dir, "--target-dir"),
-            (args.cpu_torch, "--cpu-torch"),
         ]:
             if flag:
                 print(
-                    f"Warning: {name} has no effect without --descriptors.",
+                    f"Warning: {name} has no effect without --descriptors "
+                    "or --reference.",
                     file=sys.stderr,
                 )
+    if args.cpu_torch and not args.descriptors:
+        print(
+            "Warning: --cpu-torch has no effect without --descriptors.", file=sys.stderr
+        )
 
     if args.fit:
         _setup_fit()
 
     if args.descriptors:
         _setup_descriptors(args)
+
+    # Deliberately not implied by --descriptors: a fast-mode model needs one 6.5 MB matrix,
+    # and the whole bundle is 267 MB. Asking for it is the opt-in.
+    if reference:
+        _setup_reference(args)
+
+
+def _reference_descriptors(only):
+    """Which reference matrices to fetch: the named subset, or everything shipped."""
+    from ..registry import DESCRIPTOR_TYPES
+
+    known = set(DESCRIPTOR_TYPES)
+    if not only:
+        return sorted(known)
+    names = [n.strip() for n in only.split(",") if n.strip()]
+    unknown = sorted(set(names) - known)
+    if unknown:
+        print(
+            f"Unknown descriptor(s): {', '.join(unknown)}. "
+            f"Known: {', '.join(sorted(known))}.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    return names
+
+
+def _setup_reference(args):
+    from ..reference import identity
+    from ..reference.download import ReferenceDownloadError, download
+
+    if args.target_dir:
+        os.environ["LAZYQSAR_HOME"] = args.target_dir
+
+    names = _reference_descriptors(args.only)
+    n = identity.default_n()
+    files = [identity.smiles_filename(n)] + [
+        identity.descriptor_filename(name, n) for name in names
+    ]
+    try:
+        download(files, n=n)
+    except ReferenceDownloadError as exc:
+        print(str(exc), file=sys.stderr)
+        sys.exit(1)
+    print(f"Reference library ready in {identity.reference_dir()}")
 
 
 def _extra_requirements(extra: str) -> list:
@@ -70,7 +145,7 @@ def _extra_requirements(extra: str) -> list:
         if marker not in req:
             continue
         spec = req.split(";", 1)[0]
-        # Metadata spells these "scikit-learn (==1.6.1)"; pip wants "scikit-learn==1.6.1".
+        # Metadata spells these "scikit-learn (==1.9.1)"; pip wants "scikit-learn==1.6.1".
         spec = spec.replace("(", "").replace(")", "").replace(" ", "")
         # `all` is expressed as a self-reference; installing it here would recurse.
         if spec.lower().startswith("lazyqsar"):
@@ -179,6 +254,57 @@ def _cmd_predict(args):
 # ---------------------------------------------------------------------------
 
 
+def _cmd_reference(args):
+    from ..reference import identity, store
+    from ..reference.download import ReferenceDownloadError, download
+
+    n = identity.default_n()
+
+    if args.action == "status":
+        state = store.status(n)
+        print(f"reference : {state['reference_id']}  (tier {state['n']:,})")
+        print(f"directory : {state['dir']}")
+        if not state["files"]:
+            print("  nothing cached. Fetch with `lazyqsar setup --reference`.")
+            return
+        for name, size in sorted(state["files"].items()):
+            print(f"  {name:<32} {size / 1e6:8.1f} MB")
+
+    elif args.action == "fetch":
+        names = _reference_descriptors(args.only)
+        files = [identity.smiles_filename(n)] + [
+            identity.descriptor_filename(name, n) for name in names
+        ]
+        try:
+            download(files, n=n, force=args.force)
+        except ReferenceDownloadError as exc:
+            print(str(exc), file=sys.stderr)
+            sys.exit(1)
+
+    elif args.action == "verify":
+        problems = store.verify(n)
+        if not problems:
+            print("Every cached reference file is present and well formed.")
+            return
+        for line in problems:
+            print(f"  {line}", file=sys.stderr)
+        sys.exit(1)
+
+    elif args.action == "smiles":
+        try:
+            molecules = store.reference_smiles(n)
+        except Exception as exc:
+            print(str(exc), file=sys.stderr)
+            sys.exit(1)
+        text = "smiles\n" + "\n".join(molecules) + "\n"
+        if args.output:
+            with open(args.output, "w") as handle:
+                handle.write(text)
+            print(f"Wrote {len(molecules):,} molecules to {args.output}")
+        else:
+            sys.stdout.write(text)
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="lazyqsar",
@@ -208,8 +334,9 @@ def main():
         default=None,
         metavar="LIST",
         help=(
-            "Comma-separated subset of descriptors to download: chemeleon, cddd, clamp "
-            "(default: all three). Only meaningful with --descriptors."
+            "Comma-separated subset. With --descriptors: chemeleon, cddd, clamp "
+            "(default: all three). With --reference: any descriptor in the registry, so "
+            "also morgan and rdkit (default: all of them)."
         ),
     )
     p_setup.add_argument(
@@ -217,12 +344,58 @@ def main():
         type=str,
         default=None,
         metavar="DIR",
-        help="Directory to download checkpoints into (default: ~/.lazyqsar/). Only meaningful with --descriptors.",
+        help=(
+            "Directory to download into (default: ~/.lazyqsar/). Sets LAZYQSAR_HOME, so "
+            "it moves the reference cache as well as the descriptor checkpoints."
+        ),
+    )
+    p_setup.add_argument(
+        "--reference",
+        action="store_true",
+        help=(
+            "Download the reference library that `rank` is reported against. Not implied "
+            "by --descriptors: a fast-mode model needs one 6.5 MB matrix and the whole "
+            "bundle is 267 MB."
+        ),
     )
     p_setup.add_argument(
         "--cpu-torch",
         action="store_true",
         help="Force-reinstall torch from PyTorch's CPU index, replacing any CUDA wheel pip may have installed via PyPI. Only meaningful with --descriptors.",
+    )
+
+    # --- reference ---
+    p_ref = sub.add_parser(
+        "reference",
+        help="Inspect or fetch the reference library `rank` is reported against.",
+    )
+    p_ref.add_argument(
+        "action",
+        choices=["status", "fetch", "verify", "smiles"],
+        help=(
+            "status: what is cached. fetch: download it. verify: check what is cached. "
+            "smiles: write the molecule list, which is all a bring-your-own-descriptor "
+            "caller needs."
+        ),
+    )
+    p_ref.add_argument(
+        "--only",
+        type=str,
+        default=None,
+        metavar="LIST",
+        help="Comma-separated descriptors to fetch (default: all).",
+    )
+    p_ref.add_argument(
+        "--output",
+        type=str,
+        default=None,
+        metavar="FILE",
+        help="Where `smiles` writes to (default: stdout).",
+    )
+    p_ref.add_argument(
+        "--force",
+        action="store_true",
+        help="Re-download even if a file is already cached.",
     )
 
     # --- fit ---
@@ -319,6 +492,8 @@ def main():
         _cmd_fit(args)
     elif args.command == "predict":
         _cmd_predict(args)
+    elif args.command == "reference":
+        _cmd_reference(args)
 
 
 if __name__ == "__main__":

@@ -1,8 +1,14 @@
 """The shared inference runner: reuse, chunking and hygiene.
 
-The runner is not wired into any entry point yet, so these tests drive it directly. They
-cover the properties the CLI and Python paths will inherit from it, and the ones a
-refactor could silently drop.
+Both entry points now sit on the runner -- ``api/classifier_fit.py`` and
+``api/classifier_predict.py`` import it directly -- so these are not speculative any more:
+they cover the properties the CLI and Python paths *inherit*, and the ones a refactor
+could silently drop. Reuse, chunk-invariance and scratch hygiene used to be asserted here *and* in
+``test_pipeline_invariants.py``. They now live only there: ``predict()`` calls
+``predict_tasks`` directly, so driving the public entry point exercises this engine plus the
+wiring into it, which strictly contains what a runner-level copy could show. What stays here
+is what only the runner can be asked -- its error contract, its uniform-weight agreement
+with the old flat average, and the ``ArtifactWrapper`` streaming guarantees.
 
 Channel selection and source resolution are pure functions that never open a model, so
 they are tested in ``tests/unit/test_channels_selection.py`` and
@@ -31,19 +37,6 @@ from lazyqsar.ensemble.runner import (
 # ---------------------------------------------------------------------------
 
 
-def test_featurizes_once_across_tasks(multitask_checkpoint):
-    root, tasks, smiles, counter = multitask_checkpoint
-    query = smiles[:40]
-    counter.reset()
-
-    results = predict_tasks(sources_from_parent(root), query, outputs=("proba",))
-
-    assert len(results) == len(tasks)
-    assert counter.calls == [len(query)], (
-        f"expected one transform of {len(query)} rows, got {counter.calls}"
-    )
-
-
 def test_featurizes_once_for_all_requested_outputs(multitask_checkpoint):
     """Every output comes from one pass -- the property the CLI lacks today."""
     root, _, smiles, counter = multitask_checkpoint
@@ -56,17 +49,6 @@ def test_featurizes_once_for_all_requested_outputs(multitask_checkpoint):
     assert counter.calls == [len(query)], (
         f"asking for {len(OUTPUT_NAMES)} outputs featurized {counter.calls}"
     )
-
-
-def test_featurizes_once_across_separate_directories(multitask_checkpoint):
-    root, tasks, smiles, counter = multitask_checkpoint
-    query = smiles[:40]
-    col_map = {t: os.path.join(root, t) for t in tasks}
-    counter.reset()
-
-    predict_tasks(sources_from_mapping(col_map), query, outputs=("proba",))
-
-    assert counter.calls == [len(query)]
 
 
 def test_duplicate_directory_yields_two_identical_results(multitask_checkpoint):
@@ -89,40 +71,6 @@ def test_duplicate_directory_yields_two_identical_results(multitask_checkpoint):
 # ---------------------------------------------------------------------------
 # Chunking
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("chunk", [1, 7, 10**6])
-def test_chunk_size_does_not_change_results(multitask_checkpoint, chunk):
-    root, _, smiles, _ = multitask_checkpoint
-    query = smiles[:40]
-    sources = sources_from_parent(root)
-
-    reference = predict_tasks(sources, query, outputs=OUTPUT_NAMES, chunk_size=997)
-    chunked = predict_tasks(sources, query, outputs=OUTPUT_NAMES, chunk_size=chunk)
-
-    for name in OUTPUT_NAMES:
-        a = reference[0].values[name]
-        b = chunked[0].values[name]
-        assert np.allclose(a, b, rtol=0, atol=1e-6), (
-            f"chunk_size={chunk} moved {name} by {np.abs(a - b).max():.2e}"
-        )
-
-
-# ---------------------------------------------------------------------------
-# Hygiene
-# ---------------------------------------------------------------------------
-
-
-def test_scratch_is_cleaned_and_never_in_the_model_dir(multitask_checkpoint):
-    root, _, smiles, _ = multitask_checkpoint
-    predict_tasks(sources_from_parent(root), smiles[:20], outputs=("proba",))
-    leftovers = [
-        os.path.join(d, f)
-        for d, _, files in os.walk(root)
-        for f in files
-        if f.endswith(".npy")
-    ]
-    assert leftovers == []
 
 
 def test_supplied_scratch_dir_is_left_for_the_caller(multitask_checkpoint, tmp_path):
