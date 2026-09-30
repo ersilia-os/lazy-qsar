@@ -25,7 +25,7 @@ from .ensemble.combine import (
     read_pooled_rank_knots,
     read_pooled_score_knots,
 )
-from .utils.archives import unpack_to_scratch
+from .utils.archives import read_json, unpack_to_scratch
 from .utils.splits import check_trainable
 from .utils.logging import logger
 from .utils.ranking import (
@@ -1497,8 +1497,7 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
         mode = None
         active_map = {}
         if os.path.isfile(meta_path):
-            with open(meta_path) as _f:
-                _meta = json.load(_f)
+            _meta = read_json(meta_path)
             mode = _meta.get("mode")
             active_map = _meta.get("active_descriptors") or {}
         if mode is None:
@@ -1527,8 +1526,7 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
         obj.models = models
         obj.ad_models = ad_models if any(a is not None for a in ad_models) else []
         if os.path.isfile(meta_path):
-            with open(meta_path) as f:
-                meta = json.load(f)
+            meta = read_json(meta_path)
             oof_map = meta.get("oof_aucs", {})
             proxy_map = meta.get("proxy_aucs", {})
             train_map = meta.get("train_aucs", {})
@@ -1617,8 +1615,7 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
         pooled_rank_anchors = None
         decision_cutoff = None
         if os.path.isfile(meta_path):
-            with open(meta_path) as f:
-                meta = json.load(f)
+            meta = read_json(meta_path)
             oof_map = meta.get("oof_aucs", {})
             proxy_map = meta.get("proxy_aucs", {})
             quality_map = meta.get("quality_aucs", {})

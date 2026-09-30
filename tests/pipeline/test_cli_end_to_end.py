@@ -39,32 +39,6 @@ def _write_task(data_dir, name, smiles, seed):
     )
 
 
-def _predict_parser():
-    """The live ``predict`` subparser, captured from ``main`` rather than rebuilt."""
-    import argparse
-
-    captured = {}
-    real_parse = argparse.ArgumentParser.parse_args
-
-    def capture(self, *a, **k):
-        for action in self._actions:
-            if getattr(action, "choices", None) and hasattr(action.choices, "keys"):
-                captured["sub"] = action.choices
-        return real_parse(self, *a, **k)
-
-    import sys as _sys
-
-    argv, _sys.argv = _sys.argv, ["lazyqsar", "predict", "--help"]
-    argparse.ArgumentParser.parse_args = capture
-    try:
-        with contextlib.redirect_stdout(io.StringIO()), contextlib.suppress(SystemExit):
-            cli_main()
-    finally:
-        argparse.ArgumentParser.parse_args = real_parse
-        _sys.argv = argv
-    return captured["sub"]["predict"]
-
-
 def _run(monkeypatch, *argv):
     monkeypatch.setattr(sys, "argv", ["lazyqsar", *argv])
     with contextlib.redirect_stdout(io.StringIO()):
@@ -144,14 +118,16 @@ def test_predict_writes_a_row_per_input_molecule(
         f"{len(frame)} rows written for {N_QUERY} molecules; the CSV must line up with "
         "its input row for row"
     )
-    # One column per fitted task, named after it, plus whatever identifier columns the
-    # writer prepends. Both tasks must appear: a silently single-task output is the
-    # failure mode that matters here.
-    for task in ("alpha", "beta"):
-        assert any(task in c for c in frame.columns), (
-            f"no column for task {task!r} in {list(frame.columns)}"
-        )
-    values = frame.select_dtypes("number").to_numpy()
+    # One column per fitted task, named after it. Both must appear: a silently
+    # single-task output is the failure mode that matters here.
+    columns = [c for c in frame.columns if c in ("alpha", "beta")]
+    assert sorted(columns) == ["alpha", "beta"], (
+        f"expected a column per task, got {list(frame.columns)}"
+    )
+    # The task columns by name, not `select_dtypes("number")`: if the writer ever prepends
+    # a numeric identifier column, that would quietly pull it into the range check below
+    # and fail for a reason that has nothing to do with the predictions.
+    values = frame[columns].to_numpy(dtype=float)
     assert np.isfinite(values).all(), "the CLI wrote non-finite predictions"
     if predict_type == "binary":
         assert set(np.unique(values)) <= {0, 1}, "binary output is not 0/1"
@@ -194,19 +170,40 @@ def test_predict_refuses_an_unknown_output_type(fitted_via_cli, tmp_path, monkey
     assert not out_csv.exists(), "predict wrote an output file for an invalid request"
 
 
-def test_every_output_the_api_accepts_is_offered_by_the_cli():
+def test_every_output_the_api_accepts_is_offered_by_the_cli(
+    fitted_via_cli, tmp_path, monkeypatch, capsys
+):
     """The parser's choices and the API's accepted outputs must not drift apart.
 
     Two lists of the same thing in two files is how ``--predict_type rank`` would come to
     be rejected by the CLI months after the API grew it.
+
+    Read off the error argparse prints for a bad value, which lists the choices, rather
+    than by reaching into ``parser._actions``: the message is the user-visible contract
+    and does not depend on argparse internals.
     """
     from lazyqsar.ensemble.combine import OUTPUT_NAMES
 
-    parser = _predict_parser()
-    action = next(a for a in parser._actions if "--predict_type" in a.option_strings)
-    assert set(action.choices) == set(OUTPUT_NAMES), (
-        f"CLI offers {sorted(action.choices)} but the ensemble produces "
-        f"{sorted(OUTPUT_NAMES)}"
+    in_csv = tmp_path / "q3.csv"
+    in_csv.write_text("smiles\n" + f"{fitted_via_cli['smiles'][0]}\n")
+    with pytest.raises(SystemExit):
+        _run(
+            monkeypatch,
+            "predict",
+            "--input",
+            str(in_csv),
+            "--model",
+            str(fitted_via_cli["models"]),
+            "--output",
+            str(tmp_path / "unused2.csv"),
+            "--predict_type",
+            "definitely_not_an_output",
+        )
+    offered = capsys.readouterr().err
+    missing = [name for name in OUTPUT_NAMES if name not in offered]
+    assert not missing, (
+        f"the ensemble produces {sorted(OUTPUT_NAMES)} but the CLI does not offer "
+        f"{missing}; its choice list reads: {offered.strip().splitlines()[-1]}"
     )
 
 

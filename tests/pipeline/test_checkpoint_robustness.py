@@ -61,6 +61,7 @@ def test_a_checkpoint_with_no_metadata_still_loads_or_says_why(
     task = _copy_task(tmp_path, pooled_checkpoint["models"], "alpha", "no_meta")
     os.remove(os.path.join(task, "metadata.json"))
 
+    loaded = []
     for loader in (LazyClassifierQSAR.load_onnx, LazyClassifierQSAR.load):
         try:
             with contextlib.redirect_stdout(io.StringIO()):
@@ -77,6 +78,16 @@ def test_a_checkpoint_with_no_metadata_still_loads_or_says_why(
         assert np.all(np.isfinite(proba)), (
             "a checkpoint with no metadata produced non-finite probabilities"
         )
+        loaded.append(loader.__name__)
+
+    # Without this the test would still pass if *both* loaders started raising: the
+    # tolerant branch above would swallow it and nothing would have been exercised. Both
+    # load today, so require both, and let a deliberate change to that be a deliberate
+    # change to this line.
+    assert loaded == ["load_onnx", "load"], (
+        f"only {loaded} loaded a checkpoint with no metadata.json; if refusing it is now "
+        "intended, say so here rather than letting the tolerant branch hide it"
+    )
 
 
 def test_the_runner_reads_a_checkpoint_with_no_metadata(pooled_checkpoint, tmp_path):
@@ -96,12 +107,15 @@ def test_the_runner_reads_a_checkpoint_with_no_metadata(pooled_checkpoint, tmp_p
     ids=["empty", "truncated", "garbage", "trailing-comma"],
 )
 def test_a_corrupt_metadata_file_names_the_file(pooled_checkpoint, tmp_path, corrupt):
-    """``json.load`` is called unguarded by all three readers.
+    """A half-written ``metadata.json`` must fail, and must say which file.
 
-    A half-written ``metadata.json`` -- an interrupted ``save``, a full disk, a bad rsync
-    -- is a realistic state. ``JSONDecodeError`` is an acceptable outcome; what is not
-    acceptable is a loader that swallows it and carries on with silent defaults, because
-    the defaults include a 0.5 decision cutoff and uniform descriptor weights.
+    An interrupted ``save``, a full disk or a partial copy all produce this. Raising is
+    the right outcome -- the silent defaults are a 0.5 decision cutoff and uniform
+    descriptor weights, which would score a damaged checkpoint as though it were fine.
+
+    The message has to carry the path: a checkpoint directory holds one metadata file per
+    task plus one per descriptor, and a bare ``Expecting property name ... line 1
+    column 2`` leaves the user grepping for which. ``utils.archives.read_json`` adds it.
     """
     task = _copy_task(
         tmp_path, pooled_checkpoint["models"], "alpha", f"corrupt_{len(corrupt)}"
@@ -109,9 +123,14 @@ def test_a_corrupt_metadata_file_names_the_file(pooled_checkpoint, tmp_path, cor
     with open(os.path.join(task, "metadata.json"), "w") as fh:
         fh.write(corrupt)
 
-    with pytest.raises((json.JSONDecodeError, ValueError)):
+    # Not `(JSONDecodeError, ValueError)`: JSONDecodeError already subclasses ValueError,
+    # so the tuple only widened this to accept any unrelated ValueError.
+    with pytest.raises(json.JSONDecodeError) as raised:
         with contextlib.redirect_stdout(io.StringIO()):
             LazyClassifierQSAR.load_onnx(task)
+    assert "metadata.json" in str(raised.value), (
+        f"the parse error does not name the file it failed on: {raised.value}"
+    )
 
 
 # ------------------------------------------------------------------------ degenerate query

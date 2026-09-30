@@ -186,13 +186,12 @@ def _descriptor_dirs(task_dir: str):
 
 
 def _read_metadata(task_dir: str) -> dict:
-    import json
+    from ..utils.archives import read_json
 
     path = os.path.join(task_dir, "metadata.json")
     if not os.path.isfile(path):
         return {}
-    with open(path) as f:
-        return json.load(f)
+    return read_json(path)
 
 
 def _load_artifact(directory: str):
