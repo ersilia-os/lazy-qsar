@@ -50,7 +50,9 @@ def _rss_bytes() -> int:
 
 def test_the_fit_time_session_does_not_pool_buffers():
     prep = _fit_preprocessor(0)
-    assert prep._onnx_session_ is not None, "the preprocessor should be bound to its ONNX form"
+    assert prep._onnx_session_ is not None, (
+        "the preprocessor should be bound to its ONNX form"
+    )
     options = prep._onnx_session_.get_session_options()
     assert options.enable_cpu_mem_arena is False
     assert options.enable_mem_pattern is False
@@ -60,7 +62,9 @@ def test_session_options_do_not_change_a_single_output_value():
     """Bit-identical to a session with onnxruntime's defaults -- the whole point of the session."""
     prep = _fit_preprocessor(1)
     X = np.random.default_rng(2).standard_normal((3000, P)).astype("float32")
-    default = rt.InferenceSession(prep._to_onnx_bytes(), providers=["CPUExecutionProvider"])
+    default = rt.InferenceSession(
+        prep._to_onnx_bytes(), providers=["CPUExecutionProvider"]
+    )
     expected = default.run(None, {default.get_inputs()[0].name: X})[0]
     assert np.array_equal(prep.transform(X), expected)
 
