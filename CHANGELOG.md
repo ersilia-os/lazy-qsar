@@ -7,7 +7,29 @@ against is versioned separately and its id is recorded in every checkpoint's
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+
+- **Fitting an imbalanced or large dataset no longer exhausts memory.** 3.6.0 binds an
+  onnxruntime session to every fitted preprocessor so the heads are trained on
+  bit-identical values to the ones they are later served. Left at onnxruntime's defaults,
+  a session keeps what each run allocated in a per-session arena so the next run can reuse
+  it. That is the right trade for one long-lived serving session, and the wrong one here:
+  `LazyClassifier` holds one preprocessor per batch per descriptor — an imbalanced dataset
+  is cut into `ceil(n_negatives / (100 * n_actives))` batches, so 19 actives among 121,000
+  compounds make 65 of them — and the fit then scores the whole training set through every
+  one. Each session retained buffers sized to that matrix, making peak memory grow with
+  `batches x rows`, and because the batch count itself grows with the rows, quadratically
+  with the dataset. Measured on real antimicrobial training sets, one 121,000-compound
+  dataset went from 15.6 GB under 3.4.2 to over 128 GB, and a 328,000-compound one was
+  killed at 124.9 GB; a 20,662-compound one went from 4.6 GB to 19.8 GB. The fit-time
+  session is now built with the arena and memory-pattern planning disabled and a single
+  intra-op thread. Peak memory then stops tracking the dataset: on subsamples of that
+  121,000-compound set at 5,000 / 10,000 / 20,000 compounds (3 / 6 / 11 batches), it was
+  5.84 / 9.39 / ≥22 GB before and 4.90 / 2.86 / 4.15 GB after, and the fits got *faster*
+  (313 → 240 s and 840 → 525 s at 5,000 and 10,000), since the memory pressure cost more
+  than the single thread saves. No computed value changes — the graph and its arithmetic
+  are untouched, and the output is asserted bit-identical to a default session's, which is
+  the guarantee the binding exists for.
 
 ## 3.6.0
 
