@@ -19,6 +19,36 @@ from .scaler import build_scaler, select_scaler
 from lazyqsar.utils.logging import logger
 
 
+def _fit_session_options(rt):
+    """onnxruntime options for the session a fitted preprocessor keeps for the whole fit.
+
+    Left at its defaults, a session keeps what each run allocated in a per-session memory
+    arena so the next run can reuse it, and sizes an intra-op thread pool to every core.
+    Both are the right trade for one long-lived serving session and the wrong one here:
+    fitting scores the full training matrix through every batch's preprocessor, and
+    ``batches x rows x width`` of retained buffers is quadratic in the dataset, because the
+    batch count of an imbalanced dataset grows with its size. Measured with this change
+    absent, one 121,000-compound dataset needed over 128 GB where v3.4.2 needed 15.6 GB.
+
+    - ``enable_cpu_mem_arena=False`` hands every buffer back when the run ends.
+    - ``enable_mem_pattern=False`` drops the plan onnxruntime derives from a run's shapes to
+      reuse memory across runs; with the arena off there is nothing to plan, and the row
+      count differs between the calls a fit makes.
+    - ``intra_op_num_threads=1`` keeps hundreds of sessions from starting hundreds of
+      cores' worth of threads each. The graph is an imputer, a scaler and a projection,
+      cheap next to the heads that follow it.
+
+    None of this changes a computed value: the graph and the arithmetic are untouched, so
+    the output is bit-identical to a default session's (tested), which is what the session
+    exists to guarantee.
+    """
+    options = rt.SessionOptions()
+    options.enable_cpu_mem_arena = False
+    options.enable_mem_pattern = False
+    options.intra_op_num_threads = 1
+    return options
+
+
 class BasePreprocessor(BaseEstimator, TransformerMixin):
     """
     Automatically selects and fits a preprocessing pipeline for
@@ -117,6 +147,11 @@ class BasePreprocessor(BaseEstimator, TransformerMixin):
         will be *served*. Split thresholds, calibrators, out-of-fold scores and ranker
         knots are then all learned on exactly the values inference produces.
 
+        The session lives for the whole fit, and a ``LazyClassifier`` holds one per batch per
+        descriptor -- 65 batches for a dataset of 19 actives among 121,000 compounds -- each
+        of which is later handed the full training set. That is why the session is built
+        with :func:`_fit_session_options` rather than onnxruntime's defaults: see there.
+
         Falls back to the scikit-learn pipeline, with a warning, if the export or the
         session fails -- a preprocessor that works is worth more than one that matches.
         """
@@ -126,7 +161,9 @@ class BasePreprocessor(BaseEstimator, TransformerMixin):
             import onnxruntime as rt
 
             session = rt.InferenceSession(
-                self._to_onnx_bytes(), providers=["CPUExecutionProvider"]
+                self._to_onnx_bytes(),
+                sess_options=_fit_session_options(rt),
+                providers=["CPUExecutionProvider"],
             )
         except Exception as exc:  # noqa: BLE001 - see docstring; degrade, don't raise
             logger.warning(
