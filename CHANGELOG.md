@@ -7,6 +7,10 @@ against is versioned separately and its id is recorded in every checkpoint's
 
 ## [Unreleased]
 
+Nothing yet.
+
+## 3.6.1
+
 ### Fixed
 
 - **Fitting an imbalanced or large dataset no longer exhausts memory.** 3.6.0 binds an
