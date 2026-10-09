@@ -3,7 +3,12 @@ import json
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor
 from rdkit import Chem
-from ..utils.checkpoints import CHECKPOINT_SHA256, CHEMELEON_URL, checkpoint_dir
+from ..utils.checkpoints import (
+    CHECKPOINT_SHA256,
+    CHEMELEON_URL,
+    checkpoint_dir,
+    checkpoint_sources,
+)
 from ..utils.fetch import fetch
 from ..utils.logging import logger
 
@@ -50,7 +55,7 @@ class _CheMeleonFingerprint:
         # interrupted first predict left a truncated checkpoint that `exists()` then
         # considered done forever.
         fetch(
-            CHEMELEON_URL,
+            checkpoint_sources(CHEMELEON_URL, "chemeleon_mp.pt"),
             mp_path,
             sha256=CHECKPOINT_SHA256.get("chemeleon_mp.pt"),
             description="chemeleon_mp.pt",

@@ -8,7 +8,7 @@ from rdkit.Chem import AllChem
 from rdkit.Chem.rdmolops import FastFindRings
 from rdkit import RDLogger
 
-from ..utils.checkpoints import CHECKPOINT_SHA256, checkpoint_dir
+from ..utils.checkpoints import CHECKPOINT_SHA256, checkpoint_dir, checkpoint_sources
 from ..utils.fetch import fetch
 from ..utils.logging import logger
 
@@ -76,7 +76,7 @@ class ClampDescriptor:
         # Verified and atomic: a half-written 167 MB encoder used to be cached forever and
         # fail later as an opaque ONNX parse error rather than as a failed download.
         fetch(
-            _CLAMP_ONNX_URL,
+            checkpoint_sources(_CLAMP_ONNX_URL, "clamp_encoder.onnx"),
             model_path,
             sha256=CHECKPOINT_SHA256.get("clamp_encoder.onnx"),
             description="clamp_encoder.onnx",

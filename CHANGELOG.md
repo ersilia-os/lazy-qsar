@@ -7,7 +7,18 @@ against is versioned separately and its id is recorded in every checkpoint's
 
 ## [Unreleased]
 
-Nothing yet.
+### Changed
+
+- **Descriptor checkpoints now download from Ersilia's own copy first.** All five files
+  the Chemeleon, CDDD and CLAMP descriptors need are published with eosvc at
+  `https://eosvc-public.s3.amazonaws.com/lazy-qsar/data/checkpoints/`, beside the
+  reference library, and both `lazyqsar setup --descriptors` and the first-use download
+  try that copy before the original source. Two of those sources are personal Zenodo
+  records and the other three files belong to Model Hub models, so none was under
+  lazyqsar's control. The original URLs remain as the fallback: `fetch` now takes a list
+  of sources and moves on when one is unreachable or serves a file whose checksum does
+  not match. Nothing about the files changes; each is still checked against its pinned
+  SHA-256 whichever source it comes from.
 
 ## 3.6.2
 

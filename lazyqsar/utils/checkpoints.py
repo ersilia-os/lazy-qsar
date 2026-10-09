@@ -32,6 +32,21 @@ def checkpoint_dir() -> Path:
 # import time.
 CHECKPOINT_DIR = checkpoint_dir()
 
+# Ersilia's copy of every checkpoint below, published with eosvc beside the reference
+# library. Tried first, with the upstream URL as the fallback: two of the upstream sources
+# are personal Zenodo records, and this is storage Ersilia controls. Which source a file
+# came from cannot change it, since every one is checked against CHECKPOINT_SHA256. Treat
+# it as immutable: released versions pin these exact files.
+ERSILIA_CHECKPOINTS_URL = (
+    "https://eosvc-public.s3.amazonaws.com/lazy-qsar/data/checkpoints/"
+)
+
+
+def checkpoint_sources(upstream_url: str, filename: str) -> list[str]:
+    """Where to download *filename* from, in order: Ersilia's copy, then upstream."""
+    return [ERSILIA_CHECKPOINTS_URL + filename, upstream_url]
+
+
 # --- CheMeleon ---
 CHEMELEON_FILENAME = "chemeleon_mp.pt"
 CHEMELEON_URL = "https://zenodo.org/records/15460715/files/chemeleon_mp.pt"

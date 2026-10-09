@@ -11,6 +11,7 @@ from .checkpoints import (
     CLAMP_FILENAME,
     CLAMP_URL,
     checkpoint_dir,
+    checkpoint_sources,
 )
 from .fetch import fetch, is_cached
 
@@ -42,7 +43,7 @@ def _safe_download(url: str, dest: Path, filename: str | None = None) -> None:
 def download_chemeleon(target_dir: str | None = None):
     ckpt_dir = _resolve_dir(target_dir)
     fetch(
-        CHEMELEON_URL,
+        checkpoint_sources(CHEMELEON_URL, CHEMELEON_FILENAME),
         ckpt_dir / CHEMELEON_FILENAME,
         sha256=CHECKPOINT_SHA256.get(CHEMELEON_FILENAME),
         description=CHEMELEON_FILENAME,
@@ -64,7 +65,7 @@ def download_cddd(target_dir: str | None = None):
         dest = ckpt_dir / filename
         if not is_cached(dest, CHECKPOINT_SHA256.get(filename)):
             fetch(
-                url,
+                checkpoint_sources(url, filename),
                 dest,
                 sha256=CHECKPOINT_SHA256.get(filename),
                 description=filename,
@@ -74,7 +75,7 @@ def download_cddd(target_dir: str | None = None):
 def download_clamp(target_dir: str | None = None):
     ckpt_dir = _resolve_dir(target_dir)
     fetch(
-        CLAMP_URL,
+        checkpoint_sources(CLAMP_URL, CLAMP_FILENAME),
         ckpt_dir / CLAMP_FILENAME,
         sha256=CHECKPOINT_SHA256.get(CLAMP_FILENAME),
         description=CLAMP_FILENAME,

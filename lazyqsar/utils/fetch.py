@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+from collections.abc import Sequence
 from pathlib import Path
 from urllib.request import urlopen
 
@@ -67,7 +68,7 @@ def is_cached(
 
 
 def fetch(
-    url: str,
+    url: str | Sequence[str],
     dest,
     *,
     sha256: str | None = None,
@@ -80,18 +81,49 @@ def fetch(
     The partial file is written beside the destination and renamed only once it has been
     verified, so an interrupted or corrupted download can never be mistaken for a complete
     one: either *dest* is the file that was wanted, or it does not exist.
+
+    *url* may also be a sequence of sources for the same file, tried in order. A source
+    that cannot be reached, or that serves something other than the expected file, falls
+    through to the next; the download fails only once every source has.
     """
     dest = Path(dest)
     if not force and is_cached(dest, sha256, expected_bytes):
         return dest
 
+    urls = [url] if isinstance(url, str) else list(url)
+    if not urls:
+        raise ValueError("fetch() needs at least one URL")
     dest.parent.mkdir(parents=True, exist_ok=True)
+    label = description or dest.name
+
+    errors = []
+    for i, source in enumerate(urls):
+        try:
+            _download(source, dest, sha256, expected_bytes, label)
+            return dest
+        except DownloadError as exc:
+            errors.append(exc)
+            if i + 1 < len(urls):
+                _console.print(
+                    f"{label}: {source} failed, trying {urls[i + 1]}",
+                    style="yellow",
+                    markup=False,
+                )
+    if len(errors) == 1:
+        raise errors[0]
+    raise DownloadError(
+        f"Could not download {label} from any of its {len(urls)} sources:\n"
+        + "\n".join(f"- {exc}" for exc in errors)
+    )
+
+
+def _download(url, dest, sha256, expected_bytes, label) -> None:
+    """One attempt at one source. Leaves *dest* either verified or untouched."""
     # Beside the destination, and not via `with_suffix`: that replaces the *last* suffix, so
     # `cddd_encoder_fpsim.h5` would be staged as `cddd_encoder_fpsim.part` and a second
     # download of a differently-named file could collide with it.
     part = dest.parent / (dest.name + ".part")
     digest = hashlib.sha256()
-    label = description or dest.name
 
     try:
         with urlopen(url) as response:  # noqa: S310 - fixed https URLs from this package
@@ -138,4 +170,3 @@ def fetch(
         )
 
     os.replace(part, dest)
-    return dest

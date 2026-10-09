@@ -23,6 +23,7 @@ from ..utils.checkpoints import (
     CDDD_ENCODER_FILENAME,
     CDDD_FPSIM_FILENAME,
     CDDD_SMILES_FILENAME,
+    checkpoint_sources,
 )
 
 RDLogger.DisableLog("rdApp.*")
@@ -362,7 +363,7 @@ class InferenceModel:
             if not is_cached(dest, CHECKPOINT_SHA256.get(filename)):
                 logger.info(f"Downloading CDDD checkpoint into {ckpt_dir}/{filename}")
                 fetch(
-                    url,
+                    checkpoint_sources(url, filename),
                     dest,
                     sha256=CHECKPOINT_SHA256.get(filename),
                     description=filename,

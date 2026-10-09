@@ -25,6 +25,7 @@ PAYLOAD = b"reference library bytes" * 500
 def server(tmp_path_factory):
     root = tmp_path_factory.mktemp("served")
     (root / "good.bin").write_bytes(PAYLOAD)
+    (root / "wrong.bin").write_bytes(b"some other file entirely")
     handler = functools.partial(
         http.server.SimpleHTTPRequestHandler, directory=str(root)
     )
@@ -103,6 +104,34 @@ def test_a_failed_connection_raises_rather_than_writing_something(tmp_path):
     with pytest.raises(DownloadError, match="Could not download"):
         fetch("http://127.0.0.1:1/never", dest)
     assert not dest.exists()
+
+
+def test_an_unreachable_source_falls_through_to_the_next(server, digest, tmp_path):
+    """Checkpoints are fetched from Ersilia's copy first and upstream second, so either
+    being down must not fail the download."""
+    dest = tmp_path / "j.bin"
+    fetch(["http://127.0.0.1:1/never", server], dest, sha256=digest)
+    assert dest.read_bytes() == PAYLOAD
+
+
+def test_a_source_serving_the_wrong_file_falls_through_to_the_next(
+    server, digest, tmp_path
+):
+    """The checksum decides, not the order: a source that has drifted is skipped rather
+    than cached."""
+    wrong = server.rsplit("/", 1)[0] + "/wrong.bin"
+    dest = tmp_path / "k.bin"
+    fetch([wrong, server], dest, sha256=digest)
+    assert dest.read_bytes() == PAYLOAD
+
+
+def test_every_source_failing_raises_and_leaves_nothing(server, digest, tmp_path):
+    wrong = server.rsplit("/", 1)[0] + "/wrong.bin"
+    dest = tmp_path / "l.bin"
+    with pytest.raises(DownloadError, match="any of its 2 sources"):
+        fetch(["http://127.0.0.1:1/never", wrong], dest, sha256=digest)
+    assert not dest.exists()
+    assert not list(tmp_path.glob("*.part"))
 
 
 def test_the_staging_name_does_not_eat_a_suffix(server, digest, tmp_path):
