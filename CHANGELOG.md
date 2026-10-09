@@ -7,6 +7,10 @@ against is versioned separately and its id is recorded in every checkpoint's
 
 ## [Unreleased]
 
+Nothing yet.
+
+## 3.6.2
+
 ### Fixed
 
 - **`lazyqsar setup --descriptors` no longer breaks RDKit.** The setup command installed
