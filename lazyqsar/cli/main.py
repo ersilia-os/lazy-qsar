@@ -6,8 +6,8 @@ Subcommands
 lazyqsar setup [--descriptors] [--fit] [--reference] [--only LIST] [--target-dir DIR]
                [--cpu-torch]
     Install optional dependencies and download what the descriptors and `rank` need.
-    --descriptors  Install the descriptor extra and download the Chemeleon / CDDD
-                   checkpoints.
+    --descriptors  Install the descriptor extra and download the Chemeleon / CDDD /
+                   CLAMP checkpoints.
     --fit          Install the fit extra (scikit-learn, xgboost, scipy, skl2onnx,
                    onnxmltools, joblib, eosvc). Read out of the package metadata, so it
                    cannot drift from `pip install lazyqsar[fit]`.
@@ -321,12 +321,18 @@ def main():
     p_setup.add_argument(
         "--descriptors",
         action="store_true",
-        help="Install descriptor dependencies and download Chemeleon / CDDD checkpoints.",
+        help=(
+            "Install descriptor dependencies and download the Chemeleon / CDDD / CLAMP "
+            "checkpoints."
+        ),
     )
     p_setup.add_argument(
         "--fit",
         action="store_true",
-        help="Install fit dependencies (sklearn, xgboost, scipy, skl2onnx, onnxmltools, joblib).",
+        help=(
+            "Install fit dependencies (sklearn, xgboost, scipy, skl2onnx, onnxmltools, "
+            "joblib, eosvc)."
+        ),
     )
     p_setup.add_argument(
         "--only",
