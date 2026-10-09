@@ -7,7 +7,14 @@ against is versioned separately and its id is recorded in every checkpoint's
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+
+- **`lazyqsar setup --descriptors` no longer breaks RDKit.** The setup command installed
+  `chemprop` unpinned, so pip began resolving chemprop 2.3, which pulls in cuik-molmaker
+  and rdkit 2026.03; the next step then forced rdkit back to 2025.9.1 and left
+  cuik-molmaker broken (#52). Setup now installs `chemprop==2.2.3`, the version the
+  `[descriptors]` extra already pins. A packaging test now asserts that every version
+  setup installs matches the extra, so the two cannot drift apart again.
 
 ## 3.6.1
 

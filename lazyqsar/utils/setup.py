@@ -117,6 +117,8 @@ def install_cpu_torch_force():
 
 def install_chemprop():
     logger.info("Installing chemprop...")
+    # Pinned to match the [descriptors] extra. Unpinned, pip resolves chemprop 2.3, which
+    # pulls in cuik-molmaker and rdkit 2026.03, and install_rdkit() then breaks it (#52).
     subprocess.check_call(
         [
             sys.executable,
@@ -124,7 +126,7 @@ def install_chemprop():
             "pip",
             "install",
             "--quiet",
-            "chemprop",
+            "chemprop==2.2.3",
         ]
     )
 
