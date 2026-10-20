@@ -69,3 +69,67 @@ def make_stratified_oof_splits(
     dummy_X = np.zeros(len(y_arr), dtype=np.int8)
     splits = [(train_idx, val_idx) for train_idx, val_idx in skf.split(dummy_X, y_arr)]
     return k, splits
+
+
+_REGRESSION_MIN_SAMPLES = 10
+
+
+def check_trainable_regression(y, where="fit"):
+    """Raise unless *y* can train a regressor: finite, enough samples, not constant."""
+    y_arr = np.asarray(y, dtype=float).ravel()
+    if not np.all(np.isfinite(y_arr)):
+        n_bad = int((~np.isfinite(y_arr)).sum())
+        raise ValueError(
+            f"{where}: {n_bad} target value(s) are NaN or infinite. Regression needs "
+            "a finite numeric value for every compound."
+        )
+    if y_arr.size < _REGRESSION_MIN_SAMPLES:
+        raise ValueError(
+            f"{where}: only {y_arr.size} samples; regression needs at least "
+            f"{_REGRESSION_MIN_SAMPLES}."
+        )
+    if np.ptp(y_arr) == 0.0:
+        raise ValueError(
+            f"{where}: every target value is {y_arr[0]}. Regression needs variation "
+            "in y; there is nothing to fit."
+        )
+
+
+def auto_regression_oof_n_splits(y: np.ndarray) -> int:
+    """Auto-select k-fold count for regression from sample size (between 3 and 5)."""
+    n = len(np.asarray(y))
+    return max(2, min(5, max(3, n // 50), n // 2))
+
+
+def quantile_bins(y: np.ndarray, n_bins: int) -> np.ndarray:
+    """Assign each value to one of *n_bins* quantile bins (0..n_bins-1)."""
+    y_arr = np.asarray(y, dtype=float).ravel()
+    if n_bins <= 1 or y_arr.size == 0:
+        return np.zeros(y_arr.size, dtype=int)
+    edges = np.quantile(y_arr, np.linspace(0, 1, n_bins + 1)[1:-1])
+    return np.searchsorted(edges, y_arr, side="right").astype(int)
+
+
+def make_quantile_oof_splits(
+    y: np.ndarray,
+    n_splits: int | None = None,
+    random_state: int = 42,
+) -> tuple[int, list[tuple[np.ndarray, np.ndarray]]]:
+    """
+    Build deterministic OOF splits for regression, stratified on quantile bins of y.
+
+    Stratifying on bins keeps every fold spanning the full target range, which
+    plain KFold does not guarantee on small or sorted datasets.
+    """
+    y_arr = np.asarray(y, dtype=float).ravel()
+    k = n_splits if n_splits is not None else auto_regression_oof_n_splits(y_arr)
+    n_bins = max(1, min(5, len(y_arr) // max(1, 2 * k)))
+    bins = quantile_bins(y_arr, n_bins)
+    # Merge bins too small to appear in every fold into a neighbour.
+    while n_bins > 1 and np.bincount(bins).min() < k:
+        n_bins -= 1
+        bins = quantile_bins(y_arr, n_bins)
+    skf = StratifiedKFold(n_splits=k, shuffle=True, random_state=random_state)
+    dummy_X = np.zeros(len(y_arr), dtype=np.int8)
+    splits = [(train_idx, val_idx) for train_idx, val_idx in skf.split(dummy_X, bins)]
+    return k, splits

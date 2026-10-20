@@ -167,8 +167,18 @@ class Logger:
         body = sep.join(f"[cyan]{p}[/]" for p in parts)
         self._console.print(f"[bold]{task_label}[/bold]  {body}")
 
-    def dataset_table(self, X_shape, y=None, portfolio: list | None = None) -> None:
-        """Display a compact dataset summary table."""
+    def dataset_table(
+        self,
+        X_shape,
+        y=None,
+        portfolio: list | None = None,
+        task: str = "classification",
+    ) -> None:
+        """Display a compact dataset summary table.
+
+        For ``task="regression"`` the label block summarises the target distribution
+        instead of class counts.
+        """
         if not self._verbose:
             return
 
@@ -188,7 +198,11 @@ class Logger:
         table.add_row("Features", f"{n_features:,}")
         table.add_row("n/p ratio", f"{(n_samples / max(n_features, 1)):.2f}")
 
-        if y is not None:
+        if y is not None and task == "regression":
+            y_arr = np.asarray(y, dtype=float)
+            table.add_row("Target mean±std", f"{y_arr.mean():.3f}±{y_arr.std():.3f}")
+            table.add_row("Target range", f"[{y_arr.min():.3f}, {y_arr.max():.3f}]")
+        elif y is not None:
             y_arr = np.asarray(y)
             values, counts = np.unique(y_arr, return_counts=True)
             count_map = {int(v): int(c) for v, c in zip(values, counts)}
@@ -421,8 +435,13 @@ class Logger:
         meta_auc: float | None = None,
         mean_weights: list | None = None,
         std_weights: list | None = None,
+        metric: str = "AUC",
     ) -> None:
-        """Display a Rich table summarising the ensemble pooler."""
+        """Display a Rich table summarising the ensemble pooler.
+
+        ``metric`` labels the footer's ensemble score: AUC-based composite for
+        classification, Spearman ρ for regression.
+        """
         if not self._verbose:
             return
 
@@ -463,17 +482,19 @@ class Logger:
 
         footer_parts = [f"n = {n_samples:,}"]
         if meta_auc is not None:
-            footer_parts.append(f"meta AUC = {meta_auc:.4f}")
+            footer_parts.append(f"meta {metric} = {meta_auc:.4f}")
         self._console.print("  [dim]" + "  |  ".join(footer_parts) + "[/dim]")
         self._console.line()
 
-    def descriptor_table(self, rows: list) -> None:
+    def descriptor_table(self, rows: list, metric: str = "AUC") -> None:
         """
-        Compact summary of all descriptors used in a LazyClassifierQSAR fit.
+        Compact summary of all descriptors used in a QSAR fit.
 
         rows : list of dicts with keys:
             name, n_features, sparsity, feat_time,
             ad_n_components, ad_cal_min, ad_cal_max
+        metric : column label for the skill values ("AUC", or "ρ" for regression).
+            The row keys stay ``*_auc`` for both tasks.
         """
         if not self._verbose:
             return
@@ -498,11 +519,11 @@ class Logger:
         table.add_column("AD comps", justify="right", min_width=9)
         table.add_column("AD cal max", justify="right", min_width=10)
         if has_proxy:
-            table.add_column("Proxy AUC", justify="right", min_width=10)
+            table.add_column(f"Proxy {metric}", justify="right", min_width=10)
         if has_train:
-            table.add_column("Train AUC", justify="right", min_width=10)
+            table.add_column(f"Train {metric}", justify="right", min_width=10)
         if has_quality:
-            table.add_column("Quality AUC", justify="right", min_width=12)
+            table.add_column(f"Quality {metric}", justify="right", min_width=12)
         if has_active:
             table.add_column("Active", justify="center", min_width=7)
 
@@ -547,28 +568,37 @@ class Logger:
             title_justify="left",
             padding=(0, 1),
         )
-        has_oof = any("oof_auc" in r for r in rows)
-        has_proxy = any(r.get("proxy_auc") is not None for r in rows)
+        # Regression rows carry Spearman ρ under *_rho keys; classification rows AUC.
+        regression = any("oof_rho" in r for r in rows)
+        metric, oof_key, proxy_key = (
+            ("ρ", "oof_rho", "proxy_rho")
+            if regression
+            else ("AUC", "oof_auc", "proxy_auc")
+        )
+        has_oof = any(oof_key in r for r in rows)
+        has_proxy = any(r.get(proxy_key) is not None for r in rows)
 
         table.add_column("Descriptor", style="cyan", no_wrap=True, min_width=12)
         if has_proxy:
-            table.add_column("Proxy AUC", justify="right", min_width=10)
+            table.add_column(f"Proxy {metric}", justify="right", min_width=10)
         if has_oof:
-            table.add_column("OOF AUC", justify="right", min_width=9)
+            table.add_column(f"OOF {metric}", justify="right", min_width=9)
         table.add_column("AD mean±std", justify="right", min_width=13)
         table.add_column("AD [min, max]", justify="right", min_width=14)
         table.add_column("Final W mean±std", justify="right", min_width=16)
         table.add_column("Vetoed", justify="right", min_width=10)
-        table.add_column("P(y=1) mean", justify="right", min_width=12)
+        table.add_column(
+            "Pred mean" if regression else "P(y=1) mean", justify="right", min_width=12
+        )
 
         for r in rows:
             vetoed_pct = 100.0 * r["vetoed"] / n_samples if n_samples > 0 else 0.0
             row = [r["name"]]
             if has_proxy:
-                v = r.get("proxy_auc")
+                v = r.get(proxy_key)
                 row.append(f"{v:.4f}" if v is not None else "—")
             if has_oof:
-                row.append(f"{r['oof_auc']:.4f}")
+                row.append(f"{r[oof_key]:.4f}")
             row += [
                 f"{r['ad_mean']:.3f}±{r['ad_std']:.3f}",
                 f"[{r['ad_min']:.3f}, {r['ad_max']:.3f}]",
@@ -650,9 +680,11 @@ class Logger:
         _add(tree, directory)
         self._console.print(tree)
 
-    def proxy_screen_table(self, rows: list) -> None:
+    def proxy_screen_table(self, rows: list, metric: str = "AUC") -> None:
         """
         Summary table for descriptor proxy-CV screening.
+
+        ``metric`` labels the proxy score column ("AUC", or "ρ" for regression).
 
         rows : list of dicts with keys:
             name        – descriptor name
@@ -673,7 +705,7 @@ class Logger:
         )
         table.add_column("Descriptor", style="cyan", no_wrap=True, min_width=12)
         table.add_column("Features", justify="right", min_width=9)
-        table.add_column("Proxy AUC", justify="right", min_width=10)
+        table.add_column(f"Proxy {metric}", justify="right", min_width=10)
         table.add_column("Status", justify="center", min_width=10)
 
         status_fmt = {

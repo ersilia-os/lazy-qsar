@@ -27,6 +27,14 @@ matrix rather than a flat mean. Each descriptor's weight blends a global skill t
 from its rank, and an applicability-domain score can veto a descriptor outright for
 samples that fall outside its training distribution. With no AD scores available there is
 nothing to condition on and the weights collapse to uniform.
+
+Regression
+----------
+A spec with ``task="regression"`` takes a separate path that never touches the
+classification arithmetic above. ``Y`` holds per-descriptor predicted values in target
+units, the skill estimates are Spearman ρ instead of AUC (skill term ``max(0, ρ) / 2``,
+the same scale as ``AUC - 0.5``), and the single output ``value`` is the weighted mean of
+``Y`` under the same weight matrix -- AD veto included.
 """
 
 from __future__ import annotations
@@ -45,6 +53,25 @@ from ..utils.ranking import (
 )
 
 OUTPUT_NAMES = ("proba", "logit", "rank", "score", "lift", "binary")
+REGRESSION_OUTPUT_NAMES = ("value",)
+OUTPUT_NAMES_BY_TASK = {
+    "classification": OUTPUT_NAMES,
+    "regression": REGRESSION_OUTPUT_NAMES,
+}
+TASKS = tuple(OUTPUT_NAMES_BY_TASK)
+
+
+def read_task(metadata) -> str:
+    """The task a task-level ``metadata.json`` describes; ``"classification"`` if absent.
+
+    Every checkpoint written before regression existed has no ``task`` key and is a
+    classifier, so the default is what keeps them loading unchanged.
+    """
+    task = (metadata or {}).get("task") or "classification"
+    if task not in OUTPUT_NAMES_BY_TASK:
+        raise ValueError(f"Unknown task {task!r} in metadata; expected one of {TASKS}")
+    return task
+
 
 _DEFAULT_CUTOFF = 0.5
 _EPS = 1e-7
@@ -177,7 +204,8 @@ class EnsembleSpec:
     descriptor_names : tuple of str
         Active descriptor names, column order.
     oof_aucs, proxy_aucs : tuple of (float or None), or None
-        Per-descriptor skill estimates. ``None`` for the whole field means "no
+        Per-descriptor skill estimates: AUC for classification, Spearman ρ for regression
+        (the field names predate regression). ``None`` for the whole field means "no
         information"; a ``None`` entry means that descriptor has none.
     rank_error_curves : tuple of ((ndarray, ndarray) or None), or None
         Per-descriptor rank -> expected-error curves. Used only when every active
@@ -199,6 +227,9 @@ class EnsembleSpec:
         :func:`read_pooled_rank_knots`. There is no fallback: ``rank`` is refused, and the
         other five outputs are unaffected. Not per-descriptor, so it is never sliced: it
         is written after the active set is settled and describes exactly that set.
+    task : str
+        ``"classification"`` (default) or ``"regression"``. Regression specs use only
+        the descriptor names, skill estimates, rank-error curves and AD cutoffs.
     """
 
     descriptor_names: tuple[str, ...] = ()
@@ -211,6 +242,7 @@ class EnsembleSpec:
     pooled_rank_knots: np.ndarray | None = None
     pooled_rank_anchors: tuple | None = None
     pooled_score_knots: tuple[np.ndarray, np.ndarray] | None = None
+    task: str = "classification"
 
     @classmethod
     def from_metadata(
@@ -241,6 +273,8 @@ class EnsembleSpec:
         loader used ``quality``, so that is the deployed convention and the one kept here.
         """
         metadata = metadata or {}
+        if read_task(metadata) == "regression":
+            return cls._regression_from_metadata(metadata, descriptor_names)
         quality_map = metadata.get("quality_aucs", {}) or {}
         oof_map = metadata.get("oof_aucs", {}) or {}
         proxy_map = metadata.get("proxy_aucs", {}) or {}
@@ -308,6 +342,55 @@ class EnsembleSpec:
             active_names,
         )
 
+    @classmethod
+    def _regression_from_metadata(
+        cls, metadata: dict, descriptor_names: Sequence[str]
+    ) -> tuple[EnsembleSpec, list[str]]:
+        """Regression twin of :meth:`from_metadata`; reads the ``*_rhos`` keys only.
+
+        None of the classification calibration keys (prior, reference rank, score map,
+        cutoff) are read: they have no regression meaning, and a regression checkpoint
+        never writes them. A descriptor without a ρ gets ``None`` -- unknown skill --
+        rather than the classification default of a perfect 1.0.
+        """
+        quality_map = metadata.get("quality_rhos", {}) or {}
+        oof_map = metadata.get("oof_rhos", {}) or {}
+        proxy_map = metadata.get("proxy_rhos", {}) or {}
+        active_map = metadata.get("active_descriptors", {}) or {}
+        cutoff_map = metadata.get("ad_hard_cutoffs", {}) or {}
+        curve_map = metadata.get("rank_error_curves", {}) or {}
+
+        active_names = [d for d in descriptor_names if active_map.get(d, True)]
+        if not active_names:
+            active_names = list(descriptor_names)
+
+        curves = None
+        if curve_map:
+            curves = tuple(
+                (np.asarray(curve_map[d][0]), np.asarray(curve_map[d][1]))
+                if d in curve_map
+                else None
+                for d in active_names
+            )
+
+        return (
+            cls(
+                descriptor_names=tuple(active_names),
+                oof_aucs=tuple(
+                    quality_map.get(d, oof_map.get(d)) for d in active_names
+                ),
+                proxy_aucs=tuple(proxy_map.get(d) for d in active_names),
+                rank_error_curves=curves,
+                ad_hard_cutoffs=(
+                    tuple(cutoff_map.get(d, 0.0) for d in active_names)
+                    if cutoff_map
+                    else None
+                ),
+                task="regression",
+            ),
+            active_names,
+        )
+
 
 @dataclass
 class CombineResult:
@@ -360,6 +443,8 @@ def build_weight_matrix(Y, R, A, spec: EnsembleSpec):
         descriptor carries usable skill information.
     """
     B, D = Y.shape
+    if getattr(spec, "task", "classification") == "regression":
+        return _build_weight_matrix_regression(B, D, R, A, spec)
     oof_aucs = spec.oof_aucs
     proxy_aucs = spec.proxy_aucs
 
@@ -404,6 +489,60 @@ def build_weight_matrix(Y, R, A, spec: EnsembleSpec):
     return W, base
 
 
+def _regression_skill(spec: EnsembleSpec, D: int) -> np.ndarray:
+    """Global skill per descriptor: ``max(0, mean(oof_rho, proxy_rho)) / 2``.
+
+    Halving puts ρ on the scale of the classification ``AUC - 0.5`` term (for a binary
+    target, AUC - 0.5 is half the rank-biserial correlation), so the 50/50 blend with
+    reliability means the same thing for both tasks. All-zero falls back to uniform.
+    """
+    base_scores = []
+    for j in range(D):
+        vals = []
+        if spec.oof_aucs and spec.oof_aucs[j] is not None:
+            vals.append(float(spec.oof_aucs[j]))
+        if spec.proxy_aucs and spec.proxy_aucs[j] is not None:
+            vals.append(float(spec.proxy_aucs[j]))
+        base_scores.append(max(0.0, float(np.mean(vals))) / 2.0 if vals else 0.0)
+    base = np.array(base_scores, dtype=np.float64)
+    if base.sum() == 0:
+        base = np.ones(D, dtype=np.float64)
+    return base
+
+
+def _build_weight_matrix_regression(B, D, R, A, spec: EnsembleSpec):
+    """Regression weights: skill, rank-error reliability, AD veto.
+
+    Same structure as the classification matrix with one deliberate difference: with no
+    rank-error curves there is no reliability term at all. The classification fallback
+    ``|rank - 0.5| * 2`` encodes "confident at the extremes", which is meaningless for a
+    regression rank (an extreme predicted value is not a more certain one).
+    """
+    base = _regression_skill(spec, D)
+    if A is None:
+        return np.full((B, D), 1.0 / D, dtype=np.float64), base
+
+    curves = spec.rank_error_curves
+    if R is not None and curves and all(c is not None for c in curves):
+        reliability = np.zeros((B, D), dtype=np.float64)
+        for j, (r_knots, e_knots) in enumerate(curves):
+            reliability[:, j] = 1.0 - np.interp(R[:, j], r_knots, e_knots)
+        W = 0.5 * base[np.newaxis, :] + 0.5 * reliability
+    else:
+        W = np.tile(base, (B, 1))
+
+    if spec.ad_hard_cutoffs is not None:
+        for j, cutoff in enumerate(spec.ad_hard_cutoffs):
+            W[A[:, j] < cutoff, j] = 0.0
+
+    all_ood = W.sum(axis=1) == 0
+    if all_ood.any():
+        W[all_ood] = base
+
+    W /= W.sum(axis=1, keepdims=True)
+    return W, base
+
+
 def mask_rows(values: dict, rows) -> dict:
     """Overwrite *rows* with NaN in every output array, in place.
 
@@ -439,7 +578,7 @@ def _as_2d(X, name):
     return arr
 
 
-def combine(Y, R=None, S=None, A=None, *, spec, outputs=OUTPUT_NAMES, cutoff=None):
+def combine(Y, R=None, S=None, A=None, *, spec, outputs=None, cutoff=None):
     """Combine per-descriptor predictions into a model's outputs.
 
     Parameters
@@ -456,8 +595,9 @@ def combine(Y, R=None, S=None, A=None, *, spec, outputs=OUTPUT_NAMES, cutoff=Non
         none.
     spec : EnsembleSpec
         Weighting parameters, sliced to match the columns of the arrays above.
-    outputs : sequence of str
-        Which of :data:`OUTPUT_NAMES` to compute.
+    outputs : sequence of str, optional
+        Which outputs to compute: a subset of :data:`OUTPUT_NAMES` for classification, of
+        :data:`REGRESSION_OUTPUT_NAMES` for regression. Defaults to all of the task's.
     cutoff : float, optional
         Probability threshold for ``binary``. Defaults to ``spec.decision_cutoff``.
 
@@ -477,11 +617,18 @@ def combine(Y, R=None, S=None, A=None, *, spec, outputs=OUTPUT_NAMES, cutoff=Non
     of magnitude below the ONNX export gap the same pipeline already carries -- but it is
     a real difference, not a free one.
     """
-    unknown = set(outputs) - set(OUTPUT_NAMES)
+    task = getattr(spec, "task", "classification")
+    allowed = OUTPUT_NAMES_BY_TASK[task]
+    if outputs is None:
+        outputs = allowed
+    unknown = set(outputs) - set(allowed)
     if unknown:
         raise ValueError(
-            f"Unknown output(s) {sorted(unknown)}; choose from {list(OUTPUT_NAMES)}"
+            f"Unknown output(s) {sorted(unknown)} for a {task} model; "
+            f"choose from {list(allowed)}"
         )
+    if task == "regression":
+        return _combine_regression(Y, R, A, spec=spec, outputs=outputs)
 
     Y = _as_2d(Y, "Y")
     R = _as_2d(R, "R")
@@ -598,6 +745,59 @@ def combine(Y, R=None, S=None, A=None, *, spec, outputs=OUTPUT_NAMES, cutoff=Non
         threshold = spec.decision_cutoff if cutoff is None else float(cutoff)
         values["binary"] = (p1 >= threshold).astype(int)
 
+    return CombineResult(
+        values=values,
+        weights=W,
+        base=base,
+        oof_percentiles=R,
+        diagnostics=diagnostics,
+    )
+
+
+def _combine_regression(Y, R, A, *, spec, outputs):
+    """Regression branch of :func:`combine`: weighted mean of per-descriptor values.
+
+    ``Y`` holds predicted values in target units. ``value`` is ``(n_samples,)``. Row
+    independence holds exactly as for classification, so streaming stays chunk-safe.
+    """
+    Y = _as_2d(Y, "Y")
+    R = _as_2d(R, "R")
+    A = _as_2d(A, "A")
+    B, D = Y.shape
+    if spec.descriptor_names and len(spec.descriptor_names) != D:
+        raise ValueError(
+            f"spec covers {len(spec.descriptor_names)} descriptors but Y has {D} columns"
+        )
+    W, base = build_weight_matrix(Y, R, A, spec)
+
+    diagnostics = None
+    if A is not None and B > 0:
+        names = spec.descriptor_names or tuple(str(j) for j in range(D))
+        oof, proxy = spec.oof_aucs, spec.proxy_aucs
+        diagnostics = [
+            {
+                "name": names[j],
+                "oof_rho": float(oof[j])
+                if (oof and oof[j] is not None)
+                else float("nan"),
+                "proxy_rho": float(proxy[j])
+                if (proxy and proxy[j] is not None)
+                else None,
+                "ad_mean": float(A[:, j].mean()),
+                "ad_std": float(A[:, j].std()),
+                "ad_min": float(A[:, j].min()),
+                "ad_max": float(A[:, j].max()),
+                "weight_mean": float(W[:, j].mean()),
+                "weight_std": float(W[:, j].std()),
+                "vetoed": int((W[:, j] == 0).sum()),
+                "pred_mean": float(Y[:, j].mean()),
+            }
+            for j in range(D)
+        ]
+
+    values: dict[str, np.ndarray] = {}
+    if "value" in outputs:
+        values["value"] = (W * Y).sum(axis=1)
     return CombineResult(
         values=values,
         weights=W,

@@ -16,6 +16,7 @@ DATA_DIR = os.path.join(
 
 REFERENCE_BINARY = os.path.join(DATA_DIR, "reference_binary.csv")
 REFERENCE_IMBALANCED = os.path.join(DATA_DIR, "reference_imbalanced.csv")
+REFERENCE_REGRESSION = os.path.join(DATA_DIR, "reference_regression.csv")
 INVALID_SMILES_FILE = os.path.join(DATA_DIR, "invalid_smiles.txt")
 
 
@@ -49,6 +50,16 @@ def load_reference_dataset():
 def load_imbalanced_dataset():
     """The low-prevalence ChEMBL set, which reaches the imbalance-batching branch."""
     return load_dataset(REFERENCE_IMBALANCED)
+
+
+def load_regression_dataset():
+    """EGFR pChEMBL values (see ``tests/data/README.md``): ``(smiles_list, y)``, y float."""
+    smiles, y = [], []
+    with open(REFERENCE_REGRESSION, newline="") as f:
+        for row in csv.DictReader(f):
+            smiles.append(row["smiles"])
+            y.append(float(row["pchembl"]))
+    return smiles, y
 
 
 def load_invalid_smiles():

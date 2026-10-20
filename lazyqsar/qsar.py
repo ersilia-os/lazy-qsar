@@ -420,7 +420,7 @@ def _positions_to_load(active_descriptors, n_descriptors):
     return [bool(a) for a in active_descriptors]
 
 
-def _load_descriptor_stack(model_dir, descriptor_types, to_load):
+def _load_descriptor_stack(model_dir, descriptor_types, to_load, model_loader=None):
     """Featurizer, model and applicability domain per descriptor; ``None`` where skipped.
 
     Inactive positions are kept rather than dropped so that every per-descriptor list stays
@@ -433,9 +433,15 @@ def _load_descriptor_stack(model_dir, descriptor_types, to_load):
     The shared inference runner has resolved the active set before opening anything since
     the descriptor union moved into ``ensemble.runner``; this is the Python entry point
     catching up.
+
+    *model_loader* loads one descriptor's model; ``LazyClassifier.load`` by default,
+    ``LazyRegressor.load`` for a regression checkpoint.
     """
     from .agnostic import LazyClassifier
     from .applicability import ApplicabilityDomainArtifact
+
+    if model_loader is None:
+        model_loader = LazyClassifier.load
 
     descriptors, models, ad_models = [], [], []
     for descriptor_type, wanted in zip(descriptor_types, to_load):
@@ -450,7 +456,7 @@ def _load_descriptor_stack(model_dir, descriptor_types, to_load):
                 f"Descriptor directory {model_subdir} does not exist."
             )
         descriptors.append(get_descriptor_type(descriptor_type).load(model_subdir))
-        models.append(LazyClassifier.load(model_subdir))
+        models.append(model_loader(model_subdir))
         ad_subdir = os.path.join(model_subdir, "applicability_domain")
         ad_models.append(
             ApplicabilityDomainArtifact.load(ad_subdir)
@@ -1703,6 +1709,7 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
         try:
             if model_dir.endswith(".zip"):
                 scratch, model_dir = unpack_to_scratch(model_dir)
+            _check_task(model_dir, "classification")
             descriptor_types = []
             for fn in os.listdir(model_dir):
                 if fn in DESCRIPTOR_TYPES.keys():
@@ -1719,11 +1726,22 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
                 shutil.rmtree(scratch, ignore_errors=True)
 
 
-class LazyRegressorQSAR:
-    """Placeholder — not yet implemented."""
+def _check_task(model_dir, expected):
+    """Refuse a checkpoint of the other task with a pointer to the right loader."""
+    meta_path = os.path.join(model_dir, "metadata.json")
+    if not os.path.isfile(meta_path):
+        return
+    task = read_json(meta_path).get("task") or "classification"
+    if task != expected:
+        right = "LazyRegressorQSAR" if task == "regression" else "LazyClassifierQSAR"
+        raise ValueError(
+            f"{model_dir!r} is a {task} checkpoint; load it with {right}.load "
+            "(or LazyQSAR.load, which dispatches on the checkpoint's task)."
+        )
 
-    def __init__(self, mode: str = "default"):
-        raise NotImplementedError("LazyRegressorQSAR is not yet implemented.")
+
+# Defined in its own module, re-exported here where callers have always looked for it.
+from .qsar_regressor import LazyRegressorQSAR  # noqa: E402
 
 
 class LazyQSAR:
@@ -1732,6 +1750,7 @@ class LazyQSAR:
 
     LazyQSAR(task='classification', **kwargs)  →  LazyClassifierQSAR(**kwargs)
     LazyQSAR(task='regression', **kwargs)      →  LazyRegressorQSAR(**kwargs)
+    LazyQSAR.load(model_dir)                   →  whichever the checkpoint's task is
     """
 
     def __new__(cls, task: str = "classification", **kwargs):
@@ -1743,3 +1762,22 @@ class LazyQSAR:
             raise ValueError(
                 f"Unknown task {task!r}. Choose 'classification' or 'regression'."
             )
+
+    @staticmethod
+    def load(model_dir: str):
+        """Load a saved QSAR model of either task, dispatching on its ``metadata.json``."""
+        scratch = None
+        try:
+            path = model_dir
+            if model_dir.endswith(".zip"):
+                scratch, path = unpack_to_scratch(model_dir)
+            meta_path = os.path.join(path, "metadata.json")
+            task = (
+                read_json(meta_path).get("task") if os.path.isfile(meta_path) else None
+            ) or "classification"
+        finally:
+            if scratch is not None:
+                shutil.rmtree(scratch, ignore_errors=True)
+        if task == "regression":
+            return LazyRegressorQSAR.load(model_dir)
+        return LazyClassifierQSAR.load(model_dir)

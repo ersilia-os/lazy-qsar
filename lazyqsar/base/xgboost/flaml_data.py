@@ -29,7 +29,7 @@ BINARY = {
         "scale": [42124.0, 130.0, 1.0, 0.5714285714285715],
     },
     "portfolio": [
-        {  # 0 – fabert
+        {  # 0
             "n_estimators": 319,
             "max_leaves": 1312,
             "min_child_weight": 0.001,
@@ -40,7 +40,7 @@ BINARY = {
             "reg_alpha": 0.17028752704343114,
             "reg_lambda": 1.4375743264564231,
         },
-        {  # 1 – bng_lowbwt
+        {  # 1
             "n_estimators": 7902,
             "max_leaves": 49,
             "min_child_weight": 0.038063497848955595,
@@ -51,7 +51,7 @@ BINARY = {
             "reg_alpha": 1.5286102593845932,
             "reg_lambda": 18.96811296717419,
         },
-        {  # 2 – pol
+        {  # 2
             "n_estimators": 13499,
             "max_leaves": 60,
             "min_child_weight": 0.008494221584011285,
@@ -62,7 +62,7 @@ BINARY = {
             "reg_alpha": 0.2522240954379289,
             "reg_lambda": 5.351809144038808,
         },
-        {  # 3 – Amazon_employee_access
+        {  # 3
             "n_estimators": 591,
             "max_leaves": 16651,
             "min_child_weight": 0.03356567864689129,
@@ -253,7 +253,7 @@ REGRESSION = {
         "scale": [324551.25, 2.5, 1.0, 0.36111111111111116],
     },
     "portfolio": [
-        {  # 0 – Albert
+        {  # 0
             "n_estimators": 6357,
             "max_leaves": 206,
             "min_child_weight": 1.9495322566288034,
@@ -264,7 +264,7 @@ REGRESSION = {
             "reg_alpha": 0.01857648400903689,
             "reg_lambda": 6.021166480604588,
         },
-        {  # 1 – mv
+        {  # 1
             "n_estimators": 23045,
             "max_leaves": 247,
             "min_child_weight": 0.004319397499079841,
@@ -275,7 +275,7 @@ REGRESSION = {
             "reg_alpha": 0.03514226467919635,
             "reg_lambda": 1.2679661021665851,
         },
-        {  # 2 – bng_echomonths
+        {  # 2
             "n_estimators": 1899,
             "max_leaves": 59,
             "min_child_weight": 0.013389019900720164,
@@ -286,7 +286,7 @@ REGRESSION = {
             "reg_alpha": 0.7905117773932884,
             "reg_lambda": 2.916897119216104,
         },
-        {  # 3 – house_16H
+        {  # 3
             "n_estimators": 5611,
             "max_leaves": 61,
             "min_child_weight": 0.01070518287797225,

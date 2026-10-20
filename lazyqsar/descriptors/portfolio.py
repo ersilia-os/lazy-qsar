@@ -35,7 +35,13 @@ class DescriptorPortfolio:
     # Public API
     # ------------------------------------------------------------------
 
-    def select(self, smiles_list: list, y=None, precomputed: dict = None) -> list:
+    def select(
+        self,
+        smiles_list: list,
+        y=None,
+        precomputed: dict = None,
+        task: str = "classification",
+    ) -> list:
         """Return applicable descriptors, optionally screened by proxy CV AUC.
 
         Step 1 — unsupervised gate: ``is_applicable(smiles_list)``
@@ -55,11 +61,17 @@ class DescriptorPortfolio:
             descriptor once over the union of every task, and would otherwise pay for it
             again per task, turning one featurization pass into one per task.
 
+        task : str
+            ``"classification"`` (default) or ``"regression"``. Regression screens with
+            a random-forest regressor and scores by Spearman ρ instead of AUC, with
+            folds stratified on quantile bins of *y*.
+
         Returns
         -------
-        list of ``(name, descriptor_instance, X_full, proxy_auc)`` tuples where
+        list of ``(name, descriptor_instance, X_full, proxy_score)`` tuples where
         ``X_full`` is the raw feature matrix computed during screening (or None),
-        and ``proxy_auc`` is the solo OOF AUC (or None when screening was skipped).
+        and ``proxy_score`` is the solo OOF AUC -- or Spearman ρ for regression -- or
+        None when screening was skipped.
         """
         precomputed = precomputed or {}
         from ..registry import get_descriptor_type
@@ -105,13 +117,19 @@ class DescriptorPortfolio:
                 }
                 for name, _ in applicable
             ]
-            logger.proxy_screen_table(screen_rows)
+            logger.proxy_screen_table(
+                screen_rows, metric="ρ" if task == "regression" else "AUC"
+            )
             # Pass any precomputed matrix straight back so the caller's cache is
             # still primed when screening is skipped.
             return [
                 (name, desc, precomputed.get(name), None) for name, desc in applicable
             ]
 
+        if task == "regression":
+            return self._proxy_screen_regression(
+                smiles_list, np.asarray(y, dtype=float), applicable, precomputed
+            )
         return self._proxy_screen(
             smiles_list, np.asarray(y, dtype=int), applicable, precomputed
         )
@@ -296,4 +314,120 @@ class DescriptorPortfolio:
         logger.rule()
         return [
             (name, desc, feature_map[name], solo_aucs[name]) for name, desc in passing
+        ]
+
+    def _proxy_screen_regression(
+        self,
+        smiles_list: list,
+        y: np.ndarray,
+        applicable: list,
+        precomputed: dict = None,
+    ) -> list:
+        """Regression twin of :meth:`_proxy_screen`: same greedy rule, Spearman ρ.
+
+        A shallow random-forest regressor on 3 quantile-stratified folds gives each
+        descriptor an out-of-fold prediction. The reference descriptor seeds the ensemble;
+        each other descriptor, best first, is added when its solo ρ matches the
+        reference's (gate A) or adding it does not lower the averaged ensemble's ρ
+        (gate B), up to the descriptor cap. No class-balance batching applies.
+        """
+        from ..preprocessors.regression.prep import Preprocessor
+        from ..utils.metrics import spearman_score
+        from ..utils.splits import quantile_bins
+        from sklearn.ensemble import RandomForestRegressor
+        from sklearn.model_selection import StratifiedKFold, cross_val_predict
+
+        def rho(pred):
+            value = spearman_score(y, pred)
+            return -1.0 if value is None else value
+
+        proxy_model = RandomForestRegressor(
+            n_estimators=100, max_depth=6, n_jobs=1, random_state=42
+        )
+        bins = quantile_bins(y, max(1, min(5, len(y) // 6)))
+        cv = list(
+            StratifiedKFold(n_splits=3, shuffle=True, random_state=42).split(
+                np.zeros(len(y)), bins
+            )
+        )
+
+        logger.rule("Descriptor screening — proxy CV (regression)")
+        logger.info(f"  Using full dataset ({len(y):,} samples) for proxy CV")
+        oof_preds, solo_rhos, feature_map = {}, {}, {}
+        for name, desc in applicable:
+            X_full = (precomputed or {}).get(name)
+            if X_full is None:
+                logger.info(
+                    f"  [{name}] Computing features for {len(smiles_list):,} SMILES..."
+                )
+                X_full = desc.transform(smiles_list)
+            feature_map[name] = X_full
+            prep = Preprocessor()
+            prep.fit(X_full, y)
+            X_prep = prep.transform(X_full)
+            pred = cross_val_predict(proxy_model, X_prep, y, cv=cv)
+            oof_preds[name] = pred
+            solo_rhos[name] = rho(pred)
+            logger.info(f"  [{name}] solo proxy ρ = {solo_rhos[name]:.4f}")
+
+        default_ref = _REFERENCE_DESCRIPTOR[self.mode]
+        if default_ref in solo_rhos:
+            ref_name = default_ref
+        else:
+            ref_name = max(solo_rhos, key=solo_rhos.__getitem__)
+            logger.warning(
+                f"Reference descriptor '{default_ref}' not applicable; "
+                f"falling back to '{ref_name}' (highest solo ρ) as reference"
+            )
+        ref_rho = solo_rhos[ref_name]
+        passing = [(ref_name, next(d for n, d in applicable if n == ref_name))]
+        ensemble_rho = rho(oof_preds[ref_name])
+
+        candidates = sorted(
+            [(n, d) for n, d in applicable if n != ref_name],
+            key=lambda nd: solo_rhos[nd[0]],
+            reverse=True,
+        )
+        for name, desc in candidates:
+            if len(passing) >= _MAX_DESCRIPTORS:
+                logger.info(
+                    f"  [{name}] SKIPPED — ensemble cap of {_MAX_DESCRIPTORS} reached"
+                )
+                continue
+            gate_a = solo_rhos[name] >= ref_rho
+            candidate_rho = rho(
+                np.mean([oof_preds[n] for n, _ in passing] + [oof_preds[name]], axis=0)
+            )
+            gate_b = candidate_rho >= ensemble_rho
+            if gate_a or gate_b:
+                passing.append((name, desc))
+                ensemble_rho = rho(np.mean([oof_preds[n] for n, _ in passing], axis=0))
+                logger.info(
+                    f"  [{name}] ADDED   gate_A={gate_a} gate_B={gate_b} "
+                    f"→ ensemble ρ now {ensemble_rho:.4f}"
+                )
+            else:
+                logger.info(
+                    f"  [{name}] DROPPED gate_A={gate_a} gate_B={gate_b} "
+                    f"(ens would be {candidate_rho:.4f} < current={ensemble_rho:.4f})"
+                )
+
+        passing_names = {n for n, _ in passing}
+        logger.proxy_screen_table(
+            [
+                {
+                    "name": name,
+                    "n_features": int(feature_map[name].shape[1]),
+                    "proxy_auc": solo_rhos[name],
+                    "status": "reference"
+                    if name == ref_name
+                    else ("pass" if name in passing_names else "drop"),
+                }
+                for name, _ in applicable
+            ],
+            metric="ρ",
+        )
+        logger.rule()
+        return [
+            (name, desc, feature_map[name], solo_rhos[name]) for name, desc in passing
         ]

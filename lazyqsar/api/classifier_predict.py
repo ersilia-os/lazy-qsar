@@ -25,7 +25,7 @@ import tempfile
 import numpy as np
 import pandas as pd
 
-from ..ensemble.combine import OUTPUT_NAMES, mask_rows
+from ..ensemble.combine import OUTPUT_NAMES_BY_TASK, mask_rows, read_task
 from ..ensemble.runner import (
     get_chunk_size,
     new_progress,
@@ -207,10 +207,36 @@ def _unparseable(smiles_list, scan):
 def _as_column(values):
     """Reduce one output to the single column that goes in the CSV.
 
-    ``binary`` is already per-sample labels; the rest are ``[negative, positive]`` pairs
-    and the positive class is the one reported.
+    ``binary`` and the regression ``value`` are already per-sample; the rest are
+    ``[negative, positive]`` pairs and the positive class is the one reported.
     """
     return values if values.ndim == 1 else values[:, 1]
+
+
+def _resolve_predict_type(sources, predict_type):
+    """The output to write, checked against the task every source was fitted for.
+
+    One task per call: the CSV has one ``predict_type`` for every column, and no output
+    means something for both tasks. ``None`` picks the task's natural default.
+    """
+    from ..ensemble.runner import _read_metadata
+
+    tasks = {read_task(_read_metadata(s.task_dir)) for s in sources}
+    if len(tasks) > 1:
+        raise ValueError(
+            "These models mix classification and regression checkpoints; predict them "
+            "in separate calls (one task per run)."
+        )
+    task = tasks.pop()
+    allowed = OUTPUT_NAMES_BY_TASK[task]
+    if predict_type is None:
+        return allowed[0]
+    if predict_type not in allowed:
+        raise ValueError(
+            f"predict_type '{predict_type}' is not available for {task} models; "
+            f"choose from {list(allowed)}."
+        )
+    return predict_type
 
 
 def predict(
@@ -218,7 +244,7 @@ def predict(
     input_csv: str = None,
     output_csv: str = None,
     models_txt: str = None,
-    predict_type: str = "proba",
+    predict_type: str | None = None,
     smiles: list = None,
 ) -> tuple[np.ndarray, list[str]]:
     """Score every model in *model_dir* over the given SMILES.
@@ -235,8 +261,10 @@ def predict(
         Where to write the result. Nothing is written when omitted.
     models_txt : str, optional
         One column name per line. Filters, and its order becomes the column order.
-    predict_type : str
-        One of ``proba``, ``rank``, ``logit``, ``lift``, ``score``, ``binary``.
+    predict_type : str, optional
+        Classification: one of ``proba``, ``rank``, ``logit``, ``lift``, ``score``,
+        ``binary`` (default ``proba``). Regression: ``value`` (the default). Read from the
+        checkpoints' ``metadata.json``; every model in one call must share a task.
     smiles : list of str, optional
         SMILES to score, instead of reading *input_csv*.
 
@@ -246,9 +274,10 @@ def predict(
     header : list of str
         Column names, aligned with the columns of *R*.
     """
-    if predict_type not in OUTPUT_NAMES:
+    all_outputs = {name for names in OUTPUT_NAMES_BY_TASK.values() for name in names}
+    if predict_type is not None and predict_type not in all_outputs:
         raise ValueError(
-            f"Unknown predict_type '{predict_type}'. Choose from: {sorted(OUTPUT_NAMES)}"
+            f"Unknown predict_type '{predict_type}'. Choose from: {sorted(all_outputs)}"
         )
 
     if smiles is not None:
@@ -266,6 +295,7 @@ def predict(
         sources = sources_from_parent(os.path.abspath(model_dir), models_txt)
     if not sources:
         raise ValueError("No valid models found.")
+    predict_type = _resolve_predict_type(sources, predict_type)
 
     header = [s.column_name for s in sources]
     n_total = len(smiles_list)

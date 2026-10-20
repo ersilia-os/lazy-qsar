@@ -315,3 +315,61 @@ def build_case(case_id):
     Y, R, S, A, spec_kwargs = _case(rng, B, D, curves=curves, no_skill=no_skill, **opts)
     spec_kwargs["pooled_knots"] = _pooled_knots(rng, pooled_mode)
     return Y, R, S, A, _spec(D, spec_kwargs)
+
+
+# ---------------------------------------------------------------------------------------
+# Regression scenarios -- frozen separately in ``golden/combine_regression.npz`` so the
+# classification file above is untouched by them.
+#
+# The regression branch of ``build_weight_matrix`` branches on: AD present or not; rank
+# with complete curves, incomplete curves, or no rank at all; the AD veto (none, partial,
+# every descriptor); and the skill vector (known, some unknown, all unknown, negative ρ).
+# ---------------------------------------------------------------------------------------
+
+_REG_SKILL = {
+    "known": [0.7, 0.4, 0.55, 0.2],
+    "some_unknown": [0.7, None, 0.55, None],
+    "all_unknown": [None, None, None, None],
+    "negative": [-0.3, 0.6, -0.1, 0.25],
+}
+
+REGRESSION_SCENARIOS = []
+for _ad in (False, True):
+    for _rank in ("none", "curves", "partial_curves"):
+        for _veto in ("none", "partial", "all") if _ad else ("none",):
+            REGRESSION_SCENARIOS.append(
+                (
+                    f"reg-ad{int(_ad)}-{_rank}-veto_{_veto}-known",
+                    (_ad, _rank, _veto, "known"),
+                )
+            )
+for _skill in ("some_unknown", "all_unknown", "negative"):
+    REGRESSION_SCENARIOS.append(
+        (f"reg-ad1-curves-veto_partial-{_skill}", (True, "curves", "partial", _skill))
+    )
+REGRESSION_SCENARIO_IDS = [case_id for case_id, _ in REGRESSION_SCENARIOS]
+_REG_BY_ID = dict(REGRESSION_SCENARIOS)
+
+
+def build_regression_case(case_id):
+    """``(Y, R, A, spec)`` for a regression scenario; deterministic per id."""
+    with_ad, rank, veto, skill = _REG_BY_ID[case_id]
+    seed = int.from_bytes(case_id.encode()[:8].ljust(8, b"\0"), "little") % (2**32)
+    rng = np.random.default_rng(seed)
+    B, D = 40, 4
+    Y = rng.normal(loc=6.5, scale=1.2, size=(B, D))
+    R = None if rank == "none" else rng.uniform(0.0, 1.0, size=(B, D))
+    A = rng.uniform(0.0, 1.0, size=(B, D)) if with_ad else None
+    curves = None
+    if rank != "none":
+        curves = _curves(rng, D, how_many_none=1 if rank == "partial_curves" else 0)
+    cutoffs = {"none": None, "partial": [0.5] * D, "all": [1.5] * D}[veto]
+    spec = EnsembleSpec(
+        descriptor_names=tuple(f"d{j}" for j in range(D)),
+        oof_aucs=tuple(_REG_SKILL[skill]),
+        proxy_aucs=tuple(None if j % 2 else 0.5 for j in range(D)),
+        rank_error_curves=None if curves is None else tuple(curves),
+        ad_hard_cutoffs=None if cutoffs is None else tuple(cutoffs),
+        task="regression",
+    )
+    return Y, R, A, spec

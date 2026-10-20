@@ -44,7 +44,7 @@ from rich.progress import (
 from ..registry import DESCRIPTOR_TYPES, get_descriptor_type
 from ..utils.logging import logger
 from .channels import required_channels, score_chunkwise
-from .combine import NO_REFERENCE_MESSAGE, EnsembleSpec, combine
+from .combine import NO_REFERENCE_MESSAGE, OUTPUT_NAMES_BY_TASK, EnsembleSpec, combine
 
 _DEFAULT_CHUNK = 1000
 
@@ -194,7 +194,11 @@ def _read_metadata(task_dir: str) -> dict:
     return read_json(path)
 
 
-def _load_artifact(directory: str):
+def _load_artifact(directory: str, task: str = "classification"):
+    if task == "regression":
+        from ..artifacts.regressor import LazyRegressorArtifact
+
+        return LazyRegressorArtifact.load(directory)
     from ..artifacts.classifier import LazyClassifierArtifact
 
     return LazyClassifierArtifact.load(directory)
@@ -252,8 +256,11 @@ def predict_tasks(
     smiles_list : list of str
         Query compounds.
     outputs : sequence of str
-        Which of :data:`~lazyqsar.ensemble.combine.OUTPUT_NAMES` to compute. All of them
-        come from the same pass, so asking for several costs no extra featurization.
+        Which outputs to compute -- a subset of the task's names in
+        :data:`~lazyqsar.ensemble.combine.OUTPUT_NAMES_BY_TASK`. All of them come from the
+        same pass, so asking for several costs no extra featurization. Every source must
+        accept them, so a classification and a regression checkpoint can share a call
+        only if the outputs are valid for both (none are).
     chunk_size : int, optional
         Rows per batch. Defaults to :func:`get_chunk_size`.
     scratch_dir : str, optional
@@ -284,6 +291,16 @@ def predict_tasks(
         chunk_size = get_chunk_size()
 
     plans = [_plan(s) for s in sources]
+    # Before featurizing: an output the checkpoint's task does not produce would otherwise
+    # surface only after the whole library had been scored.
+    for plan in plans:
+        allowed = OUTPUT_NAMES_BY_TASK[plan.spec.task]
+        unknown = [o for o in outputs if o not in allowed]
+        if unknown:
+            raise ValueError(
+                f"{plan.source.task_dir}: a {plan.spec.task} model cannot produce "
+                f"{unknown}; choose from {list(allowed)}"
+            )
     # Checked before featurizing, not after: `combine` would raise the same error, but only
     # once every molecule had been featurized and scored.
     if "rank" in outputs:
@@ -343,7 +360,7 @@ def predict_tasks(
             )
             for i, plan in users:
                 sub = os.path.join(plan.source.task_dir, name)
-                artifact = _load_artifact(sub)
+                artifact = _load_artifact(sub, plan.spec.task)
                 ad = _load_ad(sub) if plan.has_ad else None
                 store[(i, name)] = score_chunkwise(
                     artifact,
