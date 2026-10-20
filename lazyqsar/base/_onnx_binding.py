@@ -51,6 +51,9 @@ def _session_options(rt):
     options.enable_mem_pattern = False
     options.intra_op_num_threads = 1
     options.inter_op_num_threads = 1
+    # onnxmltools leaves a fixed probabilities width that onnxruntime re-infers as
+    # dynamic, and logs the (benign) merge; the artifact loader silences it the same way.
+    options.log_severity_level = 3
     return options
 
 

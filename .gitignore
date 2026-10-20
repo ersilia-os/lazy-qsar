@@ -20,6 +20,8 @@ dev/tests/results/*
 !dev/tests/results/README.md
 dev/benchmarks/results/*
 !dev/benchmarks/results/README.md
+# Regression benchmark: downloaded data and cached descriptors are never committed.
+dev/benchmarks/regression/.cache/
 
 
 # Byte-compiled / optimized / DLL files
