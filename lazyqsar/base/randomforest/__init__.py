@@ -1,1 +1,1 @@
-from .model import BaseRFClassifier, BaseRFArtifact  # noqa: F401
+from .model import BaseRFClassifier, BaseRFRegressor, BaseRFArtifact  # noqa: F401

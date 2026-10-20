@@ -105,11 +105,17 @@ class LinearArtifact:
         return proba
 
     def predict_rank(self, X) -> np.ndarray:
-        """Map calibrated scores to [0, 1] ranks via OOF ECDF, shape (n_samples, 2)."""
+        """Map scores to [0, 1] ranks via OOF ECDF.
+
+        Classification: shape (n_samples, 2). Regression: shape (n_samples,),
+        the ECDF of the prediction over the OOF predictions.
+        """
         if self._ranker is None:
             raise RuntimeError("No ranker stored in this artifact.")
         if getattr(self, "_ranker_prepared", None) is None:
             self._ranker_prepared = prepare_knots(self._ranker["knots"])
+        if self.task == "regression":
+            return rank_from_knots(self.run(X), prepared=self._ranker_prepared)
         rank_1 = rank_from_knots(
             self.predict_score(X)[:, 1], prepared=self._ranker_prepared
         )

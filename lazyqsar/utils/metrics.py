@@ -1,9 +1,12 @@
 """
-Evaluation metrics for imbalance-aware classifier assessment.
+Evaluation metrics for imbalance-aware classifier and regressor assessment.
 
 bedroc_score  : Boltzmann-Enhanced Discrimination of ROC (Truchon & Bayly 2007)
 aupr_score    : Area under precision-recall curve (average precision)
 composite_score: Mean normalized excess over random for AUROC, AUPR, BEDROC
+spearman_score: Spearman rank correlation (None when undefined)
+regression_metrics: Spearman, R², RMSE, MAE
+skill_score   : Task-dispatching skill (composite for classification, ρ for regression)
 """
 
 import numpy as np
@@ -205,3 +208,74 @@ def composite_score(
     alpha   : BEDROC alpha parameter (default 20)
     """
     return composite_metrics(y_true, y_score, alpha=alpha)["composite"]
+
+
+def _average_ranks(values: np.ndarray) -> np.ndarray:
+    """Return 1-based ranks with ties sharing their average rank (numpy-only)."""
+    values = np.asarray(values, dtype=float)
+    order = np.argsort(values, kind="mergesort")
+    sorted_vals = values[order]
+    ranks = np.empty(len(values), dtype=float)
+    # Group boundaries of equal values in the sorted array
+    boundaries = np.flatnonzero(np.diff(sorted_vals)) + 1
+    starts = np.concatenate([[0], boundaries])
+    ends = np.concatenate([boundaries, [len(values)]])
+    for s, e in zip(starts, ends):
+        ranks[order[s:e]] = 0.5 * (s + e - 1) + 1.0
+    return ranks
+
+
+def spearman_score(y_true: np.ndarray, y_pred: np.ndarray) -> float | None:
+    """
+    Spearman rank correlation between targets and predictions.
+
+    Returns None when the correlation is undefined: fewer than 3 finite pairs,
+    or either side constant (e.g. a head that predicts a single value).
+    Callers treat None as "unknown skill", mirroring the classification path
+    where AUC is undefined on a single class.
+    """
+    y_true = np.asarray(y_true, dtype=float).ravel()
+    y_pred = np.asarray(y_pred, dtype=float).ravel()
+    mask = np.isfinite(y_true) & np.isfinite(y_pred)
+    if mask.sum() < 3:
+        return None
+    r_true = _average_ranks(y_true[mask])
+    r_pred = _average_ranks(y_pred[mask])
+    r_true -= r_true.mean()
+    r_pred -= r_pred.mean()
+    denom = np.sqrt((r_true**2).sum() * (r_pred**2).sum())
+    if denom <= 0.0 or not np.isfinite(denom):
+        return None
+    return float(np.clip((r_true * r_pred).sum() / denom, -1.0, 1.0))
+
+
+def regression_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
+    """Return Spearman ρ, R², RMSE and MAE for continuous predictions."""
+    y_true = np.asarray(y_true, dtype=float).ravel()
+    y_pred = np.asarray(y_pred, dtype=float).ravel()
+    mask = np.isfinite(y_true) & np.isfinite(y_pred)
+    yt, yp = y_true[mask], y_pred[mask]
+    if yt.size == 0:
+        return {"spearman": None, "r2": None, "rmse": None, "mae": None}
+    resid = yt - yp
+    ss_res = float((resid**2).sum())
+    ss_tot = float(((yt - yt.mean()) ** 2).sum())
+    return {
+        "spearman": spearman_score(yt, yp),
+        "r2": (1.0 - ss_res / ss_tot) if ss_tot > 0.0 else None,
+        "rmse": float(np.sqrt(ss_res / yt.size)),
+        "mae": float(np.abs(resid).mean()),
+    }
+
+
+def skill_score(task: str, y_true: np.ndarray, y_score: np.ndarray) -> float:
+    """
+    Task-dispatching "higher is better" skill score in [0, 1]-ish units.
+
+    classification: composite_score (mean normalized excess over random)
+    regression    : max(0, Spearman ρ), 0.0 when ρ is undefined
+    """
+    if task == "regression":
+        rho = spearman_score(y_true, y_score)
+        return 0.0 if rho is None else max(0.0, rho)
+    return composite_score(y_true, y_score)

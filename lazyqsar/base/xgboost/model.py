@@ -76,9 +76,16 @@ from .presets import (
     MAXIMIZE_METRICS,
 )
 from lazyqsar.utils.logging import logger
-from lazyqsar.utils.ranking import binarize, prepare_knots, rank_from_knots
+from lazyqsar.utils.metrics import spearman_score
+from lazyqsar.utils.ranking import (
+    binarize,
+    prepare_knots,
+    rank_from_knots,
+    subsample_knots,
+)
 from lazyqsar.utils.splits import (
     auto_stratified_oof_n_splits,
+    make_quantile_oof_splits,
     make_stratified_oof_splits,
 )
 
@@ -664,15 +671,20 @@ class BaseXGBRegressor(BaseEstimator, RegressorMixin):
     device : str
         "cpu", "gpu", or "auto".  "auto" detects CUDA availability at the
         first .fit() call and uses GPU when available, CPU otherwise.
-    verbose : bool
-        If True, log chosen parameters and winning preset name.
     portfolio : bool
-        If True (default), train all five preset configurations on a validation
+        If True (default), train all preset configurations on a validation
         split and select the best.  If False, use the XGBoost default preset
         only (faster; useful as a no-tuning baseline).
     nthread : int
         Number of parallel threads for XGBoost.  -1 (default) lets XGBoost
         use all available CPU cores.
+    oof : bool
+        If True (default), collect out-of-fold predictions after the full fit
+        (quantile-stratified k-fold with the pre-selected preset).  These feed
+        the ensemble gate and the OOF ECDF ranker.  The regression analogue of
+        the classifier's ``calibrated`` flag; no calibrator is fitted.
+    max_rounds : int or None
+        Optional cap on boosting rounds for the full refit and OOF folds.
 
     Attributes (after .fit())
     --------------------------
@@ -682,20 +694,39 @@ class BaseXGBRegressor(BaseEstimator, RegressorMixin):
     portfolio_scores_ : dict
     booster_ : xgb.Booster
     best_iteration_ : int
+    timing_ : dict
+    oof_preds_ : ndarray (n,)   — out-of-fold predictions (when oof=True)
+    oof_rho_ : float or None    — Spearman ρ of OOF predictions
+    train_rho_ : float or None  — Spearman ρ of in-sample predictions
     """
 
-    def __init__(self, device: str = "cpu", portfolio: bool = True, nthread: int = -1):
+    def __init__(
+        self,
+        device: str = "cpu",
+        portfolio: bool = True,
+        nthread: int = -1,
+        oof: bool = True,
+        max_rounds: int | None = None,
+    ):
         self.device = device
         self.portfolio = portfolio
         self.nthread = nthread
+        self.oof = oof
+        self.max_rounds = max_rounds
 
     def fit(self, X, y):
+        """Fit the regressor, then collect OOF predictions when ``oof=True``."""
         if not _FIT_DEPS_AVAILABLE:
             raise ImportError(
                 "Training requires xgboost and scikit-learn. "
                 "Install with: pip install 'lazyqsar[fit]'"
             )
-        y = np.asarray(y).ravel()
+        if self.oof:
+            return self.collect_oof(X, y)
+        return self._fit_raw(X, y)
+
+    def _fit_raw(self, X, y):
+        y = np.asarray(y, dtype=float).ravel()
         profile = _inspect(X, y, task="regression")
         self.profile_ = profile
         device = _resolve_device(self.device)
@@ -704,11 +735,15 @@ class BaseXGBRegressor(BaseEstimator, RegressorMixin):
         logger.profile_summary(profile)
         logger.info(f"device={device} | portfolio={self.portfolio}")
 
+        self.timing_ = {}
+
         if profile.n_samples >= _VAL_MIN_ROWS:
             if self.portfolio:
+                _t_ps = _time.perf_counter()
                 best_name, best_params, best_iter, scores = _portfolio_select(
                     X, y, profile, device, self.nthread
                 )
+                self.timing_["portfolio_select"] = _time.perf_counter() - _t_ps
                 self.preset_name_ = best_name
                 self.params_ = best_params
                 self.portfolio_scores_ = scores
@@ -734,32 +769,114 @@ class BaseXGBRegressor(BaseEstimator, RegressorMixin):
                 f"lr={best_params['learning_rate']} | "
                 f"colsample_bytree={best_params['colsample_bytree']}"
             )
-            final_booster, best_iter = _train_phase2(X, y, best_params, best_iter)
+            _t_p2 = _time.perf_counter()
+            final_booster, best_iter = _train_phase2(
+                X, y, best_params, best_iter, max_rounds=self.max_rounds
+            )
+            self.timing_["phase2_refit"] = _time.perf_counter() - _t_p2
         else:
             # Dataset too small to split: use heuristic preset directly.
             params = _get_params(profile, device=device, nthread=self.nthread)
             self.params_ = params
             self.preset_name_ = "heuristic"
             self.portfolio_scores_ = {}
+            _t_p2 = _time.perf_counter()
             final_booster, best_iter, _ = _train_phase1(
                 X, y, X, y, params, verbose=False
             )
+            self.timing_["phase2_refit"] = _time.perf_counter() - _t_p2
 
         self.booster_ = final_booster
         self.best_iteration_ = best_iter
+        self.train_rho_ = spearman_score(y, self.predict(X))
         logger.rule("Done")
         logger.success(
             f"preset={self.preset_name_} | best_iteration={self.best_iteration_}"
         )
         return self
 
+    def collect_oof(
+        self, X, y, n_splits=None, random_state: int = 42
+    ) -> "BaseXGBRegressor":
+        """
+        Full fit (portfolio runs once), then quantile-stratified k-fold OOF
+        predictions with the pre-selected preset and fixed round count.
+
+        After this call
+        ---------------
+        self.oof_preds_ : ndarray, shape (n,)
+        self.oof_y_ : ndarray, shape (n,)
+        self.oof_rho_ : float or None
+        self._ranker_knots : ndarray — ECDF knots over OOF predictions
+        """
+        import scipy.sparse as sp
+
+        if sp.issparse(X):
+            X = X.toarray()
+        X = np.asarray(X, dtype=np.float32)
+        y = np.asarray(y, dtype=float).ravel()
+        n = len(y)
+        k, fold_splits = make_quantile_oof_splits(
+            y, n_splits=n_splits, random_state=random_state
+        )
+
+        logger.info(
+            f"BaseXGBRegressor.collect_oof: full fit on n={n} (portfolio runs once)"
+        )
+        self._fit_raw(X, y)
+
+        oof = np.full(n, np.nan, dtype=float)
+        logger.info(
+            f"collect_oof: {k}-fold OOF  preset={self.preset_name_}  "
+            f"rounds={self.best_iteration_}"
+        )
+        fold_times = []
+        for fold_idx, (train_idx, val_idx) in enumerate(fold_splits):
+            logger.debug(
+                f"  Fold {fold_idx + 1}/{k}: train={len(train_idx)}  val={len(val_idx)}"
+            )
+            _t_fold = _time.perf_counter()
+            fold_booster, fold_best_iter = _train_phase2(
+                X[train_idx],
+                y[train_idx],
+                self.params_,
+                self.best_iteration_,
+                max_rounds=self.max_rounds,
+                label=None,
+            )
+            oof[val_idx] = fold_booster.predict(
+                xgb.DMatrix(X[val_idx]), iteration_range=(0, fold_best_iter + 1)
+            )
+            fold_times.append(_time.perf_counter() - _t_fold)
+
+        self.timing_["oof_folds"] = fold_times
+        self.timing_["oof_total"] = sum(fold_times)
+        self.oof_preds_ = oof
+        self.oof_y_ = y.copy()
+        self.oof_rho_ = spearman_score(y, oof)
+        self._ranker_knots = subsample_knots(np.sort(oof), _RANKER_MAX_KNOTS)
+        self._ranker_prepared_ = prepare_knots(self._ranker_knots)
+        logger.success(
+            f"OOF collected ({k} folds) | rho_oof={self.oof_rho_} | "
+            f"rho_train={self.train_rho_}"
+        )
+        return self
+
     def predict(self, X):
-        """Return continuous predictions."""
+        """Return continuous predictions, shape (n_samples,)."""
         check_is_fitted(self, "booster_")
         dtest = xgb.DMatrix(X)
         return self.booster_.predict(
             dtest, iteration_range=(0, self.best_iteration_ + 1)
         )
+
+    def predict_rank(self, X) -> np.ndarray:
+        """Map predictions to [0, 1] via the OOF ECDF, shape (n_samples,)."""
+        check_is_fitted(self, "_ranker_knots")
+        prepared = getattr(self, "_ranker_prepared_", None)
+        if prepared is None:
+            prepared = self._ranker_prepared_ = prepare_knots(self._ranker_knots)
+        return rank_from_knots(self.predict(X), prepared=prepared)
 
     def to_onnx(self, path: str) -> None:
         """
@@ -800,7 +917,11 @@ class BaseXGBRegressor(BaseEstimator, RegressorMixin):
             "params": self.params_,
             "profile": dataclasses.asdict(self.profile_),
             "portfolio_scores": self.portfolio_scores_,
+            "oof_rho": getattr(self, "oof_rho_", None),
+            "train_rho": getattr(self, "train_rho_", None),
         }
+        if hasattr(self, "_ranker_knots"):
+            metadata["ranker"] = {"knots": self._ranker_knots.tolist()}
         with open(os.path.join(directory, "xgboost.json"), "w") as f:
             json.dump(metadata, f, indent=2, cls=_NumpyEncoder)
 

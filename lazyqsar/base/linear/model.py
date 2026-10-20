@@ -37,12 +37,15 @@ try:
         SelectKBest,
         VarianceThreshold,
         f_classif,
+        f_regression,
     )
     from sklearn.linear_model import (
+        ElasticNet,
         ElasticNetCV,
         Lasso,
         LogisticRegression,
         LogisticRegressionCV,
+        Ridge,
         RidgeCV,
         SGDClassifier,
         SGDRegressor,
@@ -63,9 +66,9 @@ except ImportError:
     class BaseEstimator:  # type: ignore[no-redef]
         pass
 
-    SelectFromModel = SelectKBest = VarianceThreshold = f_classif = None  # type: ignore[assignment,misc]
-    ElasticNetCV = Lasso = LogisticRegression = LogisticRegressionCV = None  # type: ignore[assignment,misc]
-    RidgeCV = SGDClassifier = SGDRegressor = None  # type: ignore[assignment,misc]
+    SelectFromModel = SelectKBest = VarianceThreshold = f_classif = f_regression = None  # type: ignore[assignment,misc]
+    ElasticNet = ElasticNetCV = Lasso = LogisticRegression = LogisticRegressionCV = None  # type: ignore[assignment,misc]
+    Ridge = RidgeCV = SGDClassifier = SGDRegressor = None  # type: ignore[assignment,misc]
     balanced_accuracy_score = r2_score = roc_auc_score = None  # type: ignore[assignment]
     GridSearchCV = KFold = StratifiedKFold = StratifiedShuffleSplit = None  # type: ignore[assignment,misc]
     LabelEncoder = None  # type: ignore[assignment,misc]
@@ -73,9 +76,16 @@ except ImportError:
     _FIT_DEPS_AVAILABLE = False
 
 from lazyqsar.utils.logging import logger
-from lazyqsar.utils.ranking import binarize, prepare_knots, rank_from_knots
+from lazyqsar.utils.metrics import spearman_score
+from lazyqsar.utils.ranking import (
+    binarize,
+    prepare_knots,
+    rank_from_knots,
+    subsample_knots,
+)
 from lazyqsar.utils.splits import (
     auto_stratified_oof_n_splits,
+    make_quantile_oof_splits,
     make_stratified_oof_splits,
 )
 
@@ -1005,8 +1015,17 @@ class BaseLinearRegressor(BaseEstimator):
         VarianceThreshold cutoff. 0.0 removes only constant features.
     tuning_subsample : int
         Max rows used for alpha-grid tuning in the large regime.
-    verbose : bool
-        If True, log rule banners and regime info.
+    oof : bool
+        If True (default), collect out-of-fold predictions after the full fit
+        (quantile-stratified k-fold, hyperparameters frozen from the full fit).
+        These feed the ensemble gate and the OOF ECDF ranker.
+
+    Attributes (after .fit())
+    --------------------------
+    timing_ : dict
+    oof_preds_ : ndarray (n,)   — out-of-fold predictions (when oof=True)
+    oof_rho_ : float or None    — Spearman ρ of OOF predictions
+    train_rho_ : float or None  — Spearman ρ of in-sample predictions
     """
 
     def __init__(
@@ -1021,6 +1040,7 @@ class BaseLinearRegressor(BaseEstimator):
         random_state: int | None = 42,
         variance_threshold: float = 0.0,
         tuning_subsample: int = 10_000,
+        oof: bool = True,
     ):
         self.regime = regime
         self.alpha_values = alpha_values
@@ -1031,17 +1051,25 @@ class BaseLinearRegressor(BaseEstimator):
         self.random_state = random_state
         self.variance_threshold = variance_threshold
         self.tuning_subsample = tuning_subsample
+        self.oof = oof
 
     # ------------------------------------------------------------------
     # sklearn-compatible interface
     # ------------------------------------------------------------------
 
     def fit(self, X, y) -> "BaseLinearRegressor":
+        """Fit the regressor, then collect OOF predictions when ``oof=True``."""
         if not _FIT_DEPS_AVAILABLE:
             raise ImportError(
                 "Training requires scikit-learn. Install with: pip install 'lazyqsar[fit]'"
             )
+        if self.oof:
+            return self.collect_oof(X, y)
+        return self._fit_raw(X, y)
+
+    def _fit_raw(self, X, y) -> "BaseLinearRegressor":
         logger.rule("BaseLinearRegressor")
+        _t_hp = _time.perf_counter()
 
         X = check_array(X, dtype="numeric", accept_sparse="csr")
         y = np.asarray(y, dtype=float)
@@ -1113,13 +1141,101 @@ class BaseLinearRegressor(BaseEstimator):
         else:
             self.coef_ = None
 
+        self.timing_ = {"hparam_search": _time.perf_counter() - _t_hp}
+        self.train_rho_ = spearman_score(y, self.predict(X))
         logger.rule("Done")
+        return self
+
+    def _fold_estimator(self):
+        """Fresh estimator with the hyperparameters frozen from the full fit."""
+        if self.regime_ == "standard":
+            return Ridge(alpha=float(self._estimator.alpha_))
+        if self.regime_ == "high_dim":
+            return ElasticNet(
+                alpha=float(self._estimator.alpha_),
+                l1_ratio=float(self._estimator.l1_ratio_),
+                max_iter=self.max_iter,
+            )
+        from sklearn.base import clone
+
+        return clone(self._estimator)
+
+    def collect_oof(
+        self, X, y, n_splits: int | None = None, random_state: int = 42
+    ) -> "BaseLinearRegressor":
+        """
+        Full fit (alpha search runs once), then quantile-stratified k-fold OOF
+        predictions reusing the selected regularization — no inner CV per fold.
+
+        After this call
+        ---------------
+        self.oof_preds_ : ndarray, shape (n,)
+        self.oof_y_ : ndarray, shape (n,)
+        self.oof_rho_ : float or None
+        self._ranker_knots : ndarray — ECDF knots over OOF predictions
+        """
+        X = check_array(X, dtype="numeric", accept_sparse="csr")
+        y = np.asarray(y, dtype=float).ravel()
+        n = len(y)
+        k, fold_splits = make_quantile_oof_splits(
+            y, n_splits=n_splits, random_state=random_state
+        )
+
+        logger.info(
+            f"BaseLinearRegressor.collect_oof: full fit on n={n} (alpha search runs once)"
+        )
+        self._fit_raw(X, y)
+
+        oof = np.full(n, np.nan, dtype=float)
+        logger.info(f"collect_oof: {k}-fold OOF | regime={self.regime_}")
+        fold_times = []
+        for fold_idx, (train_idx, val_idx) in enumerate(fold_splits):
+            logger.debug(
+                f"  Fold {fold_idx + 1}/{k}: train={len(train_idx)}  val={len(val_idx)}"
+            )
+            _t_fold = _time.perf_counter()
+            X_tr, y_tr = X[train_idx], y[train_idx]
+            X_val = X[val_idx]
+            vt = VarianceThreshold(threshold=self.variance_threshold)
+            X_tr_t = vt.fit_transform(X_tr)
+            X_val_t = vt.transform(X_val)
+            if self._sfm is not None:
+                # Refit a fast univariate F-test selector on fold data, same size
+                # as the full-fit Lasso selection (no inner model per fold).
+                n_keep = int(self._sfm.get_support().sum())
+                fold_sfm = SelectKBest(f_regression, k=min(n_keep, X_tr_t.shape[1]))
+                X_tr_t = fold_sfm.fit_transform(X_tr_t, y_tr)
+                X_val_t = fold_sfm.transform(X_val_t)
+            fold_est = self._fold_estimator()
+            fold_est.fit(X_tr_t, y_tr, sample_weight=_regression_sample_weight(y_tr))
+            oof[val_idx] = fold_est.predict(X_val_t)
+            fold_times.append(_time.perf_counter() - _t_fold)
+
+        self.timing_["oof_folds"] = fold_times
+        self.timing_["oof_total"] = sum(fold_times)
+        self.oof_preds_ = oof
+        self.oof_y_ = y.copy()
+        self.oof_rho_ = spearman_score(y, oof)
+        self._ranker_knots = subsample_knots(np.sort(oof), _RANKER_MAX_KNOTS)
+        self._ranker_prepared_ = prepare_knots(self._ranker_knots)
+        logger.success(
+            f"OOF collected ({k} folds) | rho_oof={self.oof_rho_} | "
+            f"rho_train={self.train_rho_}"
+        )
         return self
 
     def predict(self, X) -> np.ndarray:
         check_is_fitted(self, attributes=["_estimator"])
         X = check_array(X, dtype="numeric", accept_sparse="csr")
         return self._estimator.predict(self._transform(X))
+
+    def predict_rank(self, X) -> np.ndarray:
+        """Map predictions to [0, 1] via the OOF ECDF, shape (n_samples,)."""
+        check_is_fitted(self, "_ranker_knots")
+        prepared = getattr(self, "_ranker_prepared_", None)
+        if prepared is None:
+            prepared = self._ranker_prepared_ = prepare_knots(self._ranker_knots)
+        return rank_from_knots(self.predict(X), prepared=prepared)
 
     def score(self, X, y) -> float:
         return r2_score(y, self.predict(X))
@@ -1177,7 +1293,11 @@ class BaseLinearRegressor(BaseEstimator):
             "regime": self.regime_,
             "n_features_in": self.n_features_in_,
             "feature_mask": self.feature_mask_.tolist(),
+            "oof_rho": getattr(self, "oof_rho_", None),
+            "train_rho": getattr(self, "train_rho_", None),
         }
+        if hasattr(self, "_ranker_knots"):
+            metadata["ranker"] = {"knots": self._ranker_knots.tolist()}
         with open(os.path.join(directory, "linear.json"), "w") as f:
             json.dump(metadata, f, indent=2)
 

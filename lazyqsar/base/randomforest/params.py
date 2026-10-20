@@ -117,8 +117,12 @@ def _detect_sparse_counts(X, sparsity: float) -> bool:
     return sparsity >= 0.85 or max_val <= 10
 
 
-def profile_rf_dataset(X, y) -> RFProfile:
-    """Compute a lightweight dataset profile for RF parameter selection."""
+def profile_rf_dataset(X, y, task: str = "classification") -> RFProfile:
+    """Compute a lightweight dataset profile for RF parameter selection.
+
+    For ``task="regression"`` the imbalance ratio is fixed at 1.0 (there are
+    no classes to balance).
+    """
     y = np.asarray(y).ravel()
     n_samples, n_features = X.shape
     sparsity = _compute_sparsity(X)
@@ -126,11 +130,11 @@ def profile_rf_dataset(X, y) -> RFProfile:
     n_p_ratio = float(n_samples) / max(n_features, 1)
     pct_numeric = _compute_pct_numeric(X)
 
-    unique, counts = np.unique(y.astype(int), return_counts=True)
-    if len(unique) >= 2:
-        imbalance_ratio = float(counts.max() / counts.min())
-    else:
-        imbalance_ratio = 1.0
+    imbalance_ratio = 1.0
+    if task == "classification":
+        unique, counts = np.unique(y.astype(int), return_counts=True)
+        if len(unique) >= 2:
+            imbalance_ratio = float(counts.max() / counts.min())
 
     return RFProfile(
         n_samples=n_samples,
@@ -148,12 +152,17 @@ def profile_rf_dataset(X, y) -> RFProfile:
 # ---------------------------------------------------------------------------
 
 
-def heuristic_rf_params(profile: RFProfile) -> dict:
+def heuristic_rf_params(profile: RFProfile, task: str = "classification") -> dict:
     """
     Return RF hyperparameters adapted to the dataset profile.
 
     All four returned keys (n_estimators, max_depth, min_samples_leaf,
-    max_features) are directly forwarded to sklearn's RandomForestClassifier.
+    max_features) are directly forwarded to sklearn's RandomForestClassifier
+    (or RandomForestRegressor when ``task="regression"``).
+
+    Regression differs only in max_features for dense data: Breiman's p/3
+    rule (0.33) instead of sqrt(p), since regression forests benefit from
+    considering more candidate features per split (Probst et al. 2019).
     """
     n = profile.n_samples
     p = profile.n_features
@@ -207,6 +216,8 @@ def heuristic_rf_params(profile: RFProfile) -> dict:
     # For very high-dimensional sparse data: log2 forces stronger tree diversity.
     if is_sparse and p > 500:
         max_features: str | int | float = "log2"
+    elif task == "regression":
+        max_features = 0.33
     else:
         max_features = "sqrt"
 
@@ -218,24 +229,29 @@ def heuristic_rf_params(profile: RFProfile) -> dict:
     }
 
 
-def default_rf_params() -> dict:
-    """sklearn RandomForestClassifier out-of-the-box defaults. Always in the portfolio."""
+def default_rf_params(task: str = "classification") -> dict:
+    """sklearn RandomForest out-of-the-box defaults. Always in the portfolio.
+
+    RandomForestRegressor defaults to max_features=1.0 (bagged trees), the
+    classifier to "sqrt".
+    """
     return {
         "n_estimators": 100,
         "max_depth": None,
         "min_samples_leaf": 1,
-        "max_features": "sqrt",
+        "max_features": 1.0 if task == "regression" else "sqrt",
     }
 
 
-def flaml_rf_params(profile: RFProfile) -> dict:
+def flaml_rf_params(profile: RFProfile, task: str = "classification") -> dict:
     """
     FLAML RF configuration via 1-NN meta-feature matching.
 
     Selects one of three portfolio configs from FLAML's RF portfolio
-    (microsoft/FLAML, flaml/default/rf/binary.json, MIT license).
+    (microsoft/FLAML, flaml/default/rf/{binary,regression}.json, MIT license).
 
-    Meta-features: [n_samples, n_features, 2, pct_numeric].
+    Meta-features: [n_samples, n_features, n_classes, pct_numeric], with
+    n_classes = 2 for classification and 0 for regression.
     Post-processing:
       - n_estimators capped at 100/200/300 by dataset size (cost control)
       - max_leaf_nodes capped at max(32, n // 3) to prevent overfitting on
@@ -251,22 +267,24 @@ def flaml_rf_params(profile: RFProfile) -> dict:
     n = profile.n_samples
     p = profile.n_features
 
-    center = np.array(_fd.BINARY["preprocessing"]["center"])
-    scale = np.array(_fd.BINARY["preprocessing"]["scale"])
-    query = np.array([float(n), float(p), 2.0, profile.pct_numeric])
+    data = _fd.REGRESSION if task == "regression" else _fd.BINARY
+    n_classes = 0.0 if task == "regression" else 2.0
+    center = np.array(data["preprocessing"]["center"])
+    scale = np.array(data["preprocessing"]["scale"])
+    query = np.array([float(n), float(p), n_classes, profile.pct_numeric])
     q_norm = (query - center) / scale
 
     best_dist, best_idx = float("inf"), 0
-    for nb in _fd.BINARY["neighbors"]:
+    for nb in data["neighbors"]:
         feat = np.array(nb["features"])
         d = float(np.dot(q_norm - feat, q_norm - feat))
         if d < best_dist:
             best_dist = d
             best_idx = nb["choice"][0]
 
-    hp = _fd.BINARY["portfolio"][best_idx]
+    hp = data["portfolio"][best_idx]
     if not hp:
-        return default_rf_params()
+        return default_rf_params(task)
 
     if n < 500:
         n_estimators = min(100, int(hp["n_estimators"]))
@@ -277,12 +295,16 @@ def flaml_rf_params(profile: RFProfile) -> dict:
 
     max_leaf_nodes = max(32, min(int(hp["max_leaves"]), n // 3))
 
-    return {
+    out = {
         "n_estimators": n_estimators,
         "max_features": float(hp["max_features"]),
         "max_leaf_nodes": max_leaf_nodes,
-        "criterion": hp["criterion"],
     }
+    # Regression forests keep sklearn's squared_error criterion; FLAML's
+    # regression entries either omit criterion or carry a classification one.
+    if task != "regression":
+        out["criterion"] = hp.get("criterion", "gini")
+    return out
 
 
 def autogluon_rf_params(profile: RFProfile) -> dict:

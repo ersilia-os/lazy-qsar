@@ -14,7 +14,7 @@ import numpy as np
 # ---------------------------------------------------------------------------
 try:
     from sklearn.base import BaseEstimator
-    from sklearn.ensemble import RandomForestClassifier
+    from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
     from sklearn.isotonic import IsotonicRegression
     from sklearn.linear_model import LogisticRegression
     from sklearn.metrics import balanced_accuracy_score, roc_auc_score
@@ -26,15 +26,21 @@ except ImportError:
     class BaseEstimator:  # type: ignore[no-redef]
         pass
 
-    RandomForestClassifier = None  # type: ignore[assignment,misc]
+    RandomForestClassifier = RandomForestRegressor = None  # type: ignore[assignment,misc]
     IsotonicRegression = LogisticRegression = None  # type: ignore[assignment,misc]
     balanced_accuracy_score = roc_auc_score = None  # type: ignore[assignment]
     check_array = check_is_fitted = None  # type: ignore[assignment]
     _FIT_DEPS_AVAILABLE = False
 
 from lazyqsar.utils.logging import logger
-from lazyqsar.utils.ranking import binarize, prepare_knots, rank_from_knots
-from lazyqsar.utils.splits import make_stratified_oof_splits
+from lazyqsar.utils.metrics import spearman_score
+from lazyqsar.utils.ranking import (
+    binarize,
+    prepare_knots,
+    rank_from_knots,
+    subsample_knots,
+)
+from lazyqsar.utils.splits import make_quantile_oof_splits, make_stratified_oof_splits
 from .params import (
     _HEURISTIC,
     profile_rf_dataset,
@@ -614,6 +620,292 @@ class BaseRFClassifier(BaseEstimator):
             json.dump(metadata, f, indent=2)
 
 
+def _min_gain_threshold_regression(n: int) -> float:
+    """
+    Adaptive minimum-gain threshold for RF regression portfolio selection.
+
+    Same shape as the classification rule, with the full sample count as the
+    effective size: the standard error of Spearman ρ scales as ~1/sqrt(n).
+    """
+    coef = 0.3 if n < 2_000 else 0.1
+    return max(_PORTFOLIO_MIN_GAIN, coef / max(1, n) ** 0.5)
+
+
+class BaseRFRegressor(BaseEstimator):
+    """
+    Regressor with automatically selected Random Forest hyperparameters.
+
+    Mirrors :class:`BaseRFClassifier`: an OOB portfolio (heuristic / default /
+    flaml / autogluon) picks the preset by out-of-bag Spearman ρ, then
+    quantile-stratified k-fold OOF predictions feed the ensemble gate and the
+    OOF ECDF ranker. No calibration and no decision cutoff.
+
+    Parameters
+    ----------
+    n_estimators, max_depth, min_samples_leaf, max_features
+        As in :class:`BaseRFClassifier`; ``_HEURISTIC`` derives them from the
+        dataset profile.
+    n_jobs : int
+        Parallelism for tree fitting. -1 uses all available cores.
+    random_state : int or None
+        Reproducibility seed.
+    oof : bool
+        If True (default), collect OOF predictions after fitting.
+
+    Attributes (after fit)
+    ----------------------
+    selected_preset_ : str
+    params_ : dict
+    oob_scores_ : dict      — OOB Spearman ρ per preset (portfolio path only)
+    oof_preds_ : ndarray (n,)
+    oof_rho_ : float or None
+    train_rho_ : float or None
+    timing_ : dict
+    """
+
+    def __init__(
+        self,
+        *,
+        n_estimators: int | str = _HEURISTIC,
+        max_depth: int | None | str = _HEURISTIC,
+        min_samples_leaf: int | str = _HEURISTIC,
+        max_features: str | int | float = _HEURISTIC,
+        n_jobs: int = -1,
+        random_state: int | None = 42,
+        oof: bool = True,
+    ):
+        self.n_estimators = n_estimators
+        self.max_depth = max_depth
+        self.min_samples_leaf = min_samples_leaf
+        self.max_features = max_features
+        self.n_jobs = n_jobs
+        self.random_state = random_state
+        self.oof = oof
+
+    _resolve_params = BaseRFClassifier._resolve_params
+
+    def fit(self, X, y) -> "BaseRFRegressor":
+        if not _FIT_DEPS_AVAILABLE:
+            raise ImportError(
+                "Training requires scikit-learn. Install with: pip install 'lazyqsar[fit]'"
+            )
+        if self.oof:
+            return self.collect_oof(X, y)
+        return self._fit_raw(X, y)
+
+    def _make_estimator(self, params: dict, oob_score: bool = False):
+        return RandomForestRegressor(
+            n_estimators=params["n_estimators"],
+            max_depth=params.get("max_depth", None),
+            min_samples_leaf=params.get("min_samples_leaf", 1),
+            max_features=params["max_features"],
+            max_leaf_nodes=params.get("max_leaf_nodes", None),
+            oob_score=oob_score,
+            n_jobs=self.n_jobs,
+            random_state=self.random_state,
+        )
+
+    def _fit_raw(self, X, y) -> "BaseRFRegressor":
+        logger.rule("BaseRFRegressor")
+        X = check_array(X, dtype="numeric", accept_sparse="csr")
+        y = np.asarray(y, dtype=float).ravel()
+        self.n_features_in_ = X.shape[1]
+
+        profile = profile_rf_dataset(X, y, task="regression")
+        n = X.shape[0]
+
+        _skip: set[str] = set()
+        if profile.n_features > 200:
+            _skip = {"flaml", "autogluon"}
+
+        all_presets = {}
+        for _name, _p in [
+            (
+                "heuristic",
+                self._resolve_params(heuristic_rf_params(profile, task="regression")),
+            ),
+            ("default", self._resolve_params(default_rf_params(task="regression"))),
+            (
+                "flaml",
+                self._resolve_params(flaml_rf_params(profile, task="regression")),
+            ),
+            ("autogluon", self._resolve_params(autogluon_rf_params(profile))),
+        ]:
+            if _name in _skip:
+                continue
+            _cur = _p.get("max_leaf_nodes")
+            if _cur is not None:
+                _cap = rf_leaf_cap(n, _p["n_estimators"])
+                all_presets[_name] = dict(_p, max_leaf_nodes=min(_cur, _cap))
+            else:
+                all_presets[_name] = _p
+
+        # The sklearn default grows unpruned bagged trees (max_features=1.0,
+        # min_samples_leaf=1); cap leaves so the ONNX export stays bounded.
+        d = all_presets["default"]
+        if d.get("max_leaf_nodes") is None and d.get("max_depth") is None:
+            all_presets["default"] = dict(
+                d, max_leaf_nodes=rf_leaf_cap(n, d["n_estimators"])
+            )
+
+        _t_fit = _time.perf_counter()
+        self.oob_scores_ = {}
+        if n >= _PORTFOLIO_MIN_N:
+            estimators = {}
+            for name, params in all_presets.items():
+                est = self._make_estimator(params, oob_score=True)
+                est.fit(X, y)
+                estimators[name] = est
+                oob = np.asarray(est.oob_prediction_, dtype=float).ravel()
+                rho = spearman_score(y, oob)
+                self.oob_scores_[name] = float("nan") if rho is None else rho
+
+            default_score = self.oob_scores_.get("default", float("nan"))
+            threshold = _min_gain_threshold_regression(n)
+            winner = "default"
+            best_gain = 0.0
+            for name in ("heuristic", "flaml", "autogluon"):
+                score = self.oob_scores_.get(name, float("nan"))
+                if score != score:
+                    continue
+                gain = score - default_score
+                if gain >= threshold and gain > best_gain:
+                    best_gain = gain
+                    winner = name
+
+            self._estimator = estimators[winner]
+            self.selected_preset_ = winner
+            self.params_ = all_presets[winner]
+            logger.portfolio_table(
+                fast_scores=self.oob_scores_,
+                params_map=all_presets,
+                winner=winner,
+                threshold=threshold,
+                default_score=default_score,
+                n_tr=n,
+                n_splits=1,
+                skipped=list(_skip),
+                model="rf",
+            )
+        else:
+            d_params = all_presets["default"]
+            self._estimator = self._make_estimator(d_params)
+            self._estimator.fit(X, y)
+            self.selected_preset_ = "default"
+            self.params_ = d_params
+            logger.info(
+                f"RF portfolio skipped (n={n} < {_PORTFOLIO_MIN_N}), using default directly"
+            )
+
+        self.timing_ = {"fit": _time.perf_counter() - _t_fit}
+        self.train_rho_ = spearman_score(y, self._estimator.predict(X))
+        p_ = self.params_
+        logger.info(
+            "BaseRFRegressor.fit: "
+            f"n={n:,} | p={X.shape[1]:,}"
+            f" | n_estimators={p_['n_estimators']}"
+            f" | max_depth={p_.get('max_depth', None)}"
+            f" | max_leaf_nodes={p_.get('max_leaf_nodes', None)}"
+            f" | min_samples_leaf={p_.get('min_samples_leaf', 1)}"
+            f" | max_features={p_['max_features']}"
+        )
+        logger.rule("Done")
+        return self
+
+    def collect_oof(
+        self, X, y, n_splits: int | None = None, random_state: int = 42
+    ) -> "BaseRFRegressor":
+        """Full fit (portfolio runs once), then quantile-stratified k-fold OOF."""
+        X = check_array(X, dtype="numeric", accept_sparse="csr")
+        y = np.asarray(y, dtype=float).ravel()
+        n = len(y)
+        k, fold_splits = make_quantile_oof_splits(
+            y, n_splits=n_splits, random_state=random_state
+        )
+        logger.info(
+            f"BaseRFRegressor.collect_oof: full fit on n={n} (forest fit runs once)"
+        )
+        self._fit_raw(X, y)
+
+        oof = np.full(n, np.nan, dtype=float)
+        logger.info(f"collect_oof: {k}-fold OOF | fold_solver=RandomForestRegressor")
+        fold_times = []
+        for fold_idx, (train_idx, val_idx) in enumerate(fold_splits):
+            logger.debug(
+                f"  Fold {fold_idx + 1}/{k}: train={len(train_idx)}  val={len(val_idx)}"
+            )
+            _t_fold = _time.perf_counter()
+            fold_est = self._make_estimator(self.params_)
+            fold_est.fit(X[train_idx], y[train_idx])
+            oof[val_idx] = fold_est.predict(X[val_idx])
+            fold_times.append(_time.perf_counter() - _t_fold)
+
+        self.timing_["oof_folds"] = fold_times
+        self.timing_["oof_total"] = sum(fold_times)
+        self.oof_preds_ = oof
+        self.oof_y_ = y.copy()
+        self.oof_rho_ = spearman_score(y, oof)
+        self._ranker_knots = subsample_knots(np.sort(oof), _RANKER_MAX_KNOTS)
+        self._ranker_prepared_ = prepare_knots(self._ranker_knots)
+        logger.success(
+            f"OOF collected ({k} folds) | rho_oof={self.oof_rho_} | "
+            f"rho_train={self.train_rho_}"
+        )
+        return self
+
+    def predict(self, X) -> np.ndarray:
+        """Return continuous predictions, shape (n_samples,)."""
+        check_is_fitted(self, attributes=["_estimator"])
+        X = check_array(X, dtype="numeric", accept_sparse="csr")
+        return self._estimator.predict(X)
+
+    def predict_rank(self, X) -> np.ndarray:
+        """Map predictions to [0, 1] via the OOF ECDF, shape (n_samples,)."""
+        check_is_fitted(self, attributes=["_ranker_knots"])
+        prepared = getattr(self, "_ranker_prepared_", None)
+        if prepared is None:
+            prepared = self._ranker_prepared_ = prepare_knots(self._ranker_knots)
+        return rank_from_knots(self.predict(X), prepared=prepared)
+
+    def to_onnx(self, path: str) -> None:
+        """
+        Export the trained forest to an ONNX file.
+
+        Accepts a float32 input named ``"float_input"`` with shape
+        ``(n_samples, n_features_in_)`` and produces a single output
+        ``"variable"`` float32 (n_samples, 1).
+        """
+        from skl2onnx import convert_sklearn
+        from skl2onnx.common.data_types import FloatTensorType
+
+        check_is_fitted(self, attributes=["_estimator"])
+        initial_types = [("float_input", FloatTensorType([None, self.n_features_in_]))]
+        with _rf_onnx_bool_attr_compat():
+            onnx_model = convert_sklearn(self._estimator, initial_types=initial_types)
+        with open(path, "wb") as f:
+            f.write(onnx_model.SerializeToString())
+
+    def save(self, directory: str) -> None:
+        """Write ``randomforest.json`` (fit metadata) and ``randomforest.onnx``."""
+        check_is_fitted(self, attributes=["_estimator"])
+        os.makedirs(directory, exist_ok=True)
+        self.to_onnx(os.path.join(directory, "randomforest.onnx"))
+        params = getattr(self, "params_", {})
+        metadata = {
+            "task": "regression",
+            "format": "onnx",
+            "n_estimators": params.get("n_estimators", self.n_estimators),
+            "selected_preset": getattr(self, "selected_preset_", "unknown"),
+            "n_features_in": self.n_features_in_,
+            "oof_rho": getattr(self, "oof_rho_", None),
+            "train_rho": getattr(self, "train_rho_", None),
+        }
+        if hasattr(self, "_ranker_knots"):
+            metadata["ranker"] = {"knots": self._ranker_knots.tolist()}
+        with open(os.path.join(directory, "randomforest.json"), "w") as f:
+            json.dump(metadata, f, indent=2)
+
+
 class BaseRFArtifact:
     """
     Load a saved Random Forest model for forward inference.
@@ -690,16 +982,20 @@ class BaseRFArtifact:
 
     def run(self, X) -> np.ndarray:
         """
-        Run calibrated inference on X.
+        Run inference on X.
 
         Returns
         -------
-        ndarray, shape (n_samples, 2)
+        Classification : ndarray, shape (n_samples, 2)
             Calibrated [P(class=0), P(class=1)].
+        Regression : ndarray, shape (n_samples,)
+            Predicted values.
         """
         X_f32 = np.asarray(X, dtype=np.float32)
         input_name = self._session.get_inputs()[0].name
         outputs = self._session.run(None, {input_name: X_f32})
+        if self.task == "regression":
+            return np.asarray(outputs[0], dtype=np.float64).ravel()
         prob_raw = outputs[1]
         if isinstance(prob_raw, list):
             proba = np.array(
@@ -715,6 +1011,10 @@ class BaseRFArtifact:
 
     def predict(self, X, cutoff: float | None = None) -> np.ndarray:
         """Return binary labels using the stored decision cutoff by default."""
+        if self.task != "classification":
+            raise RuntimeError(
+                "predict() is only available for classification artifacts."
+            )
         threshold = self.decision_cutoff_raw if cutoff is None else float(cutoff)
         # Threshold the same quantity the fit-time estimator does: raw score against
         # the raw cutoff. Comparing run() (calibrated) against decision_cutoff_raw
@@ -743,11 +1043,16 @@ class BaseRFArtifact:
         return np.column_stack([-logit_1, logit_1])
 
     def predict_rank(self, X) -> np.ndarray:
-        """Map raw scores to [0, 1] ranks via OOF ECDF, shape (n_samples, 2)."""
+        """Map scores to [0, 1] ranks via OOF ECDF.
+
+        Classification: shape (n_samples, 2). Regression: shape (n_samples,).
+        """
         if "ranker" not in self.metadata:
             raise RuntimeError("No ranker stored in this artifact.")
         if getattr(self, "_ranker_prepared", None) is None:
             self._ranker_prepared = prepare_knots(self.metadata["ranker"]["knots"])
+        if self.task == "regression":
+            return rank_from_knots(self.run(X), prepared=self._ranker_prepared)
         rank_1 = rank_from_knots(
             self.predict_score(X)[:, 1], prepared=self._ranker_prepared
         )
