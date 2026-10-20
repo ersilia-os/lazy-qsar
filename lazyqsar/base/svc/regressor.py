@@ -55,6 +55,7 @@ except ImportError:
 
 from .inspector import inspect as _inspect, DatasetProfile
 from .params import get_params as _svc_get_params
+from lazyqsar.base._onnx_binding import OnnxBoundHead
 from lazyqsar.utils.logging import logger
 from lazyqsar.utils.onnx_check import check_values, probe_rows
 from lazyqsar.utils.metrics import spearman_score
@@ -255,13 +256,19 @@ def _portfolio_select_svr(
 
 def _to_onnx(svr, path: str, n_features: int) -> None:
     """Export SVR or LinearSVR to ONNX; single output of standardised predictions."""
+    with open(path, "wb") as f:
+        f.write(_svr_onnx_bytes(svr, n_features))
+
+
+def _svr_onnx_bytes(svr, n_features: int) -> bytes:
+    """SVR or LinearSVR as a serialised ONNX graph (standardised output)."""
     from skl2onnx import convert_sklearn
     from skl2onnx.common.data_types import FloatTensorType
 
     initial_types = [("float_input", FloatTensorType([None, n_features]))]
-    onnx_model = convert_sklearn(svr, initial_types=initial_types, target_opset=15)
-    with open(path, "wb") as f:
-        f.write(onnx_model.SerializeToString())
+    return convert_sklearn(
+        svr, initial_types=initial_types, target_opset=15
+    ).SerializeToString()
 
 
 # ---------------------------------------------------------------------------
@@ -269,7 +276,7 @@ def _to_onnx(svr, path: str, n_features: int) -> None:
 # ---------------------------------------------------------------------------
 
 
-class BaseSVR(BaseEstimator, RegressorMixin):
+class BaseSVR(OnnxBoundHead, BaseEstimator, RegressorMixin):
     """
     Regressor with automatically selected SVR hyperparameters.
 
@@ -383,6 +390,7 @@ class BaseSVR(BaseEstimator, RegressorMixin):
         self.timing_["phase2_refit"] = _time.perf_counter() - _t_p2
 
         self.n_features_in_ = n_features
+        self._bind_onnx()
         self.train_rho_ = spearman_score(y, self.predict(X))
         logger.rule("Done")
         logger.success(
@@ -427,11 +435,19 @@ class BaseSVR(BaseEstimator, RegressorMixin):
         )
         return self
 
+    def _raw_native(self, X) -> np.ndarray:
+        """Standardised predictions from the scikit-learn estimator itself."""
+        X = check_array(X, dtype="numeric", accept_sparse=False)
+        return self.svr_.predict(X)
+
+    def _onnx_bytes(self) -> bytes:
+        return _svr_onnx_bytes(self.svr_, self.n_features_in_)
+
     def predict(self, X) -> np.ndarray:
         """Return predictions in original target units, shape (n_samples,)."""
         check_is_fitted(self, "svr_")
         X = check_array(X, dtype="numeric", accept_sparse=False)
-        return self.svr_.predict(X) * self.y_std_ + self.y_mean_
+        return self._raw(X) * self.y_std_ + self.y_mean_
 
     def predict_rank(self, X) -> np.ndarray:
         """Map predictions to [0, 1] via the OOF ECDF, shape (n_samples,)."""
@@ -444,10 +460,10 @@ class BaseSVR(BaseEstimator, RegressorMixin):
     def to_onnx(self, path: str) -> None:
         """Export to ONNX. The graph emits standardised predictions (see y_mean/y_std)."""
         check_is_fitted(self, "svr_")
-        _to_onnx(self.svr_, path, self.n_features_in_)
+        self._write_onnx(path)
         probe = getattr(self, "_onnx_probe_", None)
         if probe is not None:
-            check_values(path, probe, self.svr_.predict(probe), "BaseSVR")
+            check_values(path, probe, self._raw_native(probe), "BaseSVR")
 
     def save(self, directory: str) -> None:
         """Write ``svr.onnx`` and ``svr.json`` (fit metadata incl. target scaling)."""

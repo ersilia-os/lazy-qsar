@@ -32,6 +32,7 @@ except ImportError:
     check_array = check_is_fitted = None  # type: ignore[assignment]
     _FIT_DEPS_AVAILABLE = False
 
+from lazyqsar.base._onnx_binding import OnnxBoundHead
 from lazyqsar.utils.logging import logger
 from lazyqsar.utils.onnx_check import check_probability, check_values, probe_rows
 from lazyqsar.utils.metrics import spearman_score
@@ -81,6 +82,17 @@ def _min_gain_threshold(y: np.ndarray) -> float:
     coef = 0.3 if len(y) < 2_000 else 0.1
     noise_based = coef / max(1, n_minority) ** 0.5
     return max(_PORTFOLIO_MIN_GAIN, noise_based)
+
+
+def _forest_onnx(model) -> bytes:
+    """The fitted forest as a serialised ONNX graph."""
+    from skl2onnx import convert_sklearn
+    from skl2onnx.common.data_types import FloatTensorType
+
+    initial_types = [("float_input", FloatTensorType([None, model.n_features_in_]))]
+    with _rf_onnx_bool_attr_compat():
+        onnx_model = convert_sklearn(model._estimator, initial_types=initial_types)
+    return onnx_model.SerializeToString()
 
 
 @contextmanager
@@ -153,21 +165,12 @@ def _learn_balanced_accuracy_cutoff(
     return best_threshold, "oof_balanced_accuracy"
 
 
-def _apply_calibrator_artifact(proba: np.ndarray, cal: dict) -> np.ndarray:
-    raw_p1 = np.asarray(proba[:, 1], dtype=np.float64)
-    if cal["method"] == "isotonic":
-        p1 = np.clip(
-            np.interp(raw_p1, cal["X_thresholds"], cal["y_thresholds"]),
-            0,
-            1,
-        )
-    else:
-        A, B = cal["coef"], cal["intercept"]
-        p1 = 1.0 / (1.0 + np.exp(-(A * raw_p1 + B)))
-    return np.column_stack([1 - p1, p1])
+from lazyqsar.artifacts._common import (  # noqa: E402
+    apply_calibrator as _apply_calibrator_artifact,
+)
 
 
-class BaseRFClassifier(BaseEstimator):
+class BaseRFClassifier(OnnxBoundHead, BaseEstimator):
     """
     Binary classifier with automatically selected Random Forest hyperparameters.
 
@@ -390,6 +393,7 @@ class BaseRFClassifier(BaseEstimator):
             )
 
         self.timing_ = {"fit": _time.perf_counter() - _t_fit}
+        self._bind_onnx()
         self.classes_ = np.array([0, 1])
         self.decision_cutoff_raw_ = _DEFAULT_DECISION_CUTOFF
         self.decision_cutoff_raw_source_ = "default_0.5"
@@ -415,10 +419,20 @@ class BaseRFClassifier(BaseEstimator):
         logger.rule("Done")
         return self
 
+    _onnx_kind = "probability"
+
+    def _raw_native(self, X) -> np.ndarray:
+        """Raw P(y=1) from the scikit-learn forest itself."""
+        X = check_array(X, dtype="numeric", accept_sparse="csr")
+        return self._estimator.predict_proba(X)[:, 1]
+
+    def _onnx_bytes(self) -> bytes:
+        return _forest_onnx(self)
+
     def predict_proba(self, X):
         check_is_fitted(self, attributes=["_estimator"])
-        X = check_array(X, dtype="numeric", accept_sparse="csr")
-        proba = self._estimator.predict_proba(X)
+        p_raw = self._raw(X)
+        proba = np.column_stack([1 - p_raw, p_raw])
         if hasattr(self, "calibrator_"):
             if self.calibrator_method_ == "isotonic":
                 p1 = np.clip(self.calibrator_.predict(proba[:, 1]), 0, 1)
@@ -429,8 +443,8 @@ class BaseRFClassifier(BaseEstimator):
 
     def predict_score(self, X) -> np.ndarray:
         check_is_fitted(self, attributes=["_estimator"])
-        X = check_array(X, dtype="numeric", accept_sparse="csr")
-        return self._estimator.predict_proba(X)
+        p_raw = self._raw(X)
+        return np.column_stack([1 - p_raw, p_raw])
 
     def predict(self, X, cutoff: float | None = None):
         threshold = self.decision_cutoff_raw_ if cutoff is None else float(cutoff)
@@ -556,23 +570,11 @@ class BaseRFClassifier(BaseEstimator):
         path : str
             Destination file path, e.g. ``"model.onnx"``.
         """
-        from skl2onnx import convert_sklearn
-        from skl2onnx.common.data_types import FloatTensorType
-
         check_is_fitted(self, attributes=["_estimator"])
-        initial_types = [("float_input", FloatTensorType([None, self.n_features_in_]))]
-        with _rf_onnx_bool_attr_compat():
-            onnx_model = convert_sklearn(self._estimator, initial_types=initial_types)
-        with open(path, "wb") as f:
-            f.write(onnx_model.SerializeToString())
+        self._write_onnx(path)
         probe = getattr(self, "_onnx_probe_", None)
         if probe is not None:
-            check_probability(
-                path,
-                probe,
-                self._estimator.predict_proba(probe)[:, 1],
-                "BaseRFClassifier",
-            )
+            check_probability(path, probe, self._raw_native(probe), "BaseRFClassifier")
 
     def save(self, directory: str) -> None:
         """
@@ -641,7 +643,7 @@ def _min_gain_threshold_regression(n: int) -> float:
     return max(_PORTFOLIO_MIN_GAIN, coef / max(1, n) ** 0.5)
 
 
-class BaseRFRegressor(BaseEstimator):
+class BaseRFRegressor(OnnxBoundHead, BaseEstimator):
     """
     Regressor with automatically selected Random Forest hyperparameters.
 
@@ -809,7 +811,8 @@ class BaseRFRegressor(BaseEstimator):
             )
 
         self.timing_ = {"fit": _time.perf_counter() - _t_fit}
-        self.train_rho_ = spearman_score(y, self._estimator.predict(X))
+        self._bind_onnx()
+        self.train_rho_ = spearman_score(y, self.predict(X))
         p_ = self.params_
         logger.info(
             "BaseRFRegressor.fit: "
@@ -864,11 +867,18 @@ class BaseRFRegressor(BaseEstimator):
         )
         return self
 
+    def _raw_native(self, X) -> np.ndarray:
+        """Predictions from the scikit-learn forest itself."""
+        X = check_array(X, dtype="numeric", accept_sparse="csr")
+        return self._estimator.predict(X)
+
+    def _onnx_bytes(self) -> bytes:
+        return _forest_onnx(self)
+
     def predict(self, X) -> np.ndarray:
         """Return continuous predictions, shape (n_samples,)."""
         check_is_fitted(self, attributes=["_estimator"])
-        X = check_array(X, dtype="numeric", accept_sparse="csr")
-        return self._estimator.predict(X)
+        return self._raw(X)
 
     def predict_rank(self, X) -> np.ndarray:
         """Map predictions to [0, 1] via the OOF ECDF, shape (n_samples,)."""
@@ -886,18 +896,11 @@ class BaseRFRegressor(BaseEstimator):
         ``(n_samples, n_features_in_)`` and produces a single output
         ``"variable"`` float32 (n_samples, 1).
         """
-        from skl2onnx import convert_sklearn
-        from skl2onnx.common.data_types import FloatTensorType
-
         check_is_fitted(self, attributes=["_estimator"])
-        initial_types = [("float_input", FloatTensorType([None, self.n_features_in_]))]
-        with _rf_onnx_bool_attr_compat():
-            onnx_model = convert_sklearn(self._estimator, initial_types=initial_types)
-        with open(path, "wb") as f:
-            f.write(onnx_model.SerializeToString())
+        self._write_onnx(path)
         probe = getattr(self, "_onnx_probe_", None)
         if probe is not None:
-            check_values(path, probe, self._estimator.predict(probe), "BaseRFRegressor")
+            check_values(path, probe, self._raw_native(probe), "BaseRFRegressor")
 
     def save(self, directory: str) -> None:
         """Write ``randomforest.json`` (fit metadata) and ``randomforest.onnx``."""

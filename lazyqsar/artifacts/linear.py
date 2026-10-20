@@ -11,11 +11,16 @@ import os
 import numpy as np
 import onnxruntime as rt
 
+from lazyqsar.artifacts._common import DecisionCutoffMixin, apply_calibrator
 from lazyqsar.utils.ranking import prepare_knots, rank_from_knots
 
 
-class LinearArtifact:
-    """Load and run a saved linear model ONNX pipeline."""
+class LinearArtifact(DecisionCutoffMixin):
+    """Load and run a saved linear model ONNX pipeline.
+
+    The one inference implementation for linear heads; ``BaseLinearArtifact`` is an
+    alias of this class.
+    """
 
     def __init__(self):
         self._session = None
@@ -41,6 +46,7 @@ class LinearArtifact:
         self._input_name = self._session.get_inputs()[0].name
         self._cal = self.metadata.get("calibrator", None)
         self._ranker = self.metadata.get("ranker", None)
+        self._load_cutoffs(self.metadata)
         return self
 
     def run(self, X) -> np.ndarray:
@@ -66,19 +72,7 @@ class LinearArtifact:
                 if proba.ndim == 1:
                     proba = np.column_stack([1 - proba, proba])
             if self._cal is not None:
-                raw_p1 = proba[:, 1]
-                if self._cal["method"] == "isotonic":
-                    p1 = np.clip(
-                        np.interp(
-                            raw_p1, self._cal["X_thresholds"], self._cal["y_thresholds"]
-                        ),
-                        0,
-                        1,
-                    )
-                else:  # platt
-                    A, B = self._cal["coef"], self._cal["intercept"]
-                    p1 = 1.0 / (1.0 + np.exp(-(A * raw_p1 + B)))
-                proba = np.column_stack([1 - p1, p1])
+                proba = apply_calibrator(proba, self._cal)
             return proba
         else:
             return np.asarray(outputs[0], dtype=np.float64).ravel()

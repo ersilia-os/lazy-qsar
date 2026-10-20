@@ -50,6 +50,41 @@ def _iter_h5(h5_file: str, chunk_size: int = 4096):
         raise ValueError(f"No recognised dataset key in {h5_file!r}. Found: {keys}")
 
 
+_FLOAT32_MAX = float(np.finfo(np.float32).max)
+
+
+def _checked_features(X):
+    """Refuse feature values the ONNX graphs cannot represent; returns *X* unchanged.
+
+    Every model runs as a float32 ONNX graph. NaN is fine -- it is imputed exactly as it
+    was at fit time -- but ``inf`` is not imputed, and a finite float64 beyond the
+    float32 range silently *becomes* ``inf`` in the cast. Either would yield a prediction
+    for a value the model never represented, so both are rejected here, with the count,
+    rather than turned into a plausible-looking number downstream.
+    """
+    data = X.data if hasattr(X, "toarray") else np.asarray(X)
+    if not np.issubdtype(data.dtype, np.floating):
+        return X
+    with np.errstate(invalid="ignore"):
+        n_inf = int(np.isinf(data).sum())
+        n_big = int((np.abs(data[np.isfinite(data)]) > _FLOAT32_MAX).sum())
+    if n_inf or n_big:
+        parts = []
+        if n_inf:
+            parts.append(f"{n_inf} infinite value{'s' if n_inf != 1 else ''}")
+        if n_big:
+            parts.append(
+                f"{n_big} value{'s' if n_big != 1 else ''} beyond the float32 range "
+                f"(|x| > {_FLOAT32_MAX:.3g})"
+            )
+        raise ValueError(
+            f"Feature matrix has {' and '.join(parts)}. Models run as float32 "
+            "ONNX graphs, which cannot represent them; replace them with NaN (imputed "
+            "like any missing value) or clip them before fitting or predicting."
+        )
+    return X
+
+
 # Re-exported, not redefined: there used to be a second, divergent copy here, and the
 # inference artifacts raised whichever of the two their module happened to import.
 NO_REFERENCE_MESSAGE = _NO_REFERENCE_MESSAGE
@@ -107,6 +142,7 @@ class LazyClassifier:
                 raise ValueError("Provide either X or h5_file.")
             logger.info(f"Loading features from {h5_file!r}")
             X = _load_h5(h5_file, h5_idxs)
+        X = _checked_features(X)
 
         y = np.asarray(y, dtype=int)
 
@@ -252,6 +288,7 @@ class LazyClassifier:
         """Return calibrated class probabilities, shape (n, 2)."""
         if X is None:
             X = _load_h5(h5_file, h5_idxs)
+        X = _checked_features(X)
         logger.debug(f"predict_proba: X={X.shape}")
         return self._model.predict_proba(X)
 
@@ -271,24 +308,28 @@ class LazyClassifier:
         """
         if X is None:
             X = _load_h5(h5_file, h5_idxs)
+        X = _checked_features(X)
         return self._model.predict(X, cutoff=cutoff)
 
     def predict_lift(self, X=None, h5_file=None, h5_idxs=None) -> np.ndarray:
         """Return lift over population prior, shape (n, 2)."""
         if X is None:
             X = _load_h5(h5_file, h5_idxs)
+        X = _checked_features(X)
         return self._model.predict_lift(X)
 
     def predict_logit(self, X=None, h5_file=None, h5_idxs=None) -> np.ndarray:
         """Return log-odds of calibrated probabilities, shape (n, 2)."""
         if X is None:
             X = _load_h5(h5_file, h5_idxs)
+        X = _checked_features(X)
         return self._model.predict_logit(X)
 
     def predict_score(self, X=None, h5_file=None, h5_idxs=None) -> np.ndarray:
         """Return raw (pre-calibration) scores, shape (n, 2)."""
         if X is None:
             X = _load_h5(h5_file, h5_idxs)
+        X = _checked_features(X)
         return self._model.predict_score(X)
 
     def _oof_percentile(self, X=None, h5_file=None, h5_idxs=None) -> np.ndarray:
@@ -301,6 +342,7 @@ class LazyClassifier:
         """
         if X is None:
             X = _load_h5(h5_file, h5_idxs)
+        X = _checked_features(X)
         return self._model._oof_percentile(X)
 
     def predict_rank(self, X=None, h5_file=None, h5_idxs=None) -> np.ndarray:
@@ -323,6 +365,7 @@ class LazyClassifier:
             raise ValueError(NO_REFERENCE_MESSAGE)
         if X is None:
             X = _load_h5(h5_file, h5_idxs)
+        X = _checked_features(X)
         anchors = getattr(self._model, "reference_rank_anchors_", None) or {}
         pair = (
             anchors.get("anchor_low") if anchors.get("anchor_low_used") else None,
@@ -344,6 +387,7 @@ class LazyClassifier:
         """
         if X is None:
             X = _load_h5(h5_file, h5_idxs)
+        X = _checked_features(X)
         getter = getattr(self._model, "oof_channels", None)
         return getter(X) if getter is not None else None
 
@@ -419,6 +463,7 @@ class LazyRegressor:
                 raise ValueError("Provide either X or h5_file.")
             logger.info(f"Loading features from {h5_file!r}")
             X = _load_h5(h5_file, h5_idxs)
+        X = _checked_features(X)
         y = np.asarray(y, dtype=float)
 
         self._model = _AssemblerRegressor(
@@ -439,6 +484,7 @@ class LazyRegressor:
         """Return predicted values, shape (n,)."""
         if X is None:
             X = _load_h5(h5_file, h5_idxs)
+        X = _checked_features(X)
         logger.debug(f"predict: X={X.shape}")
         return self._model.predict(X)
 
@@ -450,6 +496,7 @@ class LazyRegressor:
         """
         if X is None:
             X = _load_h5(h5_file, h5_idxs)
+        X = _checked_features(X)
         return self._model._oof_percentile(X)
 
     def _oof_percentile_from_value(self, values):
@@ -459,6 +506,7 @@ class LazyRegressor:
         """Out-of-fold ``(value, rank)`` on the training rows, or None. Fit-time only."""
         if X is None:
             X = _load_h5(h5_file, h5_idxs)
+        X = _checked_features(X)
         getter = getattr(self._model, "oof_channels", None)
         return getter(X) if getter is not None else None
 

@@ -7,7 +7,35 @@ against is versioned separately and its id is recorded in every checkpoint's
 
 ## [Unreleased]
 
-Nothing yet.
+### Changed
+
+- **Every fitted head predicts through its own ONNX graph.** Like the preprocessor since
+  3.5, each head (XGBoost, linear, random forest, SVC, SVR) and the applicability domain
+  is converted to ONNX as soon as its final model is fitted, the graph is verified against
+  the native model, and every later prediction -- probabilities, scores, ranks, in-sample
+  metrics, the reference-library scan, AD scores and the hard cutoffs derived from them --
+  comes from that graph. A fitted model and its checkpoint therefore compute the same
+  function: bit-identically for linear, SVM, preprocessing and AD graphs, and to ~1e-6 for
+  tree ensembles, whose onnxruntime summation order depends on thread count. Out-of-fold
+  fold models stay native (their gap to ONNX is bounded by a test). Predictions move by
+  float32 rounding only (measured <= 2e-6).
+- **One artifact implementation per head.** `BaseXGBArtifact` and `BaseLinearArtifact`
+  are now aliases of `lazyqsar.artifacts.XGBoostArtifact` / `LinearArtifact` (which gained
+  the decision-cutoff attributes and `predict`); the calibrator formula and
+  `_correct_prior` each exist once.
+
+### Added
+
+- **Feature input contract.** The descriptor-agnostic `LazyClassifier` / `LazyRegressor`
+  refuse infinite values and finite values beyond the float32 range, at fit and at
+  predict, with a count. NaN is still accepted and imputed. Previously `inf` reached the
+  graphs unimputed and out-of-range values silently became `inf` in the float32 cast.
+- **ONNX parity matrix** (`tests/fit/test_onnx_parity_matrix.py`): every head x regime x
+  task with the regime forced -- all four XGBoost presets on dense and fingerprint data,
+  isotonic calibration on every classifier head, the three linear regimes, RF below and
+  above the OOB threshold, kernel and linear SVC/SVR, all eight scaler x reducer
+  combinations, XGBoost on missing values -- compared against the native model and the
+  fitted model on training rows, fresh rows and rows one float32 ULP either side.
 
 ## 3.8.0
 

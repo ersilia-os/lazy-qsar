@@ -135,7 +135,7 @@ def test_xgb_export_keeps_every_tree_of_an_early_stopped_parallel_forest(tmp_pat
 
 
 def test_export_self_check_refuses_a_graph_that_diverges(tmp_path, monkeypatch):
-    """Reintroduce the original Tweedie bug and the save must fail, not write a wrong model.
+    """Reintroduce the original Tweedie bug and the fit must fail, not yield a wrong model.
 
     This is the guarantee the self-check exists for: a conversion error is caught at
     export time, by the export, regardless of whether any parity test covers the regime.
@@ -156,35 +156,34 @@ def test_export_self_check_refuses_a_graph_that_diverges(tmp_path, monkeypatch):
     rng = np.random.default_rng(0)
     X = rng.normal(size=(150, 12)).astype(np.float32)
     y = np.exp(1.5 * X[:, 0] + 0.3 * rng.normal(size=150))
-    model = BaseXGBRegressor(oof=False).fit(X, y)
-    assert model.params_["objective"] == "reg:tweedie"
+    # Heads bind to their ONNX graph as soon as the final model is fitted, so the wrong
+    # conversion is refused at fit time -- before anything could be saved.
     with pytest.raises(OnnxExportMismatch, match="does not reproduce"):
-        model.save(str(tmp_path))
+        BaseXGBRegressor(oof=False).fit(X, y)
 
 
-def test_ad_self_check_covers_missing_values(tmp_path, monkeypatch):
-    """An AD graph without a working imputation step is refused at export.
+def test_ad_self_check_covers_missing_values(monkeypatch):
+    """An AD graph without a working imputation step is refused when the AD is fitted.
 
-    Only the *graph* is broken here: its medians are NaN, which reproduces the original
-    graph's behaviour (NaN propagates into the distance). The numpy scorer the check
-    compares against keeps the real medians.
+    Only the *graph* is broken: it is built with NaN medians, which reproduces the
+    original graph's behaviour (NaN propagates into the distance). The numpy scorer the
+    bind-time check compares against keeps the real medians.
     """
     from lazyqsar.applicability import domain
     from lazyqsar.utils.onnx_check import OnnxExportMismatch
 
-    ad = ApplicabilityDomain().fit(_ad_data())
-    real_medians = ad.imputer_.statistics_.copy()
-    real_score = domain.ApplicabilityDomain.score
+    real_bytes = domain.ApplicabilityDomain._onnx_bytes
 
-    def score_with_real_medians(self, X):
-        broken = self.imputer_.statistics_
-        self.imputer_.statistics_ = real_medians
+    def graph_without_imputation(self):
+        medians = self.imputer_.statistics_
+        self.imputer_.statistics_ = np.full_like(medians, np.nan)
         try:
-            return real_score(self, X)
+            return real_bytes(self)
         finally:
-            self.imputer_.statistics_ = broken
+            self.imputer_.statistics_ = medians
 
-    monkeypatch.setattr(domain.ApplicabilityDomain, "score", score_with_real_medians)
-    ad.imputer_.statistics_ = np.full_like(real_medians, np.nan)
+    monkeypatch.setattr(
+        domain.ApplicabilityDomain, "_onnx_bytes", graph_without_imputation
+    )
     with pytest.raises(OnnxExportMismatch):
-        ad.save(str(tmp_path))
+        ApplicabilityDomain().fit(_ad_data())
