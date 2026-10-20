@@ -241,8 +241,10 @@ class _EnsemblePredictMixin:
         ``predict`` uses. Above 0.75 the scale runs on to the model's own strongest
         out-of-fold actives at 0.95 and to certainty at 1.0, so values there say "beyond
         anything the reference contains" rather than naming a percentile. Between the
-        anchors it interpolates linearly, which is why the bottom half of the scale is
-        deliberately compressed: half of a generic library lands below 0.25.
+        anchors the scale follows a smooth monotone curve through the reference percentiles
+        (since 3.7; linear in probability before), so a histogram of ``rank`` has no steps
+        at the anchors. The bottom half of the scale is still deliberately compressed: half
+        of a generic library lands below 0.25.
 
         Raises ``ValueError`` on a checkpoint that carries no reference library. The other
         five outputs still work; only this one changed meaning.

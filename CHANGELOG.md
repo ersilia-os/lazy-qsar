@@ -9,6 +9,31 @@ against is versioned separately and its id is recorded in every checkpoint's
 
 Nothing yet.
 
+## 3.7.0
+
+### Changed
+
+- **`rank` is smooth between its anchors.** Up to 3.6 the scale was linear in probability
+  between the reference-percentile anchors (p50 → 0.25, p90 → 0.50, p99 → 0.65,
+  p99.9 → 0.75), so every anchor was a corner: molecules piled up just below it and the
+  density dropped sharply above. On the 50,000-molecule reference that was a 6.6x step at
+  0.25 and 2.2x at 0.50, the same on 50,000 Ersilia-library molecules outside the
+  reference, and it shows as spikes in any histogram of `rank`. The score is now read as
+  its percentile against the reference and mapped through a monotone cubic (PCHIP) in
+  tail depth `-log10(1 - percentile)` that passes exactly through the same anchors. Past
+  p99.9 the curve keeps rising instead of compressing the reference's top 0.1% onto one
+  value; above the reference maximum it runs on to the actives anchor (0.95) and to
+  certainty as before. Below the reference minimum it runs linearly from 0. The
+  implementation stays numpy-only, so the ONNX inference path is unchanged.
+- **What does not change:** the order of molecules (Spearman 1.0 against 3.6 on both
+  sets above), the anchors and what they mean, the decision cutoff (`DECISION_RANK`
+  still inverts to the reference's p99, so `binary` is identical) and every other
+  output. `proba_from_reference_rank` inverts the new scale, exactly at the anchors.
+- **Existing checkpoints get the new scale.** Only the reference knots are stored, and
+  the scale is computed from them at predict time, so a model fitted with 3.6 reports the
+  smooth `rank` under 3.7. Its values move between anchors (up to about 0.09 on the
+  reference); its order and its active calls do not.
+
 ## 3.6.3
 
 ### Changed
