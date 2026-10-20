@@ -486,13 +486,15 @@ class Logger:
         self._console.print("  [dim]" + "  |  ".join(footer_parts) + "[/dim]")
         self._console.line()
 
-    def descriptor_table(self, rows: list) -> None:
+    def descriptor_table(self, rows: list, metric: str = "AUC") -> None:
         """
-        Compact summary of all descriptors used in a LazyClassifierQSAR fit.
+        Compact summary of all descriptors used in a QSAR fit.
 
         rows : list of dicts with keys:
             name, n_features, sparsity, feat_time,
             ad_n_components, ad_cal_min, ad_cal_max
+        metric : column label for the skill values ("AUC", or "ρ" for regression).
+            The row keys stay ``*_auc`` for both tasks.
         """
         if not self._verbose:
             return
@@ -517,11 +519,11 @@ class Logger:
         table.add_column("AD comps", justify="right", min_width=9)
         table.add_column("AD cal max", justify="right", min_width=10)
         if has_proxy:
-            table.add_column("Proxy AUC", justify="right", min_width=10)
+            table.add_column(f"Proxy {metric}", justify="right", min_width=10)
         if has_train:
-            table.add_column("Train AUC", justify="right", min_width=10)
+            table.add_column(f"Train {metric}", justify="right", min_width=10)
         if has_quality:
-            table.add_column("Quality AUC", justify="right", min_width=12)
+            table.add_column(f"Quality {metric}", justify="right", min_width=12)
         if has_active:
             table.add_column("Active", justify="center", min_width=7)
 
@@ -678,9 +680,11 @@ class Logger:
         _add(tree, directory)
         self._console.print(tree)
 
-    def proxy_screen_table(self, rows: list) -> None:
+    def proxy_screen_table(self, rows: list, metric: str = "AUC") -> None:
         """
         Summary table for descriptor proxy-CV screening.
+
+        ``metric`` labels the proxy score column ("AUC", or "ρ" for regression).
 
         rows : list of dicts with keys:
             name        – descriptor name
@@ -701,7 +705,7 @@ class Logger:
         )
         table.add_column("Descriptor", style="cyan", no_wrap=True, min_width=12)
         table.add_column("Features", justify="right", min_width=9)
-        table.add_column("Proxy AUC", justify="right", min_width=10)
+        table.add_column(f"Proxy {metric}", justify="right", min_width=10)
         table.add_column("Status", justify="center", min_width=10)
 
         status_fmt = {
