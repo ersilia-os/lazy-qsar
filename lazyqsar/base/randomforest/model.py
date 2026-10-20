@@ -637,7 +637,8 @@ def _min_gain_threshold_regression(n: int) -> float:
     Adaptive minimum-gain threshold for RF regression portfolio selection.
 
     Same shape as the classification rule, with the full sample count as the
-    effective size: the standard error of Spearman ρ scales as ~1/sqrt(n).
+    effective size, applied to the *relative* out-of-bag RMSE improvement: its
+    sampling noise shrinks as ~1/sqrt(n).
     """
     coef = 0.3 if n < 2_000 else 0.1
     return max(_PORTFOLIO_MIN_GAIN, coef / max(1, n) ** 0.5)
@@ -648,7 +649,7 @@ class BaseRFRegressor(OnnxBoundHead, BaseEstimator):
     Regressor with automatically selected Random Forest hyperparameters.
 
     Mirrors :class:`BaseRFClassifier`: an OOB portfolio (heuristic / default /
-    flaml / autogluon) picks the preset by out-of-bag Spearman ρ, then
+    flaml / autogluon) picks the preset by out-of-bag RMSE, then
     quantile-stratified k-fold OOF predictions feed the ensemble gate and the
     OOF ECDF ranker. No calibration and no decision cutoff.
 
@@ -668,7 +669,7 @@ class BaseRFRegressor(OnnxBoundHead, BaseEstimator):
     ----------------------
     selected_preset_ : str
     params_ : dict
-    oob_scores_ : dict      — OOB Spearman ρ per preset (portfolio path only)
+    oob_scores_ : dict      — negative OOB RMSE per preset (portfolio path only)
     oof_preds_ : ndarray (n,)
     oof_rho_ : float or None
     train_rho_ : float or None
@@ -770,8 +771,14 @@ class BaseRFRegressor(OnnxBoundHead, BaseEstimator):
                 est.fit(X, y)
                 estimators[name] = est
                 oob = np.asarray(est.oob_prediction_, dtype=float).ravel()
-                rho = spearman_score(y, oob)
-                self.oob_scores_[name] = float("nan") if rho is None else rho
+                ok = np.isfinite(oob)
+                # Higher is better: negative out-of-bag RMSE, the metric every
+                # regression head's preset race uses.
+                self.oob_scores_[name] = (
+                    -float(np.sqrt(np.mean((y[ok] - oob[ok]) ** 2)))
+                    if ok.any()
+                    else float("nan")
+                )
 
             default_score = self.oob_scores_.get("default", float("nan"))
             threshold = _min_gain_threshold_regression(n)
@@ -781,7 +788,9 @@ class BaseRFRegressor(OnnxBoundHead, BaseEstimator):
                 score = self.oob_scores_.get(name, float("nan"))
                 if score != score:
                     continue
-                gain = score - default_score
+                # Relative RMSE improvement, so the margin means the same at any
+                # target scale.
+                gain = (score - default_score) / max(abs(default_score), 1e-12)
                 if gain >= threshold and gain > best_gain:
                     best_gain = gain
                     winner = name

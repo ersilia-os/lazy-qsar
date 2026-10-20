@@ -70,34 +70,62 @@ def test_ad_artifact_matches_numpy_on_missing_values(ad_pair, kind):
 # ------------------------------------------------------------------ xgboost regressor
 
 
-def _fit_xgb(y, X, tmp_path):
-    model = BaseXGBRegressor(oof=False).fit(X, y)
-    model.save(str(tmp_path))
-    return model, XGBoostArtifact.load(str(tmp_path))
+def _wrap_booster(booster, X, y):
+    """A BaseXGBRegressor around a hand-built booster, as a user could assemble one."""
+    from lazyqsar.base.xgboost.inspector import inspect
+    from lazyqsar.utils.onnx_check import probe_rows
+
+    model = BaseXGBRegressor(oof=False)
+    model.booster_ = booster
+    model.best_iteration_ = booster.num_boosted_rounds() - 1
+    model.profile_ = inspect(X, y, task="regression")
+    model.preset_name_, model.params_, model.portfolio_scores_ = "manual", {}, {}
+    model._onnx_probe_ = probe_rows(X)
+    return model
+
+
+def _booster(objective, X, y):
+    import xgboost as xgb
+
+    params = {"objective": objective, "max_depth": 4, "eta": 0.3, "verbosity": 0}
+    if objective == "reg:tweedie":
+        params["tweedie_variance_power"] = 1.5
+    return xgb.train(params, xgb.DMatrix(X, label=y), num_boost_round=40)
 
 
 @pytest.mark.parametrize(
     "objective, make_y",
     [
-        # Positive and skewed: the heuristic chooses Tweedie (log link).
+        # Log link: the case the export used to get wrong.
         ("reg:tweedie", lambda r, s: np.exp(1.5 * s + 0.3 * r.normal(size=s.size))),
-        # Skewed with both signs: pseudo-Huber.
         ("reg:pseudohubererror", lambda r, s: np.exp(1.5 * s) - 2.0),
-        # Symmetric: squared error.
         ("reg:squarederror", lambda r, s: 3.0 * s + 0.3 * r.normal(size=s.size)),
     ],
 )
 def test_xgb_regressor_export_keeps_the_objective(objective, make_y, tmp_path):
+    """The shipped presets only use squared error, but a booster with a link function
+    must still export faithfully -- the wrapper carries the booster's own objective."""
     rng = np.random.default_rng(0)
-    # n < 200 takes the heuristic preset directly, which is where the objective is chosen.
     X = rng.normal(size=(150, 12)).astype(np.float32)
     y = make_y(rng, X[:, 0])
-    model, art = _fit_xgb(y, X, tmp_path)
-    assert model.params_["objective"] == objective
-    native = model.predict(X)
+    model = _wrap_booster(_booster(objective, X, y), X, y)
+    model._bind_onnx()
+    model.save(str(tmp_path))
+    art = XGBoostArtifact.load(str(tmp_path))
+    native = model._raw_native(X)
     np.testing.assert_allclose(
         art.run(X), native, rtol=0, atol=1e-5 * float(np.abs(native).max())
     )
+
+
+def test_regression_heuristic_uses_squared_error():
+    """Chosen objectives used to follow skew -- and change the validation metric with it."""
+    rng = np.random.default_rng(0)
+    X = rng.normal(size=(150, 12)).astype(np.float32)
+    skewed_positive = np.exp(1.5 * X[:, 0])
+    model = BaseXGBRegressor(oof=False).fit(X, skewed_positive)
+    assert model.params_["objective"] == "reg:squarederror"
+    assert model.params_["eval_metric"] == "rmse"
 
 
 def test_xgb_export_keeps_every_tree_of_an_early_stopped_parallel_forest(tmp_path):
@@ -134,11 +162,11 @@ def test_xgb_export_keeps_every_tree_of_an_early_stopped_parallel_forest(tmp_pat
 # ------------------------------------------------------------------ the export self-check
 
 
-def test_export_self_check_refuses_a_graph_that_diverges(tmp_path, monkeypatch):
-    """Reintroduce the original Tweedie bug and the fit must fail, not yield a wrong model.
+def test_export_self_check_refuses_a_graph_that_diverges(monkeypatch):
+    """Reintroduce the original Tweedie bug and binding must fail, not yield a wrong model.
 
-    This is the guarantee the self-check exists for: a conversion error is caught at
-    export time, by the export, regardless of whether any parity test covers the regime.
+    Heads bind to their ONNX graph as soon as the final model exists, so a wrong
+    conversion is refused there -- before anything could be predicted or saved.
     """
     import xgboost as xgb
 
@@ -146,7 +174,7 @@ def test_export_self_check_refuses_a_graph_that_diverges(tmp_path, monkeypatch):
     from lazyqsar.utils.onnx_check import OnnxExportMismatch
 
     def objective_blind_wrapper(booster, task):
-        wrapper = xgb.XGBRegressor()  # the pre-3.8.1 behaviour: default objective
+        wrapper = xgb.XGBRegressor()  # the pre-3.8.0 behaviour: default objective
         wrapper._Booster = booster
         return wrapper
 
@@ -156,10 +184,9 @@ def test_export_self_check_refuses_a_graph_that_diverges(tmp_path, monkeypatch):
     rng = np.random.default_rng(0)
     X = rng.normal(size=(150, 12)).astype(np.float32)
     y = np.exp(1.5 * X[:, 0] + 0.3 * rng.normal(size=150))
-    # Heads bind to their ONNX graph as soon as the final model is fitted, so the wrong
-    # conversion is refused at fit time -- before anything could be saved.
+    model = _wrap_booster(_booster("reg:tweedie", X, y), X, y)
     with pytest.raises(OnnxExportMismatch, match="does not reproduce"):
-        BaseXGBRegressor(oof=False).fit(X, y)
+        model._bind_onnx()
 
 
 def test_ad_self_check_covers_missing_values(monkeypatch):

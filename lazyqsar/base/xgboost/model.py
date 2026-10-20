@@ -89,6 +89,7 @@ from lazyqsar.utils.splits import (
     auto_stratified_oof_n_splits,
     make_quantile_oof_splits,
     make_stratified_oof_splits,
+    quantile_bins,
 )
 
 
@@ -1411,6 +1412,10 @@ def _portfolio_select(
     elif best_name != "default":
         threshold = _min_gain_threshold(profile, y)
         gain = best_score - default_score
+        if profile.task == "regression":
+            # RMSE carries the target's scale; compare relative improvement so the
+            # margin means the same for a z-scored target and for raw units.
+            gain = gain / max(abs(default_score), 1e-12)
         if gain < threshold:
             best_name = "default"
             best_score = default_score
@@ -1638,7 +1643,14 @@ def _validation_split(
             needed = _VAL_MIN_MINORITY / minority_count
             val_fraction = max(_VAL_FRACTION, min(0.25, needed))
 
-    strat = y if stratify else None
+    if stratify:
+        strat = y
+    elif profile.task == "regression":
+        # Quantile bins of y, so the early-stopping fold spans the target's whole
+        # range instead of whatever a random 10% happens to cover.
+        strat = quantile_bins(np.asarray(y, dtype=float), 5)
+    else:
+        strat = None
     X_train, X_val, y_train, y_val = train_test_split(
         X,
         y,
