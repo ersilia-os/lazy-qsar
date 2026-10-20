@@ -74,8 +74,16 @@ that matrix size.
 | l1_ratio | Same p/n heuristic as classifier |
 | CV folds | n < 200 → min(n//10, 10); n < 1K → 5; else 3 |
 
+### Out-of-fold predictions
+
+With `oof=True` (default) the full fit runs once, then quantile-stratified k-fold folds refit
+with the selected regularisation frozen (`Ridge(alpha_)`, `ElasticNet(alpha_, l1_ratio_)`, or
+the tuned SGD) -- no inner CV per fold. This sets `oof_preds_`, `oof_rho_` / `train_rho_`
+(Spearman ρ) and the ECDF knots behind `predict_rank`, which is what the ensemble gate and
+the descriptor weighting read.
+
 ## Outputs
 
 `save(directory)` writes two files:
 - `linear.onnx` — the full pipeline (VarianceThreshold + optional SelectFromModel + estimator) serialised via `skl2onnx`
-- `linear.json` — metadata: task, format, regime, n_features_in, feature_mask, classes (classifier only)
+- `linear.json` — metadata: task, format, regime, n_features_in, feature_mask, classes (classifier only), oof/train ρ and ranker knots (regressor)

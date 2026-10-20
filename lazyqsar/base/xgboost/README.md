@@ -69,6 +69,13 @@ A non-default preset wins only if its Stage-1 score exceeds the default by a noi
 
 The winning preset is retrained on 100% of the data for `max(best_iteration, early_stopping_rounds, 100)` rounds (no early stopping).
 
+### Regressor: out-of-fold predictions
+
+`BaseXGBRegressor(oof=True)` (default) runs the portfolio once, then refits the winning
+preset on quantile-stratified folds for the same round count, giving `oof_preds_`,
+`oof_rho_` / `train_rho_` (Spearman ρ) and the ECDF ranker behind `predict_rank`. There is no
+calibration or decision cutoff for regression.
+
 ## Outputs
 
 `save(directory)` writes two files:

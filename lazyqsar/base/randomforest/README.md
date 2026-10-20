@@ -7,7 +7,8 @@ Automatic Random Forest hyperparameter selection based on dataset profiling and 
 | Class | Description |
 |-------|-------------|
 | `BaseRFClassifier` | Binary classifier with auto-selected Random Forest parameters |
-| `BaseRFArtifact` | Inference-only loader (ONNX or joblib) |
+| `BaseRFRegressor` | Regressor with the same portfolio, scored by out-of-bag Spearman ρ |
+| `BaseRFArtifact` | Inference-only loader (ONNX), for either task |
 
 ## Training procedure
 
@@ -52,6 +53,20 @@ The full RF is fitted on all data, then k-fold OOF probabilities are collected b
 | `min_samples_leaf` | `max(1, n // 500)` |
 | `max_features` | `"sqrt"` for sparse/binary features; `"log2"` or float for dense |
 | `class_weight` | `"balanced"` by default; `"balanced_subsample"` when imbalance ≥ 3:1 |
+
+## Regressor
+
+`BaseRFRegressor` follows the same phases with these differences:
+
+- **Portfolio score**: out-of-bag Spearman ρ; the threshold is `max(0.005, coef/√n)` (every
+  sample counts, there is no minority class).
+- **Presets**: the heuristic uses Breiman's `max_features=0.33` for dense data (sqrt/log2
+  rules for sparse fingerprints are unchanged); `default` is sklearn's regressor default
+  (`max_features=1.0`) with a leaf cap so the ONNX export stays bounded; `flaml` reads
+  FLAML's RF *regression* portfolio (`flaml/default/rf/regression.json`, verbatim) and
+  never sets a classification `criterion`.
+- **Phase 2**: quantile-stratified k-fold out-of-fold predictions instead of calibration,
+  giving `oof_preds_`, `oof_rho_`, `train_rho_` and the ECDF behind `predict_rank`.
 
 ## Outputs
 

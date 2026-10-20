@@ -22,11 +22,21 @@ import numpy as np
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(REPO, "tests"))
 
-from _helpers.combine_cases import SCENARIO_IDS, build_case  # noqa: E402
+from _helpers.combine_cases import (  # noqa: E402
+    REGRESSION_SCENARIO_IDS,
+    SCENARIO_IDS,
+    build_case,
+    build_regression_case,
+)
 
-from lazyqsar.ensemble import OUTPUT_NAMES, combine  # noqa: E402
+from lazyqsar.ensemble import (  # noqa: E402
+    OUTPUT_NAMES,
+    REGRESSION_OUTPUT_NAMES,
+    combine,
+)
 
 OUT = os.path.join(REPO, "tests", "data", "golden", "combine.npz")
+OUT_REGRESSION = os.path.join(REPO, "tests", "data", "golden", "combine_regression.npz")
 
 
 def main():
@@ -42,6 +52,18 @@ def main():
     np.savez_compressed(OUT, **payload)
     size = os.path.getsize(OUT)
     print(f"wrote {OUT} ({len(SCENARIO_IDS)} cases, {size / 1024:.0f} KB)")
+
+    # Regression, in its own file so that changing one task's arithmetic never rewrites
+    # the other task's frozen numbers.
+    payload = {}
+    for case_id in REGRESSION_SCENARIO_IDS:
+        Y, R, A, spec = build_regression_case(case_id)
+        result = combine(Y, R, None, A, spec=spec, outputs=REGRESSION_OUTPUT_NAMES)
+        payload[f"{case_id}/weights"] = result.weights
+        for name in REGRESSION_OUTPUT_NAMES:
+            payload[f"{case_id}/{name}"] = result.values[name]
+    np.savez_compressed(OUT_REGRESSION, **payload)
+    print(f"wrote {OUT_REGRESSION} ({len(REGRESSION_SCENARIO_IDS)} cases)")
 
 
 if __name__ == "__main__":

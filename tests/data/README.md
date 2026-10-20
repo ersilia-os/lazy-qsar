@@ -18,8 +18,10 @@ rather than the code.
 |---|---|---|---|
 | `reference_binary.csv` | 233 | 54 (23%) | The general-purpose set: descriptors, end-to-end fit and predict, parity between entry points. |
 | `reference_imbalanced.csv` | 432 | 56 (13%) | Low prevalence, which a synthetic 50/50 label vector never produces: skewed enough to exercise the weighting, the applicability domain and the decision cutoffs away from a balanced optimum. |
+| `reference_regression.csv` | 300 | — | Continuous target: EGFR (CHEMBL203) pChEMBL, 4.0–10.0. The regression end-to-end set. Columns `smiles,pchembl`, which is the CLI's regression input shape. |
 | `invalid_smiles.txt` | 10 | — | Strings RDKit must reject. See the note in the file itself. |
 | `golden/combine.npz` | 28 cases | — | Frozen `combine()` output. Regenerate with `dev/tools/regenerate_combine_golden.py`; see that script's docstring before you do. |
+| `golden/combine_regression.npz` | 15 cases | — | Frozen `combine()` output for regression specs, kept separate so neither task's change rewrites the other's numbers. Same regenerator. |
 
 Both CSVs are `smiles,bin` with a header, which is exactly the shape `lazyqsar fit --input`
 expects, so they can be used directly as CLI input.
@@ -68,6 +70,17 @@ for src, dst in [("DR_0006.csv", "reference_binary.csv"),
 PY
 ```
 
+### `reference_regression.csv`
+
+Fetched from the ChEMBL web services (`/chembl/api/data/activity`) on 2026-10-20: EGFR
+(`CHEMBL203`), binding-assay IC50 with an exact relation and a pChEMBL value. Records with
+a data-validity comment, unparseable or multi-component SMILES, or more than 60 heavy
+atoms are dropped; replicates are aggregated by median and compounds whose replicates
+span more than 1 log unit are dropped; then 30 compounds are drawn from each pChEMBL
+decile. `dev/tools/build_regression_fixture.py` does all of this and documents the exact
+query. ChEMBL changes between releases, so a re-run may pick different compounds; the
+committed file is the fixture.
+
 ## Licensing
 
 ChEMBL data is released by EMBL-EBI under
@@ -75,5 +88,5 @@ ChEMBL data is released by EMBL-EBI under
 reuse these files.
 
 These datasets are included solely as test fixtures. They are not a benchmark, and the
-numbers a model gets on 233 compounds say nothing about its accuracy — the tests that use
+numbers a model gets on a few hundred compounds say nothing about its accuracy — the tests that use
 them assert invariants and shapes, not performance.

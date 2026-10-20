@@ -1,5 +1,8 @@
 """Regression on real molecules: fast mode (Morgan), RDKit, ONNX round trip.
 
+Two targets. The measured one is EGFR pChEMBL (``reference_regression.csv``). The other,
+below, is computed:
+
 The target is Crippen logP computed by RDKit on the committed ChEMBL SMILES, plus noise --
 a computed property rather than a measured one, so no bioactivity source beyond ChEMBL is
 introduced, and a target Morgan fingerprints can genuinely learn. The tier exists to
@@ -74,3 +77,31 @@ def test_unparseable_smiles_predict_nan(fitted):
     out = _quiet(loaded.predict, ["CCO", "not_a_smiles", "c1ccccc1"])
     assert np.isfinite(out[[0, 2]]).all()
     assert np.isnan(out[1])
+
+
+@pytest.fixture(scope="module")
+def egfr():
+    from lazyqsar.qsar import LazyQSAR
+
+    from _helpers.smiles import load_regression_dataset
+
+    smiles, y = load_regression_dataset()
+    y = np.asarray(y)
+    test = np.arange(len(smiles)) % 5 == 0
+    model = LazyQSAR(task="regression", mode="fast")
+    _quiet(model.fit, [s for s, t in zip(smiles, test) if not t], y[~test])
+    return model, smiles, y, test
+
+
+def test_measured_egfr_potency_is_learned(egfr):
+    """Measured pChEMBL, so a realistic bar: Morgan alone ranks held-out EGFR potency.
+
+    ~0.73 Spearman when written; the threshold leaves room for platform variation while
+    still failing if the model stopped learning.
+    """
+    from lazyqsar.utils.metrics import regression_metrics
+
+    model, smiles, y, test = egfr
+    pred = _quiet(model.predict, [s for s, t in zip(smiles, test) if t])
+    assert regression_metrics(y[test], pred)["spearman"] > 0.55
+    assert model.oof_metrics_["spearman"] > 0.55

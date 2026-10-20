@@ -6,9 +6,11 @@ This tool has been financed by Project PID2023-148309OA-I00 funded by MICIU/AEI/
 
 A Python library for building supervised QSAR models quickly, with minimal configuration. LazyQSAR automates chemical descriptor computation, and model selection to produce robust models for property and activity prediction.
 
-**Two entry points:**
-- **`LazyClassifierQSAR`**: pass SMILES strings directly; built-in descriptors are computed automatically
-- **`LazyClassifier`**: bring your own pre-computed descriptor arrays
+**Entry points**, each for binary classification or regression:
+- **`LazyClassifierQSAR`** / **`LazyRegressorQSAR`**: pass SMILES strings directly; built-in descriptors are computed automatically
+- **`LazyClassifier`** / **`LazyRegressor`**: bring your own pre-computed descriptor arrays
+
+`LazyQSAR(task="classification" | "regression")` picks the right SMILES class, and `LazyQSAR.load` reopens a checkpoint of either task.
 
 ## Table of Contents
 
@@ -16,6 +18,7 @@ A Python library for building supervised QSAR models quickly, with minimal confi
 - [Python API](#python-api)
   - [LazyClassifierQSAR (SMILES)](#lazyclassifierqsar-smiles)
   - [LazyClassifier (custom descriptors)](#lazyclassifier-custom-descriptors)
+  - [Regression](#regression)
   - [Saving and loading](#saving-and-loading)
 - [CLI](#cli)
 - [Running the tests](#running-the-tests)
@@ -97,6 +100,9 @@ behind. Each of these is a deliberate refusal, not a bug:
 | `Invalid SMILES at position(s): ...` at fit | Training on a molecule that cannot be featurized is meaningless, so fit raises rather than guessing. Note an empty cell counts as invalid. | Clean the input. At *predict* time the same rows are NaN'd instead, and the rest of the library still scores. |
 | `This checkpoint's reference rank was built from [...] but [...] missing` | Descriptor directories have been removed from the checkpoint, so it would be scored with fewer descriptors than its reference describes. | Restore the directories or refit. |
 | A warning that the cutoff `admits X% of the reference library, not 1%` | The reference's probabilities are too concentrated for the anchors to separate, so this model's `rank` is not comparable with others. | Check `LAZYQSAR_REFERENCE_N` and whether the model saturates. |
+| `every target value is N` / `target value(s) are NaN or infinite` | Regression needs a finite, non-constant target; raised before any descriptor is computed. | Clean the target column. |
+| `predict_type 'proba' is not available for regression models` | Each checkpoint records its task, and outputs belong to one task: classification has six, regression has `value`. | Omit `--predict_type` (it defaults to the checkpoint's task) or use `value`. |
+| `These models mix classification and regression checkpoints` | One predict call writes one output type for every column. | Predict the two kinds of model in separate calls. |
 | A warning that the actives anchor was dropped | The model's known actives do not reach the top 0.1% of drug-like space. Informative, not an error — see the changelog's Known limitations. | Nothing; above the last reference anchor the scale runs on to certainty. |
 
 ## Python API
@@ -188,6 +194,31 @@ y_hat = model.predict_proba(h5_file="descriptors.h5")[:, 1]
 
 The same prediction methods listed above are available, using `X=` instead of `smiles_list=`.
 
+### Regression
+
+Continuous targets (pIC50, logS, ...) use the same pipeline with regression heads. The one output is `value`, the predicted target in its own units.
+
+```python
+from lazyqsar.qsar import LazyQSAR                 # or: from lazyqsar.qsar import LazyRegressorQSAR
+
+model = LazyQSAR(task="regression", mode="slow")
+model.fit(smiles_list=smiles_train, y=pic50_train)
+pic50_hat = model.predict(smiles_list=smiles_test)   # shape (n,), NaN for unparseable SMILES
+model.oof_metrics_                                   # out-of-fold Spearman, R², RMSE, MAE
+
+from lazyqsar.agnostic import LazyRegressor        # bring your own descriptors
+reg = LazyRegressor()
+reg.fit(X=X_train, y=y_train)
+y_hat = reg.predict(X=X_test)
+```
+
+What differs from classification:
+
+- Heads are the regression twins (linear, XGBoost, random forest, SVR), each with zero-shot hyperparameters and out-of-fold predictions. The target is standardised internally and predictions are returned in the original units.
+- Skill is **Spearman ρ** wherever classification uses AUC: head gating, descriptor screening, descriptor weighting (`2·ρ_oof − ρ_train`), and pruning (a descriptor is dropped below ρ 0.10 or more than 0.20 below the best).
+- Per-sample reliability comes from where a prediction sits among the model's out-of-fold predictions and how wrong the model tends to be there; the applicability-domain veto is the same as for classification.
+- There is no calibration, reference library, `rank` or decision cutoff. Censored values (`>10 µM`), automatic log transforms and multi-output targets are not supported: give a clean numeric target.
+
 ### Saving and loading
 
 Models are saved as ONNX files, so inference only requires `numpy` and `onnxruntime`, i.e. no scikit-learn or XGBoost at prediction time. Metadata is stored in JSON format.
@@ -205,6 +236,8 @@ And to load them:
 model = LazyClassifierQSAR.load(model_dir)
 y_hat = model.predict_proba(smiles_list=smiles_test)[:, 1]
 
+model = LazyQSAR.load(model_dir)               # either task, read from the checkpoint
+
 model = LazyClassifier.load(model_dir)
 y_hat = model.predict_proba(X=X_test)[:, 1]
 ```
@@ -217,10 +250,11 @@ All commands are available through the `lazyqsar` entry point.
 
 **Fit:**
 
-The `--input` directory must contain one CSV per task, with SMILES in the first column and binary labels (0/1) in the second column, with a header row.
+The `--input` directory must contain one CSV per task, with SMILES in the first column and, in the second, binary labels (0/1) for classification or a numeric target for regression, with a header row. One task type per run.
 
 ```bash
 lazyqsar fit --task classification --input $DATA_DIR --output $MODEL_DIR --mode slow
+lazyqsar fit --task regression     --input $DATA_DIR --output $MODEL_DIR --mode slow
 ```
 
 Pass `--models_txt` to train a subset of tasks (one CSV stem per line); without it, all CSVs in the directory are used.
@@ -231,7 +265,7 @@ Pass `--models_txt` to train a subset of tasks (one CSV stem per line); without 
 lazyqsar predict --input $INPUT_CSV --model $MODEL_DIR --output $OUTPUT_CSV [--models_txt FILE] [--predict_type TYPE]
 ```
 
-The output CSV contains one column per task, ordered alphabetically by task name, or filtered and ordered by `--models_txt` at predict time. `--predict_type` controls the output format:
+The output CSV contains one column per task, ordered alphabetically by task name, or filtered and ordered by `--models_txt` at predict time. The task is read from each checkpoint: regression models write `value` (their only output, and the default), and every model in one call must be the same task. For classification, `--predict_type` controls the output format:
 
 | type | meaning |
 |------|---------|
@@ -261,6 +295,8 @@ LazyQSAR builds an ensemble for each descriptor set through four steps:
 
 4. **Pooling**: head predictions are combined via a learned gating network (`InnerClassifierPooler`). When using `LazyClassifierQSAR`, a separate ensemble is trained per descriptor type and their predictions are combined via an AUC-weighted ensemble that accounts for per-sample prediction confidence.
 
+Regression follows the same four steps with regression heads, a gate trained on each head's Gaussian likelihood of the out-of-fold residual (`InnerRegressorPooler`), size-only batching, and a Spearman-ρ-weighted ensemble across descriptors.
+
 The full pipeline is exported to ONNX, so inference requires only `numpy` and `onnxruntime`.
 
 ## Base Models
@@ -270,10 +306,10 @@ The components under `lazyqsar/base/` can be used independently of the full pipe
 | Module | Description |
 |--------|-------------|
 | [`lazyqsar.base.preprocessing`](lazyqsar/base/preprocessing/README.md) | Automatic scaler and feature reducer selection |
-| [`lazyqsar.base.xgboost`](lazyqsar/base/xgboost/README.md) | Automatic XGBoost hyperparameter selection with portfolio comparison |
+| [`lazyqsar.base.xgboost`](lazyqsar/base/xgboost/README.md) | Automatic XGBoost hyperparameter selection with portfolio comparison (classifier and regressor) |
 | [`lazyqsar.base.linear`](lazyqsar/base/linear/README.md) | Automatic linear model selection (logistic/ridge/SGD) |
-| [`lazyqsar.base.randomforest`](lazyqsar/base/randomforest/README.md) | Random Forest classifier with zero-shot hyperparameter selection |
-| [`lazyqsar.base.svc`](lazyqsar/base/svc/README.md) | Support Vector Classifier with automatic kernel and C selection |
+| [`lazyqsar.base.randomforest`](lazyqsar/base/randomforest/README.md) | Random Forest classifier and regressor with zero-shot hyperparameter selection |
+| [`lazyqsar.base.svc`](lazyqsar/base/svc/README.md) | Support Vector Classifier and Regressor with automatic kernel and C selection |
 
 ## Running the tests
 

@@ -9,6 +9,62 @@ against is versioned separately and its id is recorded in every checkpoint's
 
 Nothing yet.
 
+## 3.8.0
+
+### Added
+
+- **Regression.** Continuous targets are now supported end to end, alongside binary
+  classification:
+  - `LazyRegressorQSAR` (SMILES) and `LazyRegressor` (bring your own descriptors);
+    `LazyQSAR(task="regression")` constructs the former.
+  - `lazyqsar fit --task regression`. The CSV's second column is a numeric target.
+  - `lazyqsar predict` reads the task from each checkpoint. A regression model writes
+    `value`, the predicted target in its own units, which is also the default
+    `--predict_type`.
+- **Regression heads** with the same zero-shot design as the classifiers:
+  - `BaseRFRegressor` (new): presets compared by out-of-bag Spearman ρ, with FLAML's RF
+    regression portfolio imported verbatim.
+  - `BaseSVR` (new): `SVR` or `LinearSVR`, with the target standardised internally.
+  - `BaseXGBRegressor` and `BaseLinearRegressor` now produce out-of-fold predictions, a
+    Spearman ρ and an ECDF ranker, which is what lets the ensemble gate them.
+- **Regression ensemble**:
+  - the target is standardised once in the assembler, and predictions are returned in
+    the original units;
+  - the head gate is trained on each head's Gaussian likelihood of its out-of-fold
+    residual, using a robust spread estimate (1.4826 × MAD);
+  - descriptors are screened, weighted (`2·ρ_oof − ρ_train`) and pruned by Spearman ρ;
+  - per-sample reliability comes from an out-of-fold rank-to-error curve, and the
+    applicability-domain veto is unchanged.
+- `LazyQSAR.load` opens a checkpoint of either task, dispatching on its metadata.
+- `lazyqsar.api.fit` and `lazyqsar.api.predict` as task-neutral names. The
+  `classifier_fit` and `classifier_predict` modules keep working.
+- Test fixture `tests/data/reference_regression.csv`: 300 EGFR (CHEMBL203) compounds with
+  pChEMBL values from ChEMBL. Built by `dev/tools/build_regression_fixture.py`.
+
+### Changed
+
+- **Checkpoints record their task.** A regression `metadata.json` carries
+  `"task": "regression"`. A checkpoint without the key is a classifier, so every existing
+  checkpoint loads and predicts exactly as before. Loading a checkpoint through the other
+  task's class raises with a pointer to the right one.
+- `combine()` validates outputs per task. The classification arithmetic is untouched, and
+  the frozen golden file is byte-identical. Regression has its own golden file,
+  `golden/combine_regression.npz`.
+- `api.classifier_predict.predict` defaults to `predict_type=None`, resolved from the
+  checkpoints: `proba` for classification, `value` for regression. Two things are refused
+  before featurizing:
+  - a classification output asked of a regression model, or the reverse;
+  - a call mixing classification and regression models.
+- The CLI's `fit` now forwards `task=` to the API.
+- The Ridge gating network moved to `lazyqsar.poolers._gate`, shared by both poolers.
+  Classification weights are unchanged.
+- Source-dataset names removed from the comments on the FLAML preset tables.
+
+### Not supported (by design, for now)
+
+- Censored targets (`>10 µM`), automatic log transforms, multi-output models,
+  prediction intervals, and a `rank` for regression.
+
 ## 3.7.0
 
 ### Changed
