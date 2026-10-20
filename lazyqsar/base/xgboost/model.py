@@ -76,6 +76,7 @@ from .presets import (
     MAXIMIZE_METRICS,
 )
 from lazyqsar.utils.logging import logger
+from lazyqsar.utils.onnx_check import check_probability, check_values, probe_rows
 from lazyqsar.utils.metrics import spearman_score
 from lazyqsar.utils.ranking import (
     binarize,
@@ -324,6 +325,7 @@ class BaseXGBClassifier(BaseEstimator, ClassifierMixin):
         y = np.asarray(y).ravel()
         profile = _inspect(X, y, task="classification")
         self.profile_ = profile
+        self._onnx_probe_ = probe_rows(X)
         device = _resolve_device(self.device)
 
         logger.rule("BaseXGBClassifier")
@@ -598,8 +600,14 @@ class BaseXGBClassifier(BaseEstimator, ClassifierMixin):
             Destination file path, e.g. ``"model.onnx"``.
         """
         check_is_fitted(self, "booster_")
-        wrapper = _booster_to_sklearn_wrapper(self.booster_, task="classification")
+        booster = _rounds_used(self.booster_, self.best_iteration_)
+        wrapper = _booster_to_sklearn_wrapper(booster, task="classification")
         _export_onnx(wrapper, path, self.profile_.n_features)
+        probe = getattr(self, "_onnx_probe_", None)
+        if probe is not None:
+            check_probability(
+                path, probe, self.predict_score(probe)[:, 1], "BaseXGBClassifier"
+            )
 
     def save(self, directory: str) -> None:
         """
@@ -729,6 +737,7 @@ class BaseXGBRegressor(BaseEstimator, RegressorMixin):
         y = np.asarray(y, dtype=float).ravel()
         profile = _inspect(X, y, task="regression")
         self.profile_ = profile
+        self._onnx_probe_ = probe_rows(X)
         device = _resolve_device(self.device)
 
         logger.rule("BaseXGBRegressor")
@@ -892,8 +901,12 @@ class BaseXGBRegressor(BaseEstimator, RegressorMixin):
             Destination file path, e.g. ``"model.onnx"``.
         """
         check_is_fitted(self, "booster_")
-        wrapper = _booster_to_sklearn_wrapper(self.booster_, task="regression")
+        booster = _rounds_used(self.booster_, self.best_iteration_)
+        wrapper = _booster_to_sklearn_wrapper(booster, task="regression")
         _export_onnx(wrapper, path, self.profile_.n_features)
+        probe = getattr(self, "_onnx_probe_", None)
+        if probe is not None:
+            check_values(path, probe, self.predict(probe), "BaseXGBRegressor")
 
     def save(self, directory: str) -> None:
         """
@@ -1505,6 +1518,27 @@ def _portfolio_select(
     return best_name, winner_params, best_iter, fast_scores
 
 
+def _rounds_used(booster: "xgb.Booster", best_iteration: int) -> "xgb.Booster":
+    """The booster cut to exactly the boosting rounds ``predict`` uses.
+
+    ``predict`` evaluates ``iteration_range=(0, best_iteration + 1)`` -- *rounds*, each
+    of ``num_parallel_tree`` trees. onnxmltools, given an early-stopped booster, keeps
+    ``best_iteration + 1`` *trees* instead, which drops trees whenever a round holds more
+    than one. Exporting a booster sliced to the used rounds removes the ambiguity: it
+    carries no early-stopping attribute, so every tree in it is exported.
+    """
+    n_rounds = best_iteration + 1
+    if n_rounds >= booster.num_boosted_rounds():
+        return booster
+    return booster[:n_rounds]
+
+
+def _booster_objective(booster: "xgb.Booster") -> str:
+    """The training objective recorded in the booster's own configuration."""
+    config = json.loads(booster.save_config())
+    return config["learner"]["objective"]["name"]
+
+
 def _booster_to_sklearn_wrapper(booster: "xgb.Booster", task: str):
     """
     Wrap a raw Booster in an sklearn-compatible object for onnxmltools export.
@@ -1512,13 +1546,19 @@ def _booster_to_sklearn_wrapper(booster: "xgb.Booster", task: str):
     Injects the booster via the internal ``_Booster`` attribute to avoid
     calling ``load_model()``, which triggers a sklearn ≥1.6 / xgboost
     version incompatibility in ``_load_model_attributes``.
+
+    The wrapper is built with the booster's own objective. onnxmltools reads the
+    objective from the wrapper's parameters, not from the booster, so a default-built
+    wrapper would export a ``reg:tweedie`` model as if it were squared error -- without
+    the log link, and with silently wrong predictions.
     """
+    objective = _booster_objective(booster)
     if task == "classification":
-        wrapper = xgb.XGBClassifier()
+        wrapper = xgb.XGBClassifier(objective=objective)
         wrapper._Booster = booster
         wrapper.n_classes_ = 2
     else:
-        wrapper = xgb.XGBRegressor()
+        wrapper = xgb.XGBRegressor(objective=objective)
         wrapper._Booster = booster
     return wrapper
 

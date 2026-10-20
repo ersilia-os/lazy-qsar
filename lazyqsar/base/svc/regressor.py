@@ -56,6 +56,7 @@ except ImportError:
 from .inspector import inspect as _inspect, DatasetProfile
 from .params import get_params as _svc_get_params
 from lazyqsar.utils.logging import logger
+from lazyqsar.utils.onnx_check import check_values, probe_rows
 from lazyqsar.utils.metrics import spearman_score
 from lazyqsar.utils.ranking import prepare_knots, rank_from_knots, subsample_knots
 from lazyqsar.utils.splits import make_quantile_oof_splits, quantile_bins
@@ -319,6 +320,7 @@ class BaseSVR(BaseEstimator, RegressorMixin):
     def _fit_raw(self, X, y) -> "BaseSVR":
         X = check_array(X, dtype="numeric", accept_sparse=False)
         y = np.asarray(y, dtype=float).ravel()
+        self._onnx_probe_ = probe_rows(X)
         self.y_mean_ = float(y.mean())
         self.y_std_ = float(y.std()) or 1.0
         z = (y - self.y_mean_) / self.y_std_
@@ -443,6 +445,9 @@ class BaseSVR(BaseEstimator, RegressorMixin):
         """Export to ONNX. The graph emits standardised predictions (see y_mean/y_std)."""
         check_is_fitted(self, "svr_")
         _to_onnx(self.svr_, path, self.n_features_in_)
+        probe = getattr(self, "_onnx_probe_", None)
+        if probe is not None:
+            check_values(path, probe, self.svr_.predict(probe), "BaseSVR")
 
     def save(self, directory: str) -> None:
         """Write ``svr.onnx`` and ``svr.json`` (fit metadata incl. target scaling)."""

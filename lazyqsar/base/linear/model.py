@@ -76,6 +76,7 @@ except ImportError:
     _FIT_DEPS_AVAILABLE = False
 
 from lazyqsar.utils.logging import logger
+from lazyqsar.utils.onnx_check import check_probability, check_values, probe_rows
 from lazyqsar.utils.metrics import spearman_score
 from lazyqsar.utils.ranking import (
     binarize,
@@ -359,6 +360,7 @@ class BaseLinearClassifier(BaseEstimator):
 
         X = check_array(X, dtype="numeric", accept_sparse="csr")
         y = np.asarray(y)
+        self._onnx_probe_ = probe_rows(X)
 
         # --- Label encoding ---
         self._label_encoder = LabelEncoder()
@@ -724,6 +726,11 @@ class BaseLinearClassifier(BaseEstimator):
         onnx_model = convert_sklearn(pipeline, initial_types=initial_types)
         with open(path, "wb") as f:
             f.write(onnx_model.SerializeToString())
+        probe = getattr(self, "_onnx_probe_", None)
+        if probe is not None:
+            check_probability(
+                path, probe, self.predict_score(probe)[:, 1], "BaseLinearClassifier"
+            )
 
     def save(self, directory: str) -> None:
         """
@@ -1073,6 +1080,7 @@ class BaseLinearRegressor(BaseEstimator):
 
         X = check_array(X, dtype="numeric", accept_sparse="csr")
         y = np.asarray(y, dtype=float)
+        self._onnx_probe_ = probe_rows(X)
 
         n, p = X.shape
         self.n_features_in_ = p
@@ -1272,6 +1280,9 @@ class BaseLinearRegressor(BaseEstimator):
         onnx_model = convert_sklearn(pipeline, initial_types=initial_types)
         with open(path, "wb") as f:
             f.write(onnx_model.SerializeToString())
+        probe = getattr(self, "_onnx_probe_", None)
+        if probe is not None:
+            check_values(path, probe, self.predict(probe), "BaseLinearRegressor")
 
     def save(self, directory: str) -> None:
         """
