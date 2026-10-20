@@ -33,6 +33,7 @@ except ImportError:
     _FIT_DEPS_AVAILABLE = False
 
 from lazyqsar.utils.logging import logger
+from lazyqsar.utils.onnx_check import check_probability, check_values, probe_rows
 from lazyqsar.utils.metrics import spearman_score
 from lazyqsar.utils.ranking import (
     binarize,
@@ -300,6 +301,7 @@ class BaseRFClassifier(BaseEstimator):
         X = check_array(X, dtype="numeric", accept_sparse="csr")
         y = np.asarray(y, dtype=int)
         self.n_features_in_ = X.shape[1]
+        self._onnx_probe_ = probe_rows(X)
         self.imbalance_ratio_ = self._imbalance_ratio(y)
         self.class_weight_ = self._resolve_class_weight(y)
 
@@ -563,6 +565,14 @@ class BaseRFClassifier(BaseEstimator):
             onnx_model = convert_sklearn(self._estimator, initial_types=initial_types)
         with open(path, "wb") as f:
             f.write(onnx_model.SerializeToString())
+        probe = getattr(self, "_onnx_probe_", None)
+        if probe is not None:
+            check_probability(
+                path,
+                probe,
+                self._estimator.predict_proba(probe)[:, 1],
+                "BaseRFClassifier",
+            )
 
     def save(self, directory: str) -> None:
         """
@@ -710,6 +720,7 @@ class BaseRFRegressor(BaseEstimator):
         X = check_array(X, dtype="numeric", accept_sparse="csr")
         y = np.asarray(y, dtype=float).ravel()
         self.n_features_in_ = X.shape[1]
+        self._onnx_probe_ = probe_rows(X)
 
         profile = profile_rf_dataset(X, y, task="regression")
         n = X.shape[0]
@@ -884,6 +895,9 @@ class BaseRFRegressor(BaseEstimator):
             onnx_model = convert_sklearn(self._estimator, initial_types=initial_types)
         with open(path, "wb") as f:
             f.write(onnx_model.SerializeToString())
+        probe = getattr(self, "_onnx_probe_", None)
+        if probe is not None:
+            check_values(path, probe, self._estimator.predict(probe), "BaseRFRegressor")
 
     def save(self, directory: str) -> None:
         """Write ``randomforest.json`` (fit metadata) and ``randomforest.onnx``."""

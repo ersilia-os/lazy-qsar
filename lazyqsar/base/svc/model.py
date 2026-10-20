@@ -86,6 +86,7 @@ from .presets import (
     svc_balanced_rbf_params,
 )
 from lazyqsar.utils.logging import logger
+from lazyqsar.utils.onnx_check import check_decision, probe_rows
 from lazyqsar.utils.ranking import binarize, prepare_knots, rank_from_knots
 from lazyqsar.utils.splits import make_stratified_oof_splits
 
@@ -551,6 +552,7 @@ class BaseSVCClassifier(BaseEstimator, ClassifierMixin):
             )
         X = check_array(X, dtype="numeric", accept_sparse=False)
         y = np.asarray(y, dtype=int).ravel()
+        self._onnx_probe_ = probe_rows(X)
         profile = _inspect(X, y, task="classification")
         self.profile_ = profile
         n_features = profile.n_features
@@ -828,6 +830,11 @@ class BaseSVCClassifier(BaseEstimator, ClassifierMixin):
         """
         check_is_fitted(self, "svc_")
         _to_onnx(self.svc_, path, self.profile_.n_features)
+        probe = getattr(self, "_onnx_probe_", None)
+        if probe is not None:
+            check_decision(
+                path, probe, _decision_scores(self.svc_, probe), "BaseSVCClassifier"
+            )
 
     def save(self, directory: str) -> None:
         """

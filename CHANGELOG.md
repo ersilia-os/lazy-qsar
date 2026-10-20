@@ -60,6 +60,35 @@ Nothing yet.
   Classification weights are unchanged.
 - Source-dataset names removed from the comments on the FLAML preset tables.
 
+### Fixed
+
+- **The applicability-domain ONNX graph now imputes missing values.** The numpy scorer
+  replaced NaN with the training medians; the exported graph did not, so a molecule with
+  an undefined descriptor value scored 0 at inference -- vetoing that descriptor for it --
+  while scoring normally at fit time. This affected classification checkpoints too. The
+  graph now applies the same medians. A training column that was NaN for every molecule is
+  also kept (imputed as 0) instead of dropped, which used to leave the graph expecting
+  fewer features than the descriptor produces. **Checkpoints saved before 3.8.0 keep the
+  old graph** -- they do not store the medians, so it cannot be repaired at load time --
+  and must be refit to get NaN-safe applicability scores.
+- **XGBoost regressors with a link function export correctly.** The export wrapped the
+  booster in a default regressor, and onnxmltools reads the objective from the wrapper,
+  so a `reg:tweedie` model was exported without its log link and predicted wrong values.
+  The ensemble never selected Tweedie (it standardises the target), but `BaseXGBRegressor`
+  used directly on positive, skewed targets did.
+- **Early-stopped boosters with `num_parallel_tree > 1` export every tree.** The export now
+  writes exactly the boosting rounds `predict` uses, rather than letting onnxmltools count
+  trees as rounds. Not reachable through the shipped presets today.
+
+### Added (export safety)
+
+- **Every ONNX export checks itself.** Each head (XGBoost, linear, random forest, SVC,
+  SVR) and the applicability domain run a probe of real training rows -- plus rows with
+  missing values for the AD -- through both the fitted model and the graph just written,
+  and raise `OnnxExportMismatch` if they disagree beyond float32 rounding. A conversion
+  bug now fails the save instead of producing a wrong model. See
+  `lazyqsar/utils/onnx_check.py`.
+
 ### Not supported (by design, for now)
 
 - Censored targets (`>10 µM`), automatic log transforms, multi-output models,

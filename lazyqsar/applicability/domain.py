@@ -16,8 +16,11 @@ Design constraints
 ------------------
 * No KNN at inference (O(n) per query is too slow for large training sets).
 * ONNX-only at inference: the fitted model is exported as a single ONNX graph
-  built from primitive ops (Sub, MatMul, Mul, Relu, Sqrt, Reshape, Less, Cast,
-  Div).  At inference only onnxruntime + numpy are required.
+  built from primitive ops (IsNaN, Where, Sub, MatMul, Mul, Relu, Sqrt, Reshape,
+  Less, Cast, Div).  At inference only onnxruntime + numpy are required.
+* The graph imputes missing values exactly as :meth:`ApplicabilityDomain.score`
+  does -- with the training medians -- so a molecule with an undefined descriptor
+  value scores the same at inference as at fit time.
 * Works for any X matrix: dense or sparse, binary fingerprints or continuous.
 
 Implementation notes
@@ -46,6 +49,7 @@ import numpy as np
 from sklearn.decomposition import PCA
 from sklearn.impute import SimpleImputer
 
+from ..utils.onnx_check import check_values, probe_rows
 from .artifact import (  # noqa: F401  (re-exported; moved to keep it sklearn-free)
     ApplicabilityDomainArtifact,
 )
@@ -55,6 +59,19 @@ _N_CAL_KNOTS = 200
 
 # Matches the seed used throughout the package (assemblers, portfolios, base estimators).
 _RANDOM_STATE = 42
+
+
+def _ad_probe(X: np.ndarray) -> np.ndarray:
+    """Training rows plus copies with missing values, for the export self-check.
+
+    The NaN copies are what make the check cover the imputation step: real rows alone
+    would pass even with it missing, which is how that bug went unnoticed.
+    """
+    rows = probe_rows(X, n=32)
+    partial = rows.copy()
+    partial[:, ::3] = np.nan
+    empty = np.full((2, rows.shape[1]), np.nan, dtype=np.float32)
+    return np.vstack([rows, partial, empty])
 
 
 def _to_dense(X) -> np.ndarray:
@@ -88,9 +105,12 @@ class ApplicabilityDomain:
         n, p = X.shape
         if n < 2:
             raise ValueError(f"Need at least 2 training samples, got {n}.")
+        self._onnx_probe_ = _ad_probe(X)
 
-        self.imputer_: SimpleImputer | None = None
-        self.imputer_ = SimpleImputer(strategy="median")
+        # keep_empty_features: a column that is NaN for every training row is kept
+        # (imputed as 0) rather than dropped, so the fitted estimator -- and the ONNX
+        # graph built from it -- takes the descriptor's full width.
+        self.imputer_ = SimpleImputer(strategy="median", keep_empty_features=True)
         X = self.imputer_.fit_transform(X)
 
         # StandardScaler — fitted independently, not shared with any model
@@ -185,6 +205,7 @@ class ApplicabilityDomain:
         import onnx
         from onnx import helper, TensorProto, numpy_helper
 
+        medians = self.imputer_.statistics_.astype(np.float32)  # (p,)
         scaler_mean = self.scaler_mean_.astype(np.float32)  # (p,)
         scaler_scale = self.scaler_scale_.astype(np.float32)  # (p,)
         pca_mean = self.pca_.mean_.astype(np.float32)  # (p,)
@@ -202,6 +223,7 @@ class ApplicabilityDomain:
             return numpy_helper.from_array(arr, name=name)
 
         initializers = [
+            init("medians", medians),
             init("scaler_mean", scaler_mean),
             init("scaler_scale", scaler_scale),
             init("pca_mean", pca_mean),
@@ -218,9 +240,13 @@ class ApplicabilityDomain:
         ]
 
         nodes = [
+            # ── Median imputation (the fitted SimpleImputer) ────────
+            # x_imp = where(isnan(X), medians, X)      [B, p]
+            helper.make_node("IsNaN", ["X"], ["x_isnan"]),
+            helper.make_node("Where", ["x_isnan", "medians", "X"], ["x_imp"]),
             # ── StandardScaler ──────────────────────────────────────
-            # x_sc = (X - scaler_mean) / scaler_scale   [B, p]
-            helper.make_node("Sub", ["X", "scaler_mean"], ["x_centered"]),
+            # x_sc = (x_imp - scaler_mean) / scaler_scale   [B, p]
+            helper.make_node("Sub", ["x_imp", "scaler_mean"], ["x_centered"]),
             helper.make_node("Div", ["x_centered", "scaler_scale"], ["x_sc"]),
             # ── PCA projection ──────────────────────────────────────
             # x_c = x_sc - pca_mean                 [B, p]
@@ -273,6 +299,16 @@ class ApplicabilityDomain:
         onnx.checker.check_model(model)
         with open(path, "wb") as fh:
             fh.write(model.SerializeToString())
+        probe = getattr(self, "_onnx_probe_", None)
+        if probe is not None:
+            # Two calibration knots of slack: see check_values.
+            check_values(
+                path,
+                probe,
+                self.score(probe),
+                "ApplicabilityDomain",
+                atol=2.0 / len(self.cal_knots_) + 1e-6,
+            )
 
     def save(self, directory: str) -> None:
         """Save ONNX model + metadata JSON to *directory*."""
