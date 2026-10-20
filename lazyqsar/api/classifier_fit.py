@@ -1,8 +1,9 @@
 """Fit one LazyQSAR model per task from a directory of labelled CSVs.
 
 The CLI training entry point. Each task becomes a :class:`~lazyqsar.qsar.LazyClassifierQSAR`
-— the same object the Python API fits — so a checkpoint means the same thing whichever
-way it was produced.
+or, with ``task="regression"``, a :class:`~lazyqsar.qsar.LazyRegressorQSAR` -- the same
+objects the Python API fits -- so a checkpoint means the same thing whichever way it was
+produced. One modelling task per run: every CSV is fitted as the same task.
 
 Descriptors are computed once over the union of every task's compounds and sliced per
 task. That is the reason this module exists rather than simply looping over
@@ -18,7 +19,7 @@ import tempfile
 import numpy as np
 
 from ..ensemble.runner import get_chunk_size, persist_descriptors
-from ..qsar import LazyClassifierQSAR, validate_smiles
+from ..qsar import LazyQSAR, validate_smiles
 from ..registry import DESCRIPTOR_TYPES, DESCRIPTORS_MODE, get_descriptor_type
 from ..utils.logging import logger
 
@@ -72,26 +73,43 @@ def get_task_names(data_dir):
     return task_names
 
 
-def get_task_data(data_dir, task_name):
+def get_task_data(data_dir, task_name, task="classification"):
+    """``(smiles_list, y)`` for one task CSV: int labels, or float targets for regression."""
+    regression = task == "regression"
+    path = os.path.join(data_dir, task_name + ".csv")
     smiles_list = []
     y = []
-    with open(os.path.join(data_dir, task_name + ".csv"), "r") as f:
+    with open(path, "r") as f:
         reader = csv.reader(f)
         next(reader)
-        for r in reader:
+        for line, r in enumerate(reader, start=2):
             smiles_list += [r[0]]
-            y += [int(r[1])]
-    return smiles_list, np.array(y, dtype=int)
+            try:
+                y += [float(r[1]) if regression else int(r[1])]
+            except (ValueError, IndexError):
+                kind = "numeric target" if regression else "binary 0/1 label"
+                raise ValueError(
+                    f"{path}, line {line}: expected a {kind} in the second column, "
+                    f"got {r[1:2]!r}."
+                ) from None
+    return smiles_list, np.array(y, dtype=float if regression else int)
 
 
-def fit(data_dir: str, model_dir: str, models_txt: str = None, mode: str = "slow"):
+def fit(
+    data_dir: str,
+    model_dir: str,
+    models_txt: str = None,
+    mode: str = "slow",
+    task: str = "classification",
+):
     """Fit and save one model per CSV in *data_dir*.
 
     Parameters
     ----------
     data_dir : str
-        One CSV per task: SMILES in the first column, a binary label in the second, with
-        a header row. The file stem becomes the task name.
+        One CSV per task: SMILES in the first column, a binary label (classification) or
+        a numeric target (regression) in the second, with a header row. The file stem
+        becomes the task name.
     model_dir : str
         Output directory, one subdirectory per task. Must not already exist.
     models_txt : str, optional
@@ -99,9 +117,16 @@ def fit(data_dir: str, model_dir: str, models_txt: str = None, mode: str = "slow
     mode : str
         ``"fast"`` (Morgan only) or ``"slow"`` (all five descriptors, pruned by the
         portfolio).
+    task : str
+        ``"classification"`` (default) or ``"regression"``; applies to every CSV.
     """
     data_dir = os.path.abspath(data_dir)
     model_dir = os.path.abspath(model_dir)
+
+    if task not in ("classification", "regression"):
+        raise ValueError(
+            f"Unknown task {task!r}. Choose 'classification' or 'regression'."
+        )
 
     if mode not in DESCRIPTORS_MODE:
         raise ValueError(
@@ -109,7 +134,8 @@ def fit(data_dir: str, model_dir: str, models_txt: str = None, mode: str = "slow
         )
 
     logger.info(
-        f"Fitting models in mode '{mode}' | data: {data_dir} | output: {model_dir}"
+        f"Fitting {task} models in mode '{mode}' | data: {data_dir} | "
+        f"output: {model_dir}"
     )
 
     if os.path.exists(model_dir):
@@ -136,7 +162,7 @@ def fit(data_dir: str, model_dir: str, models_txt: str = None, mode: str = "slow
     row_of = {s: i for i, s in enumerate(all_smiles)}
     logger.info(f"Found {len(all_smiles)} unique SMILES across all tasks")
 
-    data = {t: get_task_data(data_dir, t) for t in task_names}
+    data = {t: get_task_data(data_dir, t, task) for t in task_names}
 
     # Scratch lives outside model_dir: a crash must not strew .npy files among the
     # checkpoints, which is what the previous in-place staging did.
@@ -168,9 +194,13 @@ def fit(data_dir: str, model_dir: str, models_txt: str = None, mode: str = "slow
                 d: np.load(os.path.join(scratch, f"{d}.npy"), mmap_mode="r")[rows]
                 for d in descriptor_types
             }
-            model = LazyClassifierQSAR(mode=mode)
+            model = LazyQSAR(task=task, mode=mode)
             model.fit(smiles_list, y, precomputed=precomputed, validate=False)
-            model.save_raw(os.path.join(model_dir, task_name))
+            out = os.path.join(model_dir, task_name)
+            if task == "regression":
+                model.save(out)
+            else:
+                model.save_raw(out)
             del precomputed, model
     finally:
         shutil.rmtree(scratch, ignore_errors=True)

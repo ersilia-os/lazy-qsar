@@ -15,7 +15,11 @@ import sys
 import pytest
 
 from lazyqsar.cli import main as cli
-from lazyqsar.ensemble import OUTPUT_NAMES
+from lazyqsar.ensemble import OUTPUT_NAMES_BY_TASK
+
+# Every output of every task, classification first: the CLI offers the union and the API
+# checks the choice against the checkpoint's task.
+ALL_OUTPUTS = tuple(n for names in OUTPUT_NAMES_BY_TASK.values() for n in names)
 from lazyqsar.registry import DESCRIPTORS_MODE
 
 
@@ -56,13 +60,28 @@ def test_fit_forwards_its_arguments_with_slow_as_the_default(monkeypatch, record
     run(monkeypatch, "fit", "--task", "classification", "--input", "d", "--output", "m")
 
     assert recorder.calls == [
-        {"data_dir": "d", "model_dir": "m", "models_txt": None, "mode": "slow"}
+        {
+            "data_dir": "d",
+            "model_dir": "m",
+            "models_txt": None,
+            "mode": "slow",
+            "task": "classification",
+        }
     ]
 
 
-def test_predict_forwards_its_arguments_with_proba_as_the_default(
+def test_regression_fit_forwards_the_task(monkeypatch, recorder):
+    import lazyqsar.api.classifier_fit as fit_api
+
+    monkeypatch.setattr(fit_api, "fit", recorder)
+    run(monkeypatch, "fit", "--task", "regression", "--input", "d", "--output", "m")
+    assert recorder.calls[0]["task"] == "regression"
+
+
+def test_predict_forwards_its_arguments_leaving_the_default_to_the_checkpoint(
     monkeypatch, recorder
 ):
+    """``None``: the API resolves it from the checkpoint's task (proba or value)."""
     import lazyqsar.api.classifier_predict as predict_api
 
     monkeypatch.setattr(predict_api, "predict", recorder)
@@ -74,7 +93,7 @@ def test_predict_forwards_its_arguments_with_proba_as_the_default(
             "input_csv": "i.csv",
             "output_csv": "o.csv",
             "models_txt": None,
-            "predict_type": "proba",
+            "predict_type": None,
         }
     ]
 
@@ -86,13 +105,6 @@ def test_no_subcommand_is_a_usage_error(monkeypatch):
     with pytest.raises(SystemExit) as exc:
         run(monkeypatch)
     assert exc.value.code == 2
-
-
-def test_regression_is_rejected_with_a_message(monkeypatch, capsys):
-    with pytest.raises(SystemExit) as exc:
-        run(monkeypatch, "fit", "--task", "regression", "--input", "d", "--output", "m")
-    assert exc.value.code == 1
-    assert "not yet implemented" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(
@@ -184,7 +196,7 @@ def test_predict_type_choices_match_the_library(monkeypatch, recorder):
     import lazyqsar.api.classifier_predict as predict_api
 
     monkeypatch.setattr(predict_api, "predict", recorder)
-    for name in OUTPUT_NAMES:
+    for name in ALL_OUTPUTS:
         run(
             monkeypatch,
             "predict",
@@ -197,7 +209,7 @@ def test_predict_type_choices_match_the_library(monkeypatch, recorder):
             "--predict_type",
             name,
         )
-    assert [c["predict_type"] for c in recorder.calls] == list(OUTPUT_NAMES)
+    assert [c["predict_type"] for c in recorder.calls] == list(ALL_OUTPUTS)
 
 
 def test_mode_choices_match_the_descriptor_registry(monkeypatch, recorder):
@@ -222,7 +234,7 @@ def test_mode_choices_match_the_descriptor_registry(monkeypatch, recorder):
 
 def test_predict_type_offers_exactly_the_library_outputs():
     """Not just "the valid ones work" -- also that no stale extra is still offered."""
-    assert option_choices("predict", "--predict_type") == set(OUTPUT_NAMES)
+    assert option_choices("predict", "--predict_type") == set(ALL_OUTPUTS)
 
 
 def test_mode_offers_exactly_the_registered_modes():

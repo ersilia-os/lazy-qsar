@@ -30,13 +30,16 @@ lazyqsar reference {status,fetch,verify,smiles} [--only LIST] [--output FILE] [-
     smiles   Write the molecule list, which is all a bring-your-own-descriptor caller
              needs in order to pass `reference_X=` to LazyClassifier.fit.
 
-lazyqsar fit --task classification --input DATA_DIR --output MODEL_DIR [--mode MODE] [--models_txt FILE]
-    Fit a classifier on CSV data. One CSV per task, SMILES first column, label second.
+lazyqsar fit --task {classification,regression} --input DATA_DIR --output MODEL_DIR
+             [--mode MODE] [--models_txt FILE]
+    Fit one model per CSV. SMILES first column; second column a binary label
+    (classification) or a numeric target (regression). One task type per run.
 
 lazyqsar predict --input INPUT_CSV --model MODEL_DIR --output OUTPUT_CSV [--models_txt FILE]
                  [--predict_type TYPE]
-    Run predictions with a saved model.
-    --predict_type  One of proba, rank, logit, lift, score, binary (default: proba).
+    Run predictions with a saved model. The task is read from the checkpoint.
+    --predict_type  Classification: proba, rank, logit, lift, score, binary (default:
+                    proba). Regression: value (the default).
 """
 
 import argparse
@@ -215,21 +218,18 @@ def _setup_descriptors(args):
 
 def _cmd_fit(args):
     task = args.task.lower()
-    if task == "classification":
-        from ..api.classifier_fit import fit
-
-        fit(
-            data_dir=args.input,
-            model_dir=args.output,
-            models_txt=args.models_txt,
-            mode=args.mode,
-        )
-    elif task == "regression":
-        print("Error: regression task is not yet implemented.", file=sys.stderr)
-        sys.exit(1)
-    else:
+    if task not in ("classification", "regression"):
         print(f"Unknown task {args.task!r}.", file=sys.stderr)
         sys.exit(1)
+    from ..api.classifier_fit import fit
+
+    fit(
+        data_dir=args.input,
+        model_dir=args.output,
+        models_txt=args.models_txt,
+        mode=args.mode,
+        task=task,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -240,13 +240,23 @@ def _cmd_fit(args):
 def _cmd_predict(args):
     from ..api.classifier_predict import predict
 
-    predict(
-        model_dir=args.model,
-        input_csv=args.input,
-        output_csv=args.output,
-        models_txt=args.models_txt,
-        predict_type=args.predict_type,
-    )
+    try:
+        predict(
+            model_dir=args.model,
+            input_csv=args.input,
+            output_csv=args.output,
+            models_txt=args.models_txt,
+            predict_type=args.predict_type,
+        )
+    except ValueError as exc:
+        # A wrong predict_type for the checkpoint's task, or a mixed-task model directory:
+        # both are the user's to fix, so a message rather than a traceback.
+        if "predict_type" in str(exc) or "mix classification and regression" in str(
+            exc
+        ):
+            print(f"Error: {exc}", file=sys.stderr)
+            sys.exit(1)
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -484,10 +494,13 @@ def main():
     p_predict.add_argument(
         "--predict_type",
         type=str,
-        default="proba",
+        default=None,
         metavar="TYPE",
-        choices=["proba", "rank", "logit", "lift", "score", "binary"],
-        help="Type of prediction output (default: proba).",
+        choices=["proba", "rank", "logit", "lift", "score", "binary", "value"],
+        help=(
+            "Type of prediction output. Classification: proba (default), rank, logit, "
+            "lift, score, binary. Regression: value (default)."
+        ),
     )
 
     args = parser.parse_args()

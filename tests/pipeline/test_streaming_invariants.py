@@ -78,8 +78,9 @@ def trace(monkeypatch):
         real_persist(featurizer, smiles_list, out_path, chunk_size, progress, task_id)
         t.disk.append(("exit", name, staged(scratch)))
 
-    def _load_artifact(directory):
-        artifact = real_load(directory)
+    def _load_artifact(directory, *args, **kwargs):
+        # Pass-through for the loader's task argument (added with regression).
+        artifact = real_load(directory, *args, **kwargs)
         t.events.append(("load", directory))
         t.checked_out.append(directory)
         t.peak_checked_out = max(t.peak_checked_out, len(t.checked_out))
