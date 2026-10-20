@@ -5,6 +5,7 @@ import h5py
 import numpy as np
 
 from .artifacts.classifier import LazyClassifierArtifact
+from .artifacts.regressor import LazyRegressorArtifact
 from .utils.archives import unpack_to_scratch
 from .utils.logging import logger
 from .utils.ranking import (
@@ -393,7 +394,102 @@ class LazyClassifier:
 
 
 class LazyRegressor:
-    """Placeholder — not yet implemented."""
+    """
+    Descriptor-agnostic regressor.
 
-    def __init__(self, **kwargs):
-        raise NotImplementedError("LazyRegressor is not yet implemented.")
+    Accepts pre-computed feature arrays (X) or Ersilia .h5 files directly, with a
+    continuous target. Wraps the regression assembler and saves/loads via ONNX.
+    Predictions are point estimates in the target's own units.
+    """
+
+    task = "regression"
+
+    def __init__(self, max_rounds: int | None = None, max_batch_size: int = 100_000):
+        self._model = None
+        self.max_rounds = max_rounds
+        self.max_batch_size = max_batch_size
+
+    def fit(self, X=None, y=None, h5_file=None, h5_idxs=None):
+        """Fit on ``(X, y)``; ``y`` is a finite, non-constant numeric target."""
+        from .assemblers.regressor import LazyRegressor as _AssemblerRegressor
+
+        logger.rule("LazyRegressor (agnostic) — fit")
+        if X is None:
+            if h5_file is None:
+                raise ValueError("Provide either X or h5_file.")
+            logger.info(f"Loading features from {h5_file!r}")
+            X = _load_h5(h5_file, h5_idxs)
+        y = np.asarray(y, dtype=float)
+
+        self._model = _AssemblerRegressor(
+            max_batch_size=self.max_batch_size, max_rounds=self.max_rounds
+        )
+        self._model.fit(X, y)
+        logger.success("LazyRegressor (agnostic) — fit complete")
+
+    @property
+    def oof_rho_(self):
+        return self._model.oof_rho_
+
+    @property
+    def train_rho_(self):
+        return self._model.train_rho_
+
+    def predict(self, X=None, h5_file=None, h5_idxs=None) -> np.ndarray:
+        """Return predicted values, shape (n,)."""
+        if X is None:
+            X = _load_h5(h5_file, h5_idxs)
+        logger.debug(f"predict: X={X.shape}")
+        return self._model.predict(X)
+
+    def _oof_percentile(self, X=None, h5_file=None, h5_idxs=None) -> np.ndarray:
+        """Percentile of the prediction among this model's out-of-fold predictions.
+
+        Internal: the per-sample reliability signal ``LazyRegressorQSAR`` weights
+        descriptors by. Relative to this model's training set, so not a public output.
+        """
+        if X is None:
+            X = _load_h5(h5_file, h5_idxs)
+        return self._model._oof_percentile(X)
+
+    def _oof_percentile_from_value(self, values):
+        return self._model._oof_percentile_from_value(values)
+
+    def oof_channels(self, X=None, h5_file=None, h5_idxs=None):
+        """Out-of-fold ``(value, rank)`` on the training rows, or None. Fit-time only."""
+        if X is None:
+            X = _load_h5(h5_file, h5_idxs)
+        getter = getattr(self._model, "oof_channels", None)
+        return getter(X) if getter is not None else None
+
+    def save(self, model_dir: str) -> str:
+        if model_dir.endswith(".zip"):
+            zip_out = True
+            model_dir = model_dir[:-4]
+        else:
+            zip_out = False
+        logger.info(f"Saving model to {model_dir!r}")
+        os.makedirs(model_dir, exist_ok=True)
+        self._model.save(model_dir)
+        if zip_out:
+            shutil.make_archive(model_dir, "zip", model_dir)
+            shutil.rmtree(model_dir)
+            logger.success(f"Model saved → {model_dir}.zip")
+            return model_dir + ".zip"
+        logger.success(f"Model saved → {model_dir}")
+        return model_dir
+
+    @classmethod
+    def load(cls, model_dir: str):
+        """Load a saved regressor as its numpy + onnxruntime artifact."""
+        scratch = None
+        try:
+            if model_dir.endswith(".zip"):
+                scratch, model_dir = unpack_to_scratch(model_dir)
+            logger.info(f"Loading ONNX artifact from {model_dir!r}")
+            artifact = LazyRegressorArtifact.load(model_dir)
+            logger.success(f"Artifact loaded from {model_dir!r}")
+            return artifact
+        finally:
+            if scratch is not None:
+                shutil.rmtree(scratch, ignore_errors=True)

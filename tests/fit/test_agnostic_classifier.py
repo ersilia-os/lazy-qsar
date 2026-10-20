@@ -212,9 +212,20 @@ def test_loading_a_raw_directory_is_explicitly_unsupported(tmp_path):
         LazyClassifier.load(str(empty))
 
 
-def test_regression_is_not_implemented():
-    with pytest.raises(NotImplementedError):
-        LazyRegressor()
+def test_classifier_loader_refuses_a_regression_checkpoint(tmp_path):
+    """A regression checkpoint has no probabilities; loading it as one must say so."""
+    (tmp_path / "metadata.json").write_text('{"task": "regression"}')
+    with pytest.raises(ValueError, match="regression"):
+        LazyClassifier.load(str(tmp_path))
+    with pytest.raises(ValueError, match="not a regression"):
+        LazyRegressor.load(str(_classification_dir(tmp_path)))
+
+
+def _classification_dir(tmp_path):
+    d = tmp_path / "clf"
+    d.mkdir()
+    (d / "metadata.json").write_text('{"portfolio": ["xgb"], "num_batches": 1}')
+    return d
 
 
 def _reference_matrix(n=400, seed=7):

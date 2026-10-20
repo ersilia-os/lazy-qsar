@@ -167,8 +167,18 @@ class Logger:
         body = sep.join(f"[cyan]{p}[/]" for p in parts)
         self._console.print(f"[bold]{task_label}[/bold]  {body}")
 
-    def dataset_table(self, X_shape, y=None, portfolio: list | None = None) -> None:
-        """Display a compact dataset summary table."""
+    def dataset_table(
+        self,
+        X_shape,
+        y=None,
+        portfolio: list | None = None,
+        task: str = "classification",
+    ) -> None:
+        """Display a compact dataset summary table.
+
+        For ``task="regression"`` the label block summarises the target distribution
+        instead of class counts.
+        """
         if not self._verbose:
             return
 
@@ -188,7 +198,11 @@ class Logger:
         table.add_row("Features", f"{n_features:,}")
         table.add_row("n/p ratio", f"{(n_samples / max(n_features, 1)):.2f}")
 
-        if y is not None:
+        if y is not None and task == "regression":
+            y_arr = np.asarray(y, dtype=float)
+            table.add_row("Target mean±std", f"{y_arr.mean():.3f}±{y_arr.std():.3f}")
+            table.add_row("Target range", f"[{y_arr.min():.3f}, {y_arr.max():.3f}]")
+        elif y is not None:
             y_arr = np.asarray(y)
             values, counts = np.unique(y_arr, return_counts=True)
             count_map = {int(v): int(c) for v, c in zip(values, counts)}
@@ -421,8 +435,13 @@ class Logger:
         meta_auc: float | None = None,
         mean_weights: list | None = None,
         std_weights: list | None = None,
+        metric: str = "AUC",
     ) -> None:
-        """Display a Rich table summarising the ensemble pooler."""
+        """Display a Rich table summarising the ensemble pooler.
+
+        ``metric`` labels the footer's ensemble score: AUC-based composite for
+        classification, Spearman ρ for regression.
+        """
         if not self._verbose:
             return
 
@@ -463,7 +482,7 @@ class Logger:
 
         footer_parts = [f"n = {n_samples:,}"]
         if meta_auc is not None:
-            footer_parts.append(f"meta AUC = {meta_auc:.4f}")
+            footer_parts.append(f"meta {metric} = {meta_auc:.4f}")
         self._console.print("  [dim]" + "  |  ".join(footer_parts) + "[/dim]")
         self._console.line()
 

@@ -119,6 +119,11 @@ class LazyClassifierArtifact:
         self = cls.__new__(cls)
         with open(meta_path) as f:
             metadata = json.load(f)
+        if metadata.get("task", "classification") != "classification":
+            raise ValueError(
+                f"{directory!r} is a {metadata['task']} checkpoint; load it with "
+                "lazyqsar.agnostic.LazyRegressor.load instead."
+            )
         portfolio = metadata["portfolio"]
         num_batches = metadata["num_batches"]
         self._batches = [
