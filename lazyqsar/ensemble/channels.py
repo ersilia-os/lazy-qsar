@@ -12,6 +12,11 @@ materialised at once, which is what lets a model score a million-compound librar
 
 numpy + onnxruntime only — no RDKit, no scikit-learn. This module sits on the path the
 Ersilia Model Hub runs.
+
+Regression artifacts (``artifact.task == "regression"``) produce ``(n_samples,)`` arrays
+instead of ``[negative, positive]`` pairs: ``y`` is the predicted value, from
+``artifact.predict``, and ``r`` its OOF-ECDF rank. There is no ``s`` channel for
+regression, since ``score`` is a classification output.
 """
 
 from __future__ import annotations
@@ -69,15 +74,23 @@ def _positive_column(fn, X, label, logger=None):
     Mirrors the fallback the non-streaming path has always had: a head that does not
     expose a channel yields ``None`` and the ensemble degrades accordingly. A real failure
     is indistinguishable from that here, so it is logged rather than swallowed silently.
+
+    A 1-D result is a regression artifact's own channel and is returned as is.
     """
     try:
-        return fn(X)[:, 1]
+        return _positive(fn(X))
     except Exception as exc:  # noqa: BLE001 - deliberately broad; see docstring
         if logger is not None:
             logger.warning(
                 f"{label} unavailable, falling back: {type(exc).__name__}: {exc}"
             )
         return None
+
+
+def _positive(arr):
+    """Positive-class column of a ``(n, 2)`` pair, or a 1-D regression channel unchanged."""
+    arr = np.asarray(arr)
+    return arr if arr.ndim == 1 else arr[:, 1]
 
 
 def _score_chunks(chunks, artifact, ad_artifact, want, logger=None):
@@ -88,9 +101,16 @@ def _score_chunks(chunks, artifact, ad_artifact, want, logger=None):
     """
     parts = {k: [] for k in ("y", "r", "s", "a")}
     unavailable = set()
+    regression = getattr(artifact, "task", "classification") == "regression"
+    from_y_name = (
+        "_oof_percentile_from_value" if regression else "_oof_percentile_from_proba"
+    )
 
     for X_chunk in chunks:
-        y = np.asarray(artifact.predict_proba(X_chunk))[:, 1]
+        if regression:
+            y = np.asarray(artifact.predict(X_chunk), dtype=np.float64).ravel()
+        else:
+            y = np.asarray(artifact.predict_proba(X_chunk))[:, 1]
         parts["y"].append(y)
         if "r" in want:
             # On a pooled-reference checkpoint the rank is a lookup against the training
@@ -99,8 +119,8 @@ def _score_chunks(chunks, artifact, ad_artifact, want, logger=None):
             # every head to reach the identical number -- roughly doubling the ONNX work
             # of the two most common requests, since `rank` is the deployed default and an
             # applicability domain forces ranks on even for plain `proba`.
-            from_proba = getattr(artifact, "_oof_percentile_from_proba", None)
-            r = from_proba(y) if from_proba is not None else None
+            from_y = getattr(artifact, from_y_name, None)
+            r = from_y(y) if from_y is not None else None
             if r is None:
                 r = _positive_column(
                     artifact._oof_percentile, X_chunk, "_oof_percentile", logger
@@ -109,7 +129,7 @@ def _score_chunks(chunks, artifact, ad_artifact, want, logger=None):
                 unavailable.add("r")
             else:
                 parts["r"].append(r)
-        if "s" in want:
+        if "s" in want and not regression:
             s = _positive_column(
                 artifact.predict_score, X_chunk, "predict_score", logger
             )

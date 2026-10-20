@@ -11,16 +11,22 @@ path those deployments run.
 
 from .combine import (
     OUTPUT_NAMES,
+    OUTPUT_NAMES_BY_TASK,
+    REGRESSION_OUTPUT_NAMES,
     CombineResult,
     EnsembleSpec,
     build_weight_matrix,
     combine,
     mask_rows,
+    read_task,
 )
 from .reference import build_pooled_rank_knots, build_pooled_score_knots
 
 __all__ = [
     "OUTPUT_NAMES",
+    "OUTPUT_NAMES_BY_TASK",
+    "REGRESSION_OUTPUT_NAMES",
+    "read_task",
     "build_pooled_rank_knots",
     "build_pooled_score_knots",
     "CombineResult",

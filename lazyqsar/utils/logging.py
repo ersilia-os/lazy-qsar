@@ -547,28 +547,37 @@ class Logger:
             title_justify="left",
             padding=(0, 1),
         )
-        has_oof = any("oof_auc" in r for r in rows)
-        has_proxy = any(r.get("proxy_auc") is not None for r in rows)
+        # Regression rows carry Spearman ρ under *_rho keys; classification rows AUC.
+        regression = any("oof_rho" in r for r in rows)
+        metric, oof_key, proxy_key = (
+            ("ρ", "oof_rho", "proxy_rho")
+            if regression
+            else ("AUC", "oof_auc", "proxy_auc")
+        )
+        has_oof = any(oof_key in r for r in rows)
+        has_proxy = any(r.get(proxy_key) is not None for r in rows)
 
         table.add_column("Descriptor", style="cyan", no_wrap=True, min_width=12)
         if has_proxy:
-            table.add_column("Proxy AUC", justify="right", min_width=10)
+            table.add_column(f"Proxy {metric}", justify="right", min_width=10)
         if has_oof:
-            table.add_column("OOF AUC", justify="right", min_width=9)
+            table.add_column(f"OOF {metric}", justify="right", min_width=9)
         table.add_column("AD mean±std", justify="right", min_width=13)
         table.add_column("AD [min, max]", justify="right", min_width=14)
         table.add_column("Final W mean±std", justify="right", min_width=16)
         table.add_column("Vetoed", justify="right", min_width=10)
-        table.add_column("P(y=1) mean", justify="right", min_width=12)
+        table.add_column(
+            "Pred mean" if regression else "P(y=1) mean", justify="right", min_width=12
+        )
 
         for r in rows:
             vetoed_pct = 100.0 * r["vetoed"] / n_samples if n_samples > 0 else 0.0
             row = [r["name"]]
             if has_proxy:
-                v = r.get("proxy_auc")
+                v = r.get(proxy_key)
                 row.append(f"{v:.4f}" if v is not None else "—")
             if has_oof:
-                row.append(f"{r['oof_auc']:.4f}")
+                row.append(f"{r[oof_key]:.4f}")
             row += [
                 f"{r['ad_mean']:.3f}±{r['ad_std']:.3f}",
                 f"[{r['ad_min']:.3f}, {r['ad_max']:.3f}]",

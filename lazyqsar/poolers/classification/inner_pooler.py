@@ -3,26 +3,15 @@ import os
 
 import numpy as np
 
-try:
-    from sklearn.linear_model import Ridge
-
-    _FIT_DEPS_AVAILABLE = True
-except ImportError:
-    Ridge = None  # type: ignore[assignment,misc]
-    _FIT_DEPS_AVAILABLE = False
-
+from lazyqsar.poolers._gate import (  # noqa: F401 - re-exported for callers
+    _FIT_DEPS_AVAILABLE,
+    _heuristic_alpha,
+    _softmax,
+    fit_gate,
+    gate_weights,
+)
 from lazyqsar.utils.logging import logger
 from lazyqsar.utils.metrics import composite_score
-
-
-def _heuristic_alpha(X: np.ndarray) -> float:
-    """alpha = mean_feature_variance * p / n, floored at 0.01."""
-    return max(0.01, float(np.mean(np.var(X, axis=0)) * X.shape[1] / X.shape[0]))
-
-
-def _softmax(x: np.ndarray) -> np.ndarray:
-    e = np.exp(x - x.max(axis=1, keepdims=True))
-    return e / e.sum(axis=1, keepdims=True)
 
 
 class InnerClassifierPooler(object):
@@ -95,15 +84,7 @@ class InnerClassifierPooler(object):
             np.log(np.clip(1.0 - S, eps, 1 - eps)),
         )
         target_w = _softmax(log_scores)  # (n, n_heads)
-
-        alpha = _heuristic_alpha(X_prep)
-        self._gate_coef = np.zeros((self._n_heads, X_prep.shape[1]), dtype=float)
-        self._gate_intercept = np.zeros(self._n_heads, dtype=float)
-        for j in range(self._n_heads):
-            ridge = Ridge(alpha=alpha, fit_intercept=True)
-            ridge.fit(X_prep, target_w[:, j])
-            self._gate_coef[j] = ridge.coef_
-            self._gate_intercept[j] = float(ridge.intercept_)
+        self._gate_coef, self._gate_intercept = fit_gate(X_prep, target_w)
 
         W_oof = self.get_weights(X_prep)
         self._score = composite_score(y, (W_oof * S).sum(axis=1))
@@ -118,9 +99,9 @@ class InnerClassifierPooler(object):
 
     def get_weights(self, X_prep: np.ndarray) -> np.ndarray:
         """Return per-sample weights (n_samples, n_heads)."""
-        if self._gate_coef is None:
-            return np.full((len(X_prep), self._n_heads), 1.0 / self._n_heads)
-        return _softmax(X_prep @ self._gate_coef.T + self._gate_intercept)
+        return gate_weights(
+            X_prep, self._gate_coef, self._gate_intercept, self._n_heads
+        )
 
     def predict_proba(self, R, X_prep=None):
         """
@@ -187,14 +168,13 @@ class InnerPoolerArtifact(object):
             self._gate_intercept = np.array(data["gate_intercept"])
         else:
             self._gate_coef = None
+            self._gate_intercept = None
 
     def get_weights(self, X_prep: np.ndarray) -> np.ndarray:
         """Return per-sample weights (n_samples, n_heads)."""
-        if self._gate_coef is None:
-            return np.full((len(X_prep), self._n_heads), 1.0 / self._n_heads)
-        raw = X_prep @ self._gate_coef.T + self._gate_intercept
-        e = np.exp(raw - raw.max(axis=1, keepdims=True))
-        return e / e.sum(axis=1, keepdims=True)
+        return gate_weights(
+            X_prep, self._gate_coef, self._gate_intercept, self._n_heads
+        )
 
     def predict_proba(self, R, X_prep=None):
         """Return gated ensemble probabilities, shape (n_samples, 2)."""
