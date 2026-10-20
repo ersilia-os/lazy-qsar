@@ -308,10 +308,9 @@ def test_anchored_ranks_accept_a_scalar():
 
 # --------------------------------------------------------------------------- anchor table
 #
-# The shared (probability -> rank) table, and its inverse. No caller yet: `rank_from_reference`
-# still interpolates the quartile-anchored segments. These tests pin the table and the inverse
-# against each other so that switching the forward map over cannot silently break the
-# round-trip the decision cutoff depends on.
+# The shared (probability -> rank) anchor table, and the inverse of the scale. Since 3.7 the
+# forward map is smooth between anchors rather than the table's straight segments, so the
+# round-trip is pinned against `rank_from_reference` itself; the anchors are still exact.
 
 
 def test_the_tail_anchors_land_exactly_on_their_ranks():
@@ -327,13 +326,20 @@ def test_the_tail_anchors_land_exactly_on_their_ranks():
 def test_the_inverse_recovers_the_probability_exactly():
     prep = prepare_knots(_reference())
     for anchor_high in (None, 0.40, 0.95):
-        xs, ys, _ = reference_anchor_table(prepared=prep, anchor_high=anchor_high)
         # Sample ranks rather than probabilities: the map is what must round-trip, and
         # sampling its output side exercises every segment at the same density.
         ranks = np.linspace(0.0, 1.0, 2001)
         back = proba_from_reference_rank(ranks, prepared=prep, anchor_high=anchor_high)
         assert np.all(np.diff(back) >= 0)
-        assert float(np.abs(np.interp(back, xs, ys) - ranks).max()) < 1e-9
+        anchors = None if anchor_high is None else (None, anchor_high)
+        again = rank_from_reference(back, prepared=prep, anchors=anchors)
+        # The smooth curve is inverted on a dense grid: exact at the anchors, ~1e-7 between.
+        assert float(np.abs(again - ranks).max()) < 1e-6
+        for _, rank in TAIL_ANCHORS:
+            p = proba_from_reference_rank(rank, prepared=prep, anchor_high=anchor_high)
+            assert float(
+                rank_from_reference(p, prepared=prep, anchors=anchors)
+            ) == pytest.approx(rank, abs=1e-12)
 
 
 def test_the_decision_rank_never_touches_the_actives_anchor():
@@ -419,3 +425,79 @@ def test_the_table_spends_its_resolution_on_the_tail():
     top_1 = rank_at_percentile(1.0 - 1e-9) - rank_at_percentile(0.99)
     assert top_1 > 0.10  # a flat percentile would give 0.01
     assert middle_50 < 0.30  # a flat percentile would give 0.50
+
+
+# --------------------------------------------------------------------------- smooth scale (3.7)
+#
+# Up to 3.6 the scale was linear in probability between anchors, so every anchor was a corner
+# where molecules piled up below and the density fell sharply above it: 6.6x at 0.25 on the
+# reference library. These pin that the curve has no such steps and moves nothing else.
+
+
+def _legacy_rank(scores, prep, anchor_high=None):
+    """The 3.6 scale: straight segments through the anchor table."""
+    xs, ys, _ = reference_anchor_table(prepared=prep, anchor_high=anchor_high)
+    return np.clip(np.interp(np.asarray(scores, dtype=np.float64), xs, ys), 0.0, 1.0)
+
+
+def test_rank_has_no_corner_at_any_anchor():
+    """Slope of rank against tail depth is the same on both sides of each anchor.
+
+    Tail depth is ``-log10(1 - percentile)``, the axis the anchors are evenly spaced on. A
+    histogram of ``rank`` over the library is the reciprocal of this slope, so a corner here
+    is exactly a pile-up below the anchor and a cliff above it.
+    """
+    prep = prepare_knots(_reference())
+    step = 0.02
+
+    def slope_ratios(rank_fn, anchors=None):
+        out = []
+        for q, _ in TAIL_ANCHORS:
+            t = -np.log10(1 - q / 100.0)
+            p = [
+                np.interp(1 - 10.0**-x, prep[1], prep[0])
+                for x in (t - step, t, t + step)
+            ]
+            r = [float(rank_fn(x)) for x in p]
+            out.append((r[1] - r[0]) / (r[2] - r[1]))
+        return out
+
+    legacy = slope_ratios(lambda p: _legacy_rank(p, prep))
+    assert max(abs(np.log(r)) for r in legacy) > np.log(1.5)  # the 3.6 corner
+    for anchors in (None, (None, 0.40)):
+        smooth = slope_ratios(
+            lambda p: rank_from_reference(p, prepared=prep, anchors=anchors)
+        )
+        assert all(abs(r - 1.0) < 0.10 for r in smooth)
+
+
+def test_the_smooth_scale_keeps_the_order_and_the_cutoff_of_the_piecewise_one():
+    prep = prepare_knots(_reference())
+    rng = np.random.default_rng(2)
+    scores = np.sort(
+        np.concatenate([rng.uniform(0.0, 1.0, 5000), _reference(n=5000, seed=3)])
+    )
+    for anchor_high in (None, 0.40):
+        anchors = None if anchor_high is None else (None, anchor_high)
+        new = rank_from_reference(scores, prepared=prep, anchors=anchors)
+        old = _legacy_rank(scores, prep, anchor_high)
+        assert np.all(np.diff(new) >= 0)
+        # Same order: wherever the old scale separates two molecules, so does the new one.
+        assert np.all(np.diff(new)[np.diff(old) > 0] > 0)
+        assert np.array_equal(new >= DECISION_RANK, old >= DECISION_RANK - 1e-12)
+        # Above the reference maximum the scale still ends where it always did: the actives
+        # anchor exactly on its rank, and only certainty reaching 1.0.
+        if anchor_high is not None:
+            assert float(
+                rank_from_reference(anchor_high, prepared=prep, anchors=anchors)
+            ) == pytest.approx(ACTIVES_RANK)
+        assert float(rank_from_reference(1.0, prepared=prep, anchors=anchors)) == 1.0
+        assert new[scores < 1.0].max() < 1.0
+
+
+def test_molecules_below_the_reference_keep_their_order():
+    prep = prepare_knots(_reference())
+    scores = np.linspace(0.0, prep[0][0], 50)
+    ranks = rank_from_reference(scores, prepared=prep)
+    assert ranks[0] == 0.0
+    assert np.all(np.diff(ranks) > 0)

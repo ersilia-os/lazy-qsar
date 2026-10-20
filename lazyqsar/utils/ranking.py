@@ -184,10 +184,13 @@ def _collapse_anchors(points):
 def reference_anchor_table(knots=None, prepared=None, anchor_high=None):
     """The (probability -> rank) anchor points, and whether the actives anchor was used.
 
-    One table, three readers: :func:`rank_from_reference` interpolates it forward,
-    :func:`proba_from_reference_rank` interpolates it backward, and the fit-time anchor
-    decision reads *used* instead of re-deriving the comparison. Holding them to one
-    definition is what stops the forward and inverse maps drifting apart.
+    One table, three readers: :func:`rank_from_reference` takes its anchors (and, above the
+    reference maximum, its segments), :func:`proba_from_reference_rank` inverts the same
+    scale, and the fit-time anchor decision reads *used* instead of re-deriving the
+    comparison. Holding them to one definition is what stops the forward and inverse maps
+    drifting apart. The probabilities in the table are the anchor points of the scale; the
+    smooth curve between them is built from the reference percentiles, not from these
+    straight segments.
 
     Parameters
     ----------
@@ -236,11 +239,142 @@ def reference_anchor_table(knots=None, prepared=None, anchor_high=None):
     return xs, ys, bool(used)
 
 
+# Rank gained per decade of tail past p99.9, inside the reference: half the 0.65 -> 0.75 pace.
+_TOP_PACE = 0.05
+
+
+def _pchip_slopes(x, y):
+    """Node slopes of the monotone cubic through ``(x, y)`` (Fritsch-Carlson, as scipy's PCHIP).
+
+    Here rather than imported because this module must stay numpy-only. With non-decreasing
+    *y* the resulting curve never overshoots, so it is monotone wherever the data are.
+    """
+    h = np.diff(x)
+    delta = np.diff(y) / h
+    d = np.zeros_like(y)
+    for k in range(1, len(x) - 1):
+        if delta[k - 1] * delta[k] > 0:
+            w1, w2 = 2 * h[k] + h[k - 1], h[k] + 2 * h[k - 1]
+            d[k] = (w1 + w2) / (w1 / delta[k - 1] + w2 / delta[k])
+    for end, (h0, h1, d0, d1) in (
+        (0, (h[0], h[1], delta[0], delta[1])),
+        (-1, (h[-1], h[-2], delta[-1], delta[-2])),
+    ):
+        s = ((2 * h0 + h1) * d0 - h0 * d1) / (h0 + h1)
+        if np.sign(s) != np.sign(d0):
+            s = 0.0
+        elif np.sign(d0) != np.sign(d1) and abs(s) > abs(3 * d0):
+            s = 3 * d0
+        d[end] = s
+    return d
+
+
+def _pchip_eval(x, y, d, t):
+    """Evaluate the cubic Hermite curve with nodes ``(x, y)`` and slopes *d* at *t*."""
+    k = np.clip(np.searchsorted(x, t, side="right") - 1, 0, len(x) - 2)
+    h = x[k + 1] - x[k]
+    s = (t - x[k]) / h
+    h00, h10 = 2 * s**3 - 3 * s**2 + 1, s**3 - 2 * s**2 + s
+    h01, h11 = -2 * s**3 + 3 * s**2, s**3 - s**2
+    return h00 * y[k] + h10 * h * d[k] + h01 * y[k + 1] + h11 * h * d[k + 1]
+
+
+def _tail_depth(q):
+    """``-log10(1 - q)``: 0 at the bottom of the reference, 1 at p90, 2 at p99, 3 at p99.9."""
+    return -np.log10(np.clip(1.0 - np.asarray(q, dtype=np.float64), 1e-15, 1.0))
+
+
+def _smooth_scale(prepared, anchor_high):
+    """Everything the smooth rank needs from a reference, or ``None`` to use the plain table.
+
+    Returns ``(vals, midranks, t_nodes, r_nodes, slopes, upper_xs, upper_ys)``: the reference
+    ECDF, the monotone curve through the tail anchors in tail-depth space, and the part of the
+    anchor table above the reference maximum (unchanged from the piecewise scale).
+
+    ``None`` when the reference cannot carry the curve: a single distinct value, or so few
+    distinct values that the top of the ECDF does not reach past p99.9.
+    """
+    vals, midranks = (np.asarray(a, dtype=np.float64) for a in prepared)
+    if len(vals) < 2:
+        return None
+    t_top = float(_tail_depth(midranks[-1]))
+    t_anchors = [float(_tail_depth(q / 100.0)) for q, _ in TAIL_ANCHORS]
+    if t_top <= t_anchors[-1]:
+        return None
+    xs, ys, used = reference_anchor_table(prepared=prepared, anchor_high=anchor_high)
+    t_nodes = [0.0] + t_anchors
+    r_nodes = [0.0] + [r for _, r in TAIL_ANCHORS]
+    r_last = TAIL_ANCHORS[-1][1]
+    if used and anchor_high < vals[-1]:
+        # The actives anchor falls inside the reference: it becomes a node of the curve, at
+        # its own percentile, and the reference maximum keeps the rank the table gives it.
+        t_act = float(_tail_depth(np.interp(anchor_high, vals, midranks)))
+        if t_anchors[-1] < t_act < t_top:
+            t_nodes.append(t_act)
+            r_nodes.append(ACTIVES_RANK)
+        r_top = float(np.interp(vals[-1], xs, ys))
+    else:
+        # Past p99.9 the curve keeps rising, half the pace of the last anchors per decade of
+        # tail, instead of flattening and piling the reference's top 0.1% onto one rank.
+        # Capped at a third of the room left below the next point of the table (the actives
+        # anchor, or certainty), so molecules beyond the reference keep room to spread.
+        y_next = float(ys[np.searchsorted(xs, vals[-1], side="right")])
+        extra = t_top - t_anchors[-1]
+        r_top = r_last + min(_TOP_PACE * extra, (y_next - r_last) / 3.0)
+    if r_top <= r_nodes[-1]:
+        return None
+    t_nodes = np.array(t_nodes + [t_top])
+    r_nodes = np.array(r_nodes + [r_top])
+    slopes = _pchip_slopes(t_nodes, r_nodes)
+    above = xs > vals[-1]
+    upper_xs = np.concatenate([[vals[-1]], xs[above]])
+    upper_ys = np.concatenate([[r_top], ys[above]])
+    return vals, midranks, t_nodes, r_nodes, slopes, upper_xs, upper_ys
+
+
+def _smooth_rank(scores, scale):
+    """Forward map of the smooth scale; see :func:`rank_from_reference`."""
+    vals, midranks, t_nodes, r_nodes, slopes, upper_xs, upper_ys = scale
+    scores = np.asarray(scores, dtype=np.float64)
+    q = np.interp(scores, vals, midranks)
+    ranks = _pchip_eval(
+        t_nodes, r_nodes, slopes, np.clip(_tail_depth(q), 0.0, t_nodes[-1])
+    )
+    # Below the reference minimum the ECDF has nothing to say; run linearly from 0 so those
+    # molecules keep their order instead of tying at the curve's start.
+    r_bottom = float(_pchip_eval(t_nodes, r_nodes, slopes, _tail_depth(midranks[0])))
+    if vals[0] > 0:
+        below = scores < vals[0]
+        ranks = np.where(below, r_bottom * np.clip(scores, 0.0, None) / vals[0], ranks)
+    above = scores > vals[-1]
+    ranks = np.where(above, np.interp(scores, upper_xs, upper_ys), ranks)
+    return np.clip(ranks, 0.0, 1.0)
+
+
+def _smooth_inverse(rank, scale, grid=20001):
+    """Inverse of :func:`_smooth_rank`, exact at the anchors and to ~1e-7 between them."""
+    vals, midranks, t_nodes, r_nodes, slopes, upper_xs, upper_ys = scale
+    rank = np.asarray(rank, dtype=np.float64)
+    # The curve is monotone, so invert it on a dense grid that contains every node exactly.
+    t_grid = np.union1d(np.linspace(0.0, t_nodes[-1], grid), t_nodes)
+    r_grid = _pchip_eval(t_nodes, r_nodes, slopes, t_grid)
+    r_grid = np.maximum.accumulate(r_grid)
+    t = np.interp(rank, r_grid, t_grid)
+    proba = np.interp(1.0 - 10.0 ** (-t), midranks, vals)
+    r_bottom = float(_pchip_eval(t_nodes, r_nodes, slopes, _tail_depth(midranks[0])))
+    if vals[0] > 0 and r_bottom > 0:
+        proba = np.where(rank < r_bottom, rank / r_bottom * vals[0], proba)
+    proba = np.where(rank > upper_ys[0], np.interp(rank, upper_ys, upper_xs), proba)
+    return proba
+
+
 def proba_from_reference_rank(rank, knots=None, prepared=None, anchor_high=None):
     """The probability that :func:`rank_from_reference` maps to *rank*.
 
-    Exact inverse, because both directions interpolate the one table from
-    :func:`reference_anchor_table`, whose ``ys`` are strictly increasing.
+    The inverse of the smooth scale: exact at every anchor (so :data:`DECISION_RANK`
+    inverts to the reference's p99, as it always has) and accurate to about ``1e-7`` of rank
+    between them. A reference too small to carry the curve falls back to the piecewise
+    table, inverted exactly.
 
     This is what turns a decision expressed on the rank scale -- :data:`DECISION_RANK` --
     into the probability the model actually thresholds on, and from there into every other
@@ -258,7 +392,11 @@ def proba_from_reference_rank(rank, knots=None, prepared=None, anchor_high=None)
     ndarray
         Pooled probabilities, same shape as *rank*.
     """
-    xs, ys, _ = reference_anchor_table(knots, prepared, anchor_high)
+    prepared = prepare_knots(knots) if prepared is None else prepared
+    scale = _smooth_scale(prepared, anchor_high)
+    if scale is not None:
+        return _smooth_inverse(rank, scale)
+    xs, ys, _ = reference_anchor_table(prepared=prepared, anchor_high=anchor_high)
     return np.interp(np.asarray(rank, dtype=np.float64), ys, xs)
 
 
@@ -315,13 +453,22 @@ def score_from_knots(p1, knots):
 def rank_from_reference(scores, knots=None, prepared=None, anchors=None):
     """Position against a reference library, anchored on its upper tail.
 
-    One interpolation over :func:`reference_anchor_table`::
+    The score is first read as its percentile ``q`` against the reference, then ``q`` is
+    mapped through a smooth monotone curve that passes exactly through the tail anchors::
 
         ref p50   -> 0.25      "beats half of drug-like space"
         ref p90   -> 0.50      "beats 90%"
         ref p99   -> 0.65      "beats 99%"
         ref p99.9 -> 0.75      "beats 99.9%"
         p95 of the model's out-of-fold actives -> 0.95, when it clears ref p99.9
+
+    The curve is a monotone cubic (PCHIP) in tail depth ``-log10(1 - q)``, so its slope has
+    no corners. Up to 3.6 the scale was linear in probability between anchors, and every
+    anchor was a corner: molecules piled up just below it and the density dropped sharply
+    above (6.6x at 0.25 on the reference library), which reads as spikes in any histogram of
+    ``rank``. The anchors, the order of molecules and the decision cutoff are unchanged; only
+    the spacing between anchors moved. Below the reference minimum the scale runs linearly
+    from 0, and above its maximum it is the piecewise table exactly as before.
 
     Each step is a 10x shrink of the tail, so the axis is spent where a bioactivity model's
     product is. Measured across six antimicrobial models, the top 1% of a screened library
@@ -357,8 +504,12 @@ def rank_from_reference(scores, knots=None, prepared=None, anchors=None):
     ndarray
         Ranks in [0, 1], monotone in *scores*.
     """
-    xs, ys, _ = reference_anchor_table(
-        knots, prepared, None if anchors is None else anchors[1]
-    )
+    anchor_high = None if anchors is None else anchors[1]
+    prepared = prepare_knots(knots) if prepared is None else prepared
+    scale = _smooth_scale(prepared, anchor_high)
+    if scale is not None:
+        return _smooth_rank(scores, scale)
+    # A reference too small to carry the curve keeps the piecewise table.
+    xs, ys, _ = reference_anchor_table(prepared=prepared, anchor_high=anchor_high)
     scores = np.asarray(scores, dtype=np.float64)
     return np.clip(np.interp(scores, xs, ys), 0.0, 1.0)

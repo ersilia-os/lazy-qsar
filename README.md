@@ -97,7 +97,7 @@ behind. Each of these is a deliberate refusal, not a bug:
 | `Invalid SMILES at position(s): ...` at fit | Training on a molecule that cannot be featurized is meaningless, so fit raises rather than guessing. Note an empty cell counts as invalid. | Clean the input. At *predict* time the same rows are NaN'd instead, and the rest of the library still scores. |
 | `This checkpoint's reference rank was built from [...] but [...] missing` | Descriptor directories have been removed from the checkpoint, so it would be scored with fewer descriptors than its reference describes. | Restore the directories or refit. |
 | A warning that the cutoff `admits X% of the reference library, not 1%` | The reference's probabilities are too concentrated for the anchors to separate, so this model's `rank` is not comparable with others. | Check `LAZYQSAR_REFERENCE_N` and whether the model saturates. |
-| A warning that the actives anchor was dropped | The model's known actives do not reach the top 0.1% of drug-like space. Informative, not an error — see the changelog's Known limitations. | Nothing; the scale runs straight to certainty above the last reference anchor. |
+| A warning that the actives anchor was dropped | The model's known actives do not reach the top 0.1% of drug-like space. Informative, not an error — see the changelog's Known limitations. | Nothing; above the last reference anchor the scale runs on to certainty. |
 
 ## Python API
 
