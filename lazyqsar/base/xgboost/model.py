@@ -75,6 +75,7 @@ from .presets import (
     autogluon_params,
     MAXIMIZE_METRICS,
 )
+from lazyqsar.base._onnx_binding import OnnxBoundHead
 from lazyqsar.utils.logging import logger
 from lazyqsar.utils.onnx_check import check_probability, check_values, probe_rows
 from lazyqsar.utils.metrics import spearman_score
@@ -242,7 +243,7 @@ def _resolve_device(device: str) -> str:
     return "gpu" if _GPU_AVAILABLE else "cpu"
 
 
-class BaseXGBClassifier(BaseEstimator, ClassifierMixin):
+class BaseXGBClassifier(OnnxBoundHead, BaseEstimator, ClassifierMixin):
     """
     Binary classifier with automatically selected XGBoost hyperparameters.
 
@@ -385,6 +386,7 @@ class BaseXGBClassifier(BaseEstimator, ClassifierMixin):
 
         self.booster_ = final_booster
         self.best_iteration_ = best_iter
+        self._bind_onnx()
         self.decision_cutoff_raw_ = _DEFAULT_DECISION_CUTOFF
         self.decision_cutoff_raw_source_ = "default_0.5"
         self.decision_cutoff_proba_ = _DEFAULT_DECISION_CUTOFF
@@ -401,13 +403,23 @@ class BaseXGBClassifier(BaseEstimator, ClassifierMixin):
         self.classes_ = np.array([0, 1])
         return self
 
+    _onnx_kind = "probability"
+
+    def _raw_native(self, X) -> np.ndarray:
+        """Raw P(y=1) from the booster itself, over the rounds ``predict`` uses."""
+        return self.booster_.predict(
+            xgb.DMatrix(X), iteration_range=(0, self.best_iteration_ + 1)
+        )
+
+    def _onnx_bytes(self) -> bytes:
+        booster = _rounds_used(self.booster_, self.best_iteration_)
+        wrapper = _booster_to_sklearn_wrapper(booster, task="classification")
+        return _onnx_model_bytes(wrapper, self.profile_.n_features)
+
     def predict_proba(self, X):
         """Return class probabilities, shape (n_samples, 2)."""
         check_is_fitted(self, "booster_")
-        dtest = xgb.DMatrix(X)
-        prob_pos = self.booster_.predict(
-            dtest, iteration_range=(0, self.best_iteration_ + 1)
-        )
+        prob_pos = self._raw(X)
         proba = np.column_stack([1 - prob_pos, prob_pos])
         if hasattr(self, "calibrator_"):
             if self.calibrator_method_ == "isotonic":
@@ -426,10 +438,7 @@ class BaseXGBClassifier(BaseEstimator, ClassifierMixin):
     def predict_score(self, X) -> np.ndarray:
         """Return raw (pre-calibration) probabilities, shape (n_samples, 2)."""
         check_is_fitted(self, "booster_")
-        dtest = xgb.DMatrix(X)
-        prob_pos = self.booster_.predict(
-            dtest, iteration_range=(0, self.best_iteration_ + 1)
-        )
+        prob_pos = self._raw(X)
         return np.column_stack([1 - prob_pos, prob_pos])
 
     def predict(self, X, cutoff: float | None = None):
@@ -600,14 +609,10 @@ class BaseXGBClassifier(BaseEstimator, ClassifierMixin):
             Destination file path, e.g. ``"model.onnx"``.
         """
         check_is_fitted(self, "booster_")
-        booster = _rounds_used(self.booster_, self.best_iteration_)
-        wrapper = _booster_to_sklearn_wrapper(booster, task="classification")
-        _export_onnx(wrapper, path, self.profile_.n_features)
+        self._write_onnx(path)
         probe = getattr(self, "_onnx_probe_", None)
         if probe is not None:
-            check_probability(
-                path, probe, self.predict_score(probe)[:, 1], "BaseXGBClassifier"
-            )
+            check_probability(path, probe, self._raw_native(probe), "BaseXGBClassifier")
 
     def save(self, directory: str) -> None:
         """
@@ -666,7 +671,7 @@ class BaseXGBClassifier(BaseEstimator, ClassifierMixin):
             json.dump(metadata, f, indent=2, cls=_NumpyEncoder)
 
 
-class BaseXGBRegressor(BaseEstimator, RegressorMixin):
+class BaseXGBRegressor(OnnxBoundHead, BaseEstimator, RegressorMixin):
     """
     Regressor with automatically selected XGBoost hyperparameters.
 
@@ -797,6 +802,7 @@ class BaseXGBRegressor(BaseEstimator, RegressorMixin):
 
         self.booster_ = final_booster
         self.best_iteration_ = best_iter
+        self._bind_onnx()
         self.train_rho_ = spearman_score(y, self.predict(X))
         logger.rule("Done")
         logger.success(
@@ -871,13 +877,21 @@ class BaseXGBRegressor(BaseEstimator, RegressorMixin):
         )
         return self
 
+    def _raw_native(self, X) -> np.ndarray:
+        """Predictions from the booster itself, over the rounds ``predict`` uses."""
+        return self.booster_.predict(
+            xgb.DMatrix(X), iteration_range=(0, self.best_iteration_ + 1)
+        )
+
+    def _onnx_bytes(self) -> bytes:
+        booster = _rounds_used(self.booster_, self.best_iteration_)
+        wrapper = _booster_to_sklearn_wrapper(booster, task="regression")
+        return _onnx_model_bytes(wrapper, self.profile_.n_features)
+
     def predict(self, X):
         """Return continuous predictions, shape (n_samples,)."""
         check_is_fitted(self, "booster_")
-        dtest = xgb.DMatrix(X)
-        return self.booster_.predict(
-            dtest, iteration_range=(0, self.best_iteration_ + 1)
-        )
+        return self._raw(X)
 
     def predict_rank(self, X) -> np.ndarray:
         """Map predictions to [0, 1] via the OOF ECDF, shape (n_samples,)."""
@@ -901,12 +915,10 @@ class BaseXGBRegressor(BaseEstimator, RegressorMixin):
             Destination file path, e.g. ``"model.onnx"``.
         """
         check_is_fitted(self, "booster_")
-        booster = _rounds_used(self.booster_, self.best_iteration_)
-        wrapper = _booster_to_sklearn_wrapper(booster, task="regression")
-        _export_onnx(wrapper, path, self.profile_.n_features)
+        self._write_onnx(path)
         probe = getattr(self, "_onnx_probe_", None)
         if probe is not None:
-            check_values(path, probe, self.predict(probe), "BaseXGBRegressor")
+            check_values(path, probe, self._raw_native(probe), "BaseXGBRegressor")
 
     def save(self, directory: str) -> None:
         """
@@ -1565,6 +1577,12 @@ def _booster_to_sklearn_wrapper(booster: "xgb.Booster", task: str):
 
 def _export_onnx(model, path: str, n_features: int) -> None:
     """Convert an XGBoost sklearn estimator to ONNX and write to path."""
+    with open(path, "wb") as f:
+        f.write(_onnx_model_bytes(model, n_features))
+
+
+def _onnx_model_bytes(model, n_features: int) -> bytes:
+    """Convert an XGBoost sklearn estimator to a serialised ONNX graph."""
     import onnx
     from onnxmltools.convert import convert_xgboost
     from onnxmltools.convert.common.data_types import FloatTensorType
@@ -1589,8 +1607,7 @@ def _export_onnx(model, path: str, n_features: int) -> None:
                 dim.dim_param = "batch_size"
     del onnx_model.graph.value_info[:]
     onnx_model = onnx.shape_inference.infer_shapes(onnx_model)
-    with open(path, "wb") as f:
-        f.write(onnx_model.SerializeToString())
+    return onnx_model.SerializeToString()
 
 
 def _validation_split(
@@ -1633,153 +1650,7 @@ def _validation_split(
 
 
 # ---------------------------------------------------------------------------
-# Calibration helper (shared by artifact classes)
+# Artifact: one inference implementation, in lazyqsar.artifacts
 # ---------------------------------------------------------------------------
 
-
-def _apply_calibrator_artifact(proba: np.ndarray, cal: dict) -> np.ndarray:
-    """Apply a saved calibrator dict to a (n, 2) probability array."""
-    raw_p1 = proba[:, 1]
-    if cal["method"] == "isotonic":
-        p1 = np.clip(np.interp(raw_p1, cal["X_thresholds"], cal["y_thresholds"]), 0, 1)
-    else:  # platt
-        A, B = cal["coef"], cal["intercept"]
-        p1 = 1.0 / (1.0 + np.exp(-(A * raw_p1 + B)))
-    return np.column_stack([1 - p1, p1])
-
-
-# ---------------------------------------------------------------------------
-# Artifact: load a saved model for inference
-# ---------------------------------------------------------------------------
-
-
-class BaseXGBArtifact:
-    """
-    Load a saved XGBoost model for forward inference.
-
-    Reads the files written by ``BaseXGBClassifier.save()`` or
-    ``BaseXGBRegressor.save()``:
-      - ``xgboost.onnx``  — ONNX model (preferred)
-      - ``xgboost.json``  — fit metadata (task, params, profile, …)
-
-    Parameters
-    ----------
-    directory : str
-        Path to the directory passed to ``.save()``.
-
-    Attributes
-    ----------
-    metadata : dict
-        Contents of ``xgboost.json``.
-    task : str
-        ``"classification"`` or ``"regression"``.
-    """
-
-    def __init__(self):
-        self._session = None  # onnxruntime.InferenceSession
-        self.metadata: dict = {}
-        self.task: str = ""
-        self._cal = None
-        self.decision_cutoff_raw: float = _DEFAULT_DECISION_CUTOFF
-        self.decision_cutoff_raw_source: str = "default_0.5"
-        self.decision_cutoff_proba: float = _DEFAULT_DECISION_CUTOFF
-        self.decision_cutoff_rank: float = _DEFAULT_DECISION_CUTOFF
-        self.decision_cutoff_logit: float = 0.0
-
-    @classmethod
-    def load(cls, directory: str) -> "BaseXGBArtifact":
-        """
-        Load the model from *directory*.
-
-        Parameters
-        ----------
-        directory : str
-            Directory that was previously passed to ``.save()``.
-
-        Returns
-        -------
-        BaseXGBArtifact
-        """
-        json_path = os.path.join(directory, "xgboost.json")
-        if not os.path.isfile(json_path):
-            raise FileNotFoundError(f"No metadata found at {json_path!r}")
-
-        artifact = cls()
-        with open(json_path) as f:
-            artifact.metadata = json.load(f)
-        artifact.task = artifact.metadata["task"]
-
-        artifact._cal = artifact.metadata.get("calibrator", None)
-        artifact.decision_cutoff_raw = float(
-            artifact.metadata.get("decision_cutoff_raw", _DEFAULT_DECISION_CUTOFF)
-        )
-        artifact.decision_cutoff_raw_source = artifact.metadata.get(
-            "decision_cutoff_raw_source", "default_0.5"
-        )
-        artifact.decision_cutoff_proba = float(
-            artifact.metadata.get("decision_cutoff_proba", _DEFAULT_DECISION_CUTOFF)
-        )
-        artifact.decision_cutoff_rank = float(
-            artifact.metadata.get("decision_cutoff_rank", _DEFAULT_DECISION_CUTOFF)
-        )
-        artifact.decision_cutoff_logit = float(
-            artifact.metadata.get("decision_cutoff_logit", 0.0)
-        )
-
-        import onnxruntime as rt
-
-        onnx_path = os.path.join(directory, "xgboost.onnx")
-        if not os.path.isfile(onnx_path):
-            raise FileNotFoundError(f"No ONNX model found at {onnx_path!r}")
-        artifact._session = rt.InferenceSession(
-            onnx_path, providers=["CPUExecutionProvider"]
-        )
-
-        return artifact
-
-    def run(self, X) -> np.ndarray:
-        """
-        Run forward inference on *X*.
-
-        Parameters
-        ----------
-        X : array-like, shape (n_samples, n_features)
-            Input features.
-
-        Returns
-        -------
-        np.ndarray
-            - Classification: shape ``(n_samples, 2)`` — ``[P(class=0), P(class=1)]``
-            - Regression: shape ``(n_samples,)`` — predicted values
-        """
-        if self._session is None:
-            raise RuntimeError("No model loaded. Call BaseXGBArtifact.load() first.")
-
-        X_f32 = np.asarray(X, dtype=np.float32)
-        input_name = self._session.get_inputs()[0].name
-        outputs = self._session.run(None, {input_name: X_f32})
-        if self.task == "classification":
-            prob_output = next(
-                o
-                for o, meta in zip(outputs, self._session.get_outputs())
-                if meta.name == "probabilities"
-            )
-            proba = np.asarray(prob_output, dtype=np.float64)
-            if self._cal is not None:
-                proba = _apply_calibrator_artifact(proba, self._cal)
-            return proba
-        else:
-            return np.asarray(outputs[0], dtype=np.float64).ravel()
-
-    def predict(self, X, cutoff: float | None = None) -> np.ndarray:
-        """Return binary predictions using the stored decision cutoff by default."""
-        if self.task != "classification":
-            raise RuntimeError(
-                "predict() is only available for classification artifacts."
-            )
-        threshold = self.decision_cutoff_proba if cutoff is None else float(cutoff)
-        # This artifact only exposes calibrated probabilities, so compare against the
-        # calibrated cutoff. decision_cutoff_proba is the calibrator's image of
-        # decision_cutoff_raw, and calibration is monotone, so this matches the
-        # fit-time estimator's raw-vs-raw decision.
-        return binarize(self.run(X)[:, 1], threshold)
+from lazyqsar.artifacts.xgboost import XGBoostArtifact as BaseXGBArtifact  # noqa: E402,F401

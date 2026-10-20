@@ -75,6 +75,7 @@ except ImportError:
     check_array = check_is_fitted = None  # type: ignore[assignment]
     _FIT_DEPS_AVAILABLE = False
 
+from lazyqsar.base._onnx_binding import OnnxBoundHead
 from lazyqsar.utils.logging import logger
 from lazyqsar.utils.onnx_check import check_probability, check_values, probe_rows
 from lazyqsar.utils.metrics import spearman_score
@@ -89,6 +90,22 @@ from lazyqsar.utils.splits import (
     make_quantile_oof_splits,
     make_stratified_oof_splits,
 )
+
+
+def _linear_pipeline_onnx(model, last_step: str) -> bytes:
+    """VarianceThreshold, optional selector and estimator, as one ONNX graph."""
+    from skl2onnx import convert_sklearn
+    from skl2onnx.common.data_types import FloatTensorType
+    from sklearn.pipeline import Pipeline
+
+    steps = [("vt", model._vt)]
+    if model._sfm is not None:
+        steps.append(("sfm", model._sfm))
+    steps.append((last_step, model._estimator))
+    initial_types = [("float_input", FloatTensorType([None, model.n_features_in_]))]
+    return convert_sklearn(
+        Pipeline(steps), initial_types=initial_types
+    ).SerializeToString()
 
 
 def _sklearn_kwargs(estimator, **kwargs):
@@ -264,7 +281,7 @@ def _sfm_max_features(n: int, p: int) -> int:
 # ---------------------------------------------------------------------------
 
 
-class BaseLinearClassifier(BaseEstimator):
+class BaseLinearClassifier(OnnxBoundHead, BaseEstimator):
     """
     Binary logistic regression with embedded L1/ElasticNet feature selection.
 
@@ -443,6 +460,7 @@ class BaseLinearClassifier(BaseEstimator):
             self.coef_ = self._estimator.coef_
         else:
             self.coef_ = None
+        self._bind_onnx()
 
         self.classes_ = self._label_encoder.classes_
         self.decision_cutoff_raw_ = _DEFAULT_DECISION_CUTOFF
@@ -467,9 +485,8 @@ class BaseLinearClassifier(BaseEstimator):
     def predict_score(self, X) -> np.ndarray:
         """Return raw (pre-calibration) probabilities, shape (n_samples, 2)."""
         check_is_fitted(self, attributes=["_estimator"])
-        X = check_array(X, dtype="numeric", accept_sparse="csr")
-        X_t = self._transform(X)
-        return self._estimator.predict_proba(X_t)
+        p_raw = self._raw(X)
+        return np.column_stack([1 - p_raw, p_raw])
 
     def predict(self, X, cutoff: float | None = None) -> np.ndarray:
         check_is_fitted(self, attributes=["_estimator"])
@@ -488,11 +505,20 @@ class BaseLinearClassifier(BaseEstimator):
         rank_1 = rank_from_knots(scores, prepared=prepared)
         return np.column_stack([1 - rank_1, rank_1])
 
+    _onnx_kind = "probability"
+
+    def _raw_native(self, X) -> np.ndarray:
+        """Raw P(y=1) from the scikit-learn pipeline itself."""
+        X = check_array(X, dtype="numeric", accept_sparse="csr")
+        return self._estimator.predict_proba(self._transform(X))[:, 1]
+
+    def _onnx_bytes(self) -> bytes:
+        return _linear_pipeline_onnx(self, "clf")
+
     def predict_proba(self, X) -> np.ndarray:
         check_is_fitted(self, attributes=["_estimator"])
-        X = check_array(X, dtype="numeric", accept_sparse="csr")
-        X_t = self._transform(X)
-        proba = self._estimator.predict_proba(X_t)
+        p_raw = self._raw(X)
+        proba = np.column_stack([1 - p_raw, p_raw])
         if hasattr(self, "calibrator_"):
             if self.calibrator_method_ == "isotonic":
                 p1 = np.clip(self.calibrator_.predict(proba[:, 1]), 0, 1)
@@ -712,24 +738,11 @@ class BaseLinearClassifier(BaseEstimator):
             Destination file path, e.g. ``"model.onnx"``.
         """
         check_is_fitted(self, attributes=["_estimator"])
-        from skl2onnx import convert_sklearn
-        from skl2onnx.common.data_types import FloatTensorType
-        from sklearn.pipeline import Pipeline
-
-        steps = [("vt", self._vt)]
-        if self._sfm is not None:
-            steps.append(("sfm", self._sfm))
-        steps.append(("clf", self._estimator))
-
-        pipeline = Pipeline(steps)
-        initial_types = [("float_input", FloatTensorType([None, self.n_features_in_]))]
-        onnx_model = convert_sklearn(pipeline, initial_types=initial_types)
-        with open(path, "wb") as f:
-            f.write(onnx_model.SerializeToString())
+        self._write_onnx(path)
         probe = getattr(self, "_onnx_probe_", None)
         if probe is not None:
             check_probability(
-                path, probe, self.predict_score(probe)[:, 1], "BaseLinearClassifier"
+                path, probe, self._raw_native(probe), "BaseLinearClassifier"
             )
 
     def save(self, directory: str) -> None:
@@ -985,7 +998,7 @@ def _regression_sample_weight(y: np.ndarray, n_bins: int = 10) -> np.ndarray:
 # ---------------------------------------------------------------------------
 
 
-class BaseLinearRegressor(BaseEstimator):
+class BaseLinearRegressor(OnnxBoundHead, BaseEstimator):
     """
     Linear regression with embedded feature selection.
 
@@ -1148,6 +1161,7 @@ class BaseLinearRegressor(BaseEstimator):
             self.coef_ = self._estimator.coef_
         else:
             self.coef_ = None
+        self._bind_onnx()
 
         self.timing_ = {"hparam_search": _time.perf_counter() - _t_hp}
         self.train_rho_ = spearman_score(y, self.predict(X))
@@ -1232,10 +1246,17 @@ class BaseLinearRegressor(BaseEstimator):
         )
         return self
 
-    def predict(self, X) -> np.ndarray:
-        check_is_fitted(self, attributes=["_estimator"])
+    def _raw_native(self, X) -> np.ndarray:
+        """Predictions from the scikit-learn pipeline itself."""
         X = check_array(X, dtype="numeric", accept_sparse="csr")
         return self._estimator.predict(self._transform(X))
+
+    def _onnx_bytes(self) -> bytes:
+        return _linear_pipeline_onnx(self, "reg")
+
+    def predict(self, X) -> np.ndarray:
+        check_is_fitted(self, attributes=["_estimator"])
+        return self._raw(X)
 
     def predict_rank(self, X) -> np.ndarray:
         """Map predictions to [0, 1] via the OOF ECDF, shape (n_samples,)."""
@@ -1266,23 +1287,10 @@ class BaseLinearRegressor(BaseEstimator):
             Destination file path, e.g. ``"model.onnx"``.
         """
         check_is_fitted(self, attributes=["_estimator"])
-        from skl2onnx import convert_sklearn
-        from skl2onnx.common.data_types import FloatTensorType
-        from sklearn.pipeline import Pipeline
-
-        steps = [("vt", self._vt)]
-        if self._sfm is not None:
-            steps.append(("sfm", self._sfm))
-        steps.append(("reg", self._estimator))
-
-        pipeline = Pipeline(steps)
-        initial_types = [("float_input", FloatTensorType([None, self.n_features_in_]))]
-        onnx_model = convert_sklearn(pipeline, initial_types=initial_types)
-        with open(path, "wb") as f:
-            f.write(onnx_model.SerializeToString())
+        self._write_onnx(path)
         probe = getattr(self, "_onnx_probe_", None)
         if probe is not None:
-            check_values(path, probe, self.predict(probe), "BaseLinearRegressor")
+            check_values(path, probe, self._raw_native(probe), "BaseLinearRegressor")
 
     def save(self, directory: str) -> None:
         """
@@ -1428,131 +1436,7 @@ class BaseLinearRegressor(BaseEstimator):
 
 
 # ---------------------------------------------------------------------------
-# Artifact: load a saved model for inference
+# Artifact: one inference implementation, in lazyqsar.artifacts
 # ---------------------------------------------------------------------------
 
-
-def _apply_calibrator_artifact(proba: np.ndarray, cal: dict) -> np.ndarray:
-    """Apply a saved calibrator dict to a (n, 2) probability array."""
-    raw_p1 = proba[:, 1]
-    if cal["method"] == "isotonic":
-        p1 = np.clip(np.interp(raw_p1, cal["X_thresholds"], cal["y_thresholds"]), 0, 1)
-    else:  # platt
-        A, B = cal["coef"], cal["intercept"]
-        p1 = 1.0 / (1.0 + np.exp(-(A * raw_p1 + B)))
-    return np.column_stack([1 - p1, p1])
-
-
-class BaseLinearArtifact:
-    """
-    Load a saved linear model for forward inference.
-
-    Reads the files written by BaseLinearClassifier.save() or BaseLinearRegressor.save():
-      - linear.onnx  — model binary
-      - linear.json  — fit metadata (task, format, regime, …)
-
-    Usage
-    -----
-    artifact = BaseLinearArtifact.load("path/to/directory")
-    predictions = artifact.run(X)
-    """
-
-    def __init__(self):
-        self._session = None  # onnxruntime.InferenceSession
-        self.metadata: dict = {}
-        self.task: str = ""
-        self._cal = None
-        self.decision_cutoff_raw: float = _DEFAULT_DECISION_CUTOFF
-        self.decision_cutoff_raw_source: str = "default_0.5"
-        self.decision_cutoff_proba: float = _DEFAULT_DECISION_CUTOFF
-        self.decision_cutoff_rank: float = _DEFAULT_DECISION_CUTOFF
-        self.decision_cutoff_logit: float = 0.0
-
-    @classmethod
-    def load(cls, directory: str) -> "BaseLinearArtifact":
-        """Load a model saved with BaseLinearClassifier.save() or BaseLinearRegressor.save()."""
-        json_path = os.path.join(directory, "linear.json")
-        if not os.path.isfile(json_path):
-            raise FileNotFoundError(f"No metadata found at {json_path!r}")
-
-        artifact = cls()
-        with open(json_path) as f:
-            artifact.metadata = json.load(f)
-        artifact.task = artifact.metadata["task"]
-
-        artifact._cal = artifact.metadata.get("calibrator", None)
-        artifact.decision_cutoff_raw = float(
-            artifact.metadata.get("decision_cutoff_raw", _DEFAULT_DECISION_CUTOFF)
-        )
-        artifact.decision_cutoff_raw_source = artifact.metadata.get(
-            "decision_cutoff_raw_source", "default_0.5"
-        )
-        artifact.decision_cutoff_proba = float(
-            artifact.metadata.get("decision_cutoff_proba", _DEFAULT_DECISION_CUTOFF)
-        )
-        artifact.decision_cutoff_rank = float(
-            artifact.metadata.get("decision_cutoff_rank", _DEFAULT_DECISION_CUTOFF)
-        )
-        artifact.decision_cutoff_logit = float(
-            artifact.metadata.get("decision_cutoff_logit", 0.0)
-        )
-
-        import onnxruntime as rt
-
-        onnx_path = os.path.join(directory, "linear.onnx")
-        if not os.path.isfile(onnx_path):
-            raise FileNotFoundError(f"No ONNX model found at {onnx_path!r}")
-        artifact._session = rt.InferenceSession(
-            onnx_path, providers=["CPUExecutionProvider"]
-        )
-
-        return artifact
-
-    def run(self, X) -> np.ndarray:
-        """
-        Run forward inference on X.
-
-        Returns
-        -------
-        Classification : ndarray of shape (n_samples, 2)
-            Columns are [P(class=0), P(class=1)], matching predict_proba.
-        Regression : ndarray of shape (n_samples,)
-            Predicted continuous values.
-        """
-        if self._session is None:
-            raise RuntimeError("No model loaded. Call BaseLinearArtifact.load() first.")
-
-        X_f32 = np.asarray(X, dtype=np.float32)
-        input_name = self._session.get_inputs()[0].name
-        outputs = self._session.run(None, {input_name: X_f32})
-        if self.task == "classification":
-            # skl2onnx classifier pipeline: outputs[0]=labels, outputs[1]=prob dict/array
-            prob_raw = outputs[1]
-            if isinstance(prob_raw, list):
-                # list of dicts [{0: p0, 1: p1}, …]
-                proba = np.array(
-                    [[d[k] for k in sorted(d)] for d in prob_raw], dtype=np.float64
-                )
-            else:
-                proba = np.asarray(prob_raw, dtype=np.float64)
-                if proba.ndim == 1:
-                    proba = np.column_stack([1 - proba, proba])
-            if self._cal is not None:
-                proba = _apply_calibrator_artifact(proba, self._cal)
-            return proba
-        else:
-            return np.asarray(outputs[0], dtype=np.float64).ravel()
-
-    def predict(self, X, cutoff: float | None = None) -> np.ndarray:
-        """Return class predictions using the stored decision cutoff by default."""
-        if self.task != "classification":
-            raise RuntimeError(
-                "predict() is only available for classification artifacts."
-            )
-        threshold = self.decision_cutoff_proba if cutoff is None else float(cutoff)
-        # This artifact only exposes calibrated probabilities, so compare against the
-        # calibrated cutoff. decision_cutoff_proba is the calibrator's image of
-        # decision_cutoff_raw, and calibration is monotone, so this matches the
-        # fit-time estimator's raw-vs-raw decision.
-        classes = np.asarray(self.metadata.get("classes", [0, 1]))
-        return classes[binarize(self.run(X)[:, 1], threshold)]
+from lazyqsar.artifacts.linear import LinearArtifact as BaseLinearArtifact  # noqa: E402,F401

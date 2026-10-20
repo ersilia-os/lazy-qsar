@@ -49,6 +49,7 @@ import numpy as np
 from sklearn.decomposition import PCA
 from sklearn.impute import SimpleImputer
 
+from ..base._onnx_binding import OnnxBoundHead
 from ..utils.onnx_check import check_values, probe_rows
 from .artifact import (  # noqa: F401  (re-exported; moved to keep it sklearn-free)
     ApplicabilityDomainArtifact,
@@ -80,7 +81,7 @@ def _to_dense(X) -> np.ndarray:
     return np.asarray(X, dtype=np.float64)
 
 
-class ApplicabilityDomain:
+class ApplicabilityDomain(OnnxBoundHead):
     """
     Fits an applicability domain estimator on a training feature matrix.
 
@@ -155,6 +156,9 @@ class ApplicabilityDomain:
         self.cal_knots_ = np.quantile(
             train_dists, np.linspace(0.0, 1.0, _N_CAL_KNOTS)
         ).astype(np.float32)
+        # Two calibration knots of slack for the bind-time check: see check_values.
+        self._onnx_bind_atol = 2.0 / len(self.cal_knots_) + 1e-6
+        self._bind_onnx()
 
         return self
 
@@ -176,9 +180,14 @@ class ApplicabilityDomain:
         """
         Return AD scores in [0, 1] for each row of X.
 
-        Accepts raw descriptor output — scaling is applied internally.
-        Uses numpy — works before/without ONNX export.
+        Accepts raw descriptor output — scaling is applied internally. Computed by the
+        exported ONNX graph once fitted, so training-set scores (and the hard cutoffs
+        derived from them) are exactly what a deployed checkpoint computes.
         """
+        return self._raw(X).astype(np.float32)
+
+    def _raw_native(self, X) -> np.ndarray:
+        """The numpy scorer: impute, scale, project, Mahalanobis, survival function."""
         X = _to_dense(X)
         if np.isnan(X).any():
             X = self.imputer_.transform(X)
@@ -202,6 +211,19 @@ class ApplicabilityDomain:
 
         All arithmetic is primitive ONNX ops; no custom extensions needed.
         """
+        self._write_onnx(path)
+        probe = getattr(self, "_onnx_probe_", None)
+        if probe is not None:
+            check_values(
+                path,
+                probe,
+                self._raw_native(probe),
+                "ApplicabilityDomain",
+                atol=2.0 / len(self.cal_knots_) + 1e-6,
+            )
+
+    def _onnx_bytes(self) -> bytes:
+        """The AD estimator as a serialised ONNX graph."""
         import onnx
         from onnx import helper, TensorProto, numpy_helper
 
@@ -297,18 +319,7 @@ class ApplicabilityDomain:
         model.ir_version = 7
 
         onnx.checker.check_model(model)
-        with open(path, "wb") as fh:
-            fh.write(model.SerializeToString())
-        probe = getattr(self, "_onnx_probe_", None)
-        if probe is not None:
-            # Two calibration knots of slack: see check_values.
-            check_values(
-                path,
-                probe,
-                self.score(probe),
-                "ApplicabilityDomain",
-                atol=2.0 / len(self.cal_knots_) + 1e-6,
-            )
+        return model.SerializeToString()
 
     def save(self, directory: str) -> None:
         """Save ONNX model + metadata JSON to *directory*."""

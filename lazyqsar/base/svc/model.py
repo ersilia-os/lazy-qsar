@@ -85,6 +85,7 @@ from .presets import (
     svc_linear_params,
     svc_balanced_rbf_params,
 )
+from lazyqsar.base._onnx_binding import OnnxBoundHead
 from lazyqsar.utils.logging import logger
 from lazyqsar.utils.onnx_check import check_decision, probe_rows
 from lazyqsar.utils.ranking import binarize, prepare_knots, rank_from_knots
@@ -271,18 +272,9 @@ def _learn_balanced_accuracy_cutoff(
     return best_threshold, "oof_balanced_accuracy"
 
 
-def _apply_calibrator_artifact(proba: np.ndarray, cal: dict) -> np.ndarray:
-    raw_p1 = np.asarray(proba[:, 1], dtype=np.float64)
-    if cal["method"] == "isotonic":
-        p1 = np.clip(
-            np.interp(raw_p1, cal["X_thresholds"], cal["y_thresholds"]),
-            0,
-            1,
-        )
-    else:
-        A, B = cal["coef"], cal["intercept"]
-        p1 = 1.0 / (1.0 + np.exp(-(A * raw_p1 + B)))
-    return np.column_stack([1 - p1, p1])
+from lazyqsar.artifacts._common import (  # noqa: E402
+    apply_calibrator as _apply_calibrator_artifact,
+)
 
 
 def _portfolio_select_svc(
@@ -424,6 +416,12 @@ def _onnx_size_bytes(svc, n_features: int) -> int:
 
 
 def _to_onnx(svc, path: str, n_features: int) -> None:
+    """Export SVC or LinearSVC to ONNX at *path*; see :func:`_svc_onnx_bytes`."""
+    with open(path, "wb") as f:
+        f.write(_svc_onnx_bytes(svc, n_features))
+
+
+def _svc_onnx_bytes(svc, n_features: int) -> bytes:
     """
     Export SVC or LinearSVC to ONNX via skl2onnx.
 
@@ -471,8 +469,7 @@ def _to_onnx(svc, path: str, n_features: int) -> None:
                 dim.dim_param = "batch_size"
     del onnx_model.graph.value_info[:]
     onnx_model = onnx.shape_inference.infer_shapes(onnx_model)
-    with open(path, "wb") as f:
-        f.write(onnx_model.SerializeToString())
+    return onnx_model.SerializeToString()
 
 
 # ---------------------------------------------------------------------------
@@ -480,7 +477,7 @@ def _to_onnx(svc, path: str, n_features: int) -> None:
 # ---------------------------------------------------------------------------
 
 
-class BaseSVCClassifier(BaseEstimator, ClassifierMixin):
+class BaseSVCClassifier(OnnxBoundHead, BaseEstimator, ClassifierMixin):
     """
     Binary classifier with automatically selected SVC hyperparameters.
 
@@ -638,6 +635,7 @@ class BaseSVCClassifier(BaseEstimator, ClassifierMixin):
         self.decision_cutoff_rank_ = _DEFAULT_DECISION_CUTOFF
         self.decision_cutoff_logit_ = 0.0
         self.classes_ = np.array([0, 1])
+        self._bind_onnx()
         logger.rule("Done")
         logger.success(
             f"preset={self.preset_name_} | "
@@ -764,10 +762,19 @@ class BaseSVCClassifier(BaseEstimator, ClassifierMixin):
     # Prediction
     # ------------------------------------------------------------------
 
+    _onnx_kind = "decision"
+
+    def _raw_native(self, X) -> np.ndarray:
+        """``decision_function`` from the scikit-learn estimator itself."""
+        return _decision_scores(self.svc_, X)
+
+    def _onnx_bytes(self) -> bytes:
+        return _svc_onnx_bytes(self.svc_, self.profile_.n_features)
+
     def _raw_sigmoid(self, X: np.ndarray) -> np.ndarray:
         """Return shape-(n,) sigmoid(decision_function) — pre-calibration [0,1]."""
         check_is_fitted(self, "svc_")
-        return _sigmoid(_decision_scores(self.svc_, X))
+        return _sigmoid(self._raw(X))
 
     def predict_proba(self, X) -> np.ndarray:
         """Return calibrated class probabilities, shape (n_samples, 2)."""
@@ -829,12 +836,10 @@ class BaseSVCClassifier(BaseEstimator, ClassifierMixin):
         then applies the stored calibrator.
         """
         check_is_fitted(self, "svc_")
-        _to_onnx(self.svc_, path, self.profile_.n_features)
+        self._write_onnx(path)
         probe = getattr(self, "_onnx_probe_", None)
         if probe is not None:
-            check_decision(
-                path, probe, _decision_scores(self.svc_, probe), "BaseSVCClassifier"
-            )
+            check_decision(path, probe, self._raw_native(probe), "BaseSVCClassifier")
 
     def save(self, directory: str) -> None:
         """

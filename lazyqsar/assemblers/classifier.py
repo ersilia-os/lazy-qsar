@@ -22,18 +22,8 @@ from lazyqsar.utils.logging import logger
 from lazyqsar.utils.splits import check_trainable
 
 
-def _correct_prior(p1, train_prior, population_prior):
-    """Adjust P(y=1) trained at train_prior to reflect population_prior."""
-    if abs(train_prior - population_prior) < 1e-9:
-        return p1
-    if train_prior <= 0.0 or train_prior >= 1.0:
-        return p1
-    ratio = (population_prior / train_prior) / (
-        (1.0 - population_prior) / (1.0 - train_prior)
-    )
-    odds = p1 / np.clip(1.0 - p1, 1e-15, None)
-    corrected_odds = ratio * odds
-    return corrected_odds / (1.0 + corrected_odds)
+# One implementation, shared with the inference artifact so the two cannot drift.
+from lazyqsar.artifacts.classifier import _correct_prior  # noqa: E402,F401
 
 
 def _plan_batches(
