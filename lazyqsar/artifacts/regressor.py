@@ -12,6 +12,7 @@ import os
 
 import numpy as np
 
+from lazyqsar.ensemble.intervals import DEFAULT_LEVEL, interval_half_width
 from lazyqsar.utils.ranking import prepare_knots, rank_from_knots
 
 from ..poolers.regression.inner_pooler import InnerRegressorPoolerArtifact
@@ -108,6 +109,25 @@ class LazyRegressorArtifact:
         """Predicted values in original target units, shape (n_samples,)."""
         Z = np.array([b.predict(X) for b in self._batches])
         return Z.mean(axis=0) * self._y_std + self._y_mean
+
+    def predict_interval(self, X, level: float = DEFAULT_LEVEL):
+        """Prediction interval ``(lower, upper)`` at coverage *level*, each ``(n,)``.
+
+        Split-conformal on the pooled out-of-fold residuals (one bin: this level has no
+        applicability domain). See :mod:`lazyqsar.ensemble.intervals`.
+        """
+        model = self._interval_model()
+        if not model:
+            raise ValueError(
+                "This model carries no prediction-interval model (fitted before "
+                "intervals existed); refit it to get intervals."
+            )
+        value = np.asarray(self.predict(X), dtype=np.float64)
+        half = interval_half_width(model, len(value), None, level)
+        return value - half, value + half
+
+    def _interval_model(self):
+        return self.metadata.get("intervals")
 
     def _oof_percentile_from_value(self, values):
         """OOF-ECDF rank of predictions the caller already has; None if no reference."""

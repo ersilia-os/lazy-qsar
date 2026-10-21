@@ -484,6 +484,17 @@ class LazyRegressor(_AgnosticBase):
         logger.debug(f"predict: X={X.shape}")
         return self._model.predict(X)
 
+    def predict_interval(
+        self, X=None, h5_file=None, h5_idxs=None, level: float = 0.9
+    ) -> tuple:
+        """Prediction interval ``(lower, upper)`` at coverage *level*, each ``(n,)``.
+
+        Split-conformal on the ensemble's pooled out-of-fold residuals (see
+        :mod:`lazyqsar.ensemble.intervals`); about a fraction *level* of molecules like
+        the training set fall inside it.
+        """
+        return self._model.predict_interval(_resolve_X(X, h5_file, h5_idxs), level)
+
     def _oof_percentile_from_value(self, values):
         return self._model._oof_percentile_from_value(values)
 
