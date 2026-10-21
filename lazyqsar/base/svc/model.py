@@ -625,6 +625,9 @@ class BaseSVCClassifier(_SVMHead, ClassifierHead, BaseEstimator, ClassifierMixin
         probe = np.random.default_rng(_SCORE_CANARY_SEED).standard_normal(
             (_SCORE_CANARY_ROWS, int(self.profile_.n_features))
         )
+        # The column the fitted head was bound to; the artifact must resolve the same one.
+        if getattr(self, "_onnx_column_", None) is not None:
+            metadata["score_column"] = int(self._onnx_column_)
         metadata["score_canary"] = {
             "seed": _SCORE_CANARY_SEED,
             "n_rows": _SCORE_CANARY_ROWS,

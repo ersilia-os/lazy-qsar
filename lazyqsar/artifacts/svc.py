@@ -33,6 +33,15 @@ class SVCArtifact(HeadArtifact):
 
     def _after_load(self) -> None:
         self._score_col = self._resolve_score_column()
+        saved = self.metadata.get("score_column")
+        if saved is not None and int(saved) % 2 != self._score_col % 2:
+            from lazyqsar.utils.onnx_check import OnnxExportMismatch
+
+            raise OnnxExportMismatch(
+                f"SVC artifact: the graph's score column resolves to {self._score_col}, "
+                f"but the fitted model was bound to column {saved}. Reading the other "
+                "column would invert every prediction; the checkpoint is not usable."
+            )
 
     def _resolve_score_column(self) -> int:
         """Return which ONNX score column carries sklearn's ``decision_function``.

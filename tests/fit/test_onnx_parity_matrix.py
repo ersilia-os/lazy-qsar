@@ -471,3 +471,22 @@ def test_pickled_heads_rebind_and_predict_identically(head):
     clone = pickle.loads(pickle.dumps(model))
     Q = _queries(X)
     np.testing.assert_array_equal(clone.predict(Q), model.predict(Q))
+
+
+def test_svc_artifact_refuses_a_score_column_that_disagrees_with_the_fit(tmp_path):
+    """The bound column is saved; a loader resolving the other one must raise, not invert."""
+    import json
+
+    from lazyqsar.base.svc import BaseSVCClassifier
+    from lazyqsar.utils.onnx_check import OnnxExportMismatch
+
+    X = _dense()
+    model = _quiet(BaseSVCClassifier().fit, X, _labels(X))
+    _quiet(model.save, str(tmp_path))
+    meta_path = tmp_path / "svc.json"
+    meta = json.loads(meta_path.read_text())
+    assert SVCArtifact.load(str(tmp_path))._score_col == meta["score_column"]
+    meta["score_column"] = 1 - meta["score_column"]
+    meta_path.write_text(json.dumps(meta))
+    with pytest.raises(OnnxExportMismatch):
+        SVCArtifact.load(str(tmp_path))
