@@ -235,6 +235,11 @@ class EnsembleSpec:
         Regression only: the conformal interval model of
         :mod:`lazyqsar.ensemble.intervals`, behind the ``lower``/``upper`` outputs.
         ``None`` on checkpoints fitted before intervals existed.
+    descriptor_weights : tuple of float, or None
+        Regression only: fixed stacking weights per active descriptor, fitted by
+        non-negative least squares on the descriptors' out-of-fold predictions. When
+        present they replace the skill/reliability weighting; the applicability-domain
+        veto still applies per sample.
     """
 
     descriptor_names: tuple[str, ...] = ()
@@ -249,6 +254,7 @@ class EnsembleSpec:
     pooled_score_knots: tuple[np.ndarray, np.ndarray] | None = None
     task: str = "classification"
     intervals: dict | None = None
+    descriptor_weights: tuple[float, ...] | None = None
 
     @classmethod
     def from_metadata(
@@ -386,9 +392,21 @@ class EnsembleSpec:
                 ),
                 task="regression",
                 intervals=metadata.get("intervals"),
+                descriptor_weights=_descriptor_weights(metadata, active_names),
             ),
             active_names,
         )
+
+
+def _descriptor_weights(metadata: dict, active_names):
+    """The stored stacking weights of *active_names*, renormalised, or ``None``."""
+    stored = metadata.get("descriptor_weights") or {}
+    if not stored:
+        return None
+    w = np.array([float(stored.get(d, 0.0)) for d in active_names])
+    if w.sum() <= 0:
+        return None
+    return tuple((w / w.sum()).tolist())
 
 
 def classification_skill(metadata: dict, descriptor: str):
@@ -513,6 +531,20 @@ def build_weight_matrix(Y, R, A, spec: EnsembleSpec):
     """
     B, D = Y.shape
     task = getattr(spec, "task", "classification")
+    stacked = getattr(spec, "descriptor_weights", None)
+    if stacked is not None:
+        # Fixed stacking weights; the AD veto below still applies per sample.
+        base = np.asarray(stacked, dtype=np.float64)
+        if A is None:
+            return np.tile(base, (B, 1)), base
+        W = np.tile(base, (B, 1))
+        if spec.ad_hard_cutoffs is not None:
+            for j, cutoff in enumerate(spec.ad_hard_cutoffs):
+                W[A[:, j] < cutoff, j] = 0.0
+        all_ood = W.sum(axis=1) == 0
+        if all_ood.any():
+            W[all_ood] = base
+        return W / W.sum(axis=1, keepdims=True), base
     base = _skill_scores(spec, D, task)
     if A is None:
         return np.full((B, D), 1.0 / D, dtype=np.float64), base

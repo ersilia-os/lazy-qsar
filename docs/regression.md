@@ -90,6 +90,27 @@ relative to all four heads.
 No dataset-profile feature (sparsity, n/p, signal strength) changed the winning subset
 once size was accounted for, so the regression selector has no profile scores.
 
+## Combining descriptors: stacking
+
+In slow mode a regression model fits one ensemble per descriptor and blends them per
+molecule. `descriptors.py` fitted Morgan and RDKit models on all 45 tasks (random-0 and
+the structural split, 90 splits) and scored blending rules on the same predictions:
+
+| Rule | RMSE vs 3.8 rule | Better on |
+|---|---|---|
+| Skill × rank-error reliability, AD veto (3.8) | — | — |
+| The same without the reliability curve | −0.17% | 50/90 |
+| Plain mean | −0.14% | 53/90 |
+| Best descriptor by OOF RMSE | +0.57% | 34/90 |
+| **NNLS stacking on OOF predictions, AD veto** | **−0.63%** | **59/90** |
+
+Stacking won on random splits (−0.83%) and on structural ones (−0.44%). The model fits
+one non-negative weight per active descriptor on their out-of-fold predictions. The
+per-molecule applicability-domain veto still applies: a descriptor that finds a molecule
+out of domain is dropped for it, and the remaining weights are renormalised. The weights
+are saved in `metadata.json` as `descriptor_weights`. Checkpoints without them use the
+3.8 rule.
+
 ## Out-of-fold predictions and speed
 
 - **Folds:** out-of-fold predictions use 5 quantile-stratified folds up to 2,000 rows and

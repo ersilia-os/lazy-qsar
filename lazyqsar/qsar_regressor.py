@@ -26,6 +26,7 @@ import numpy as np
 
 from .ensemble import EnsembleSpec, combine
 from .ensemble.intervals import DEFAULT_LEVEL, fit_intervals, interval_half_width
+from .poolers.regression.inner_pooler import stacking_weights
 from .qsar_base import (
     as_smiles_list,
     _ArtifactWrapperBase,
@@ -50,6 +51,9 @@ _PRUNE_GAP = 0.20
 # Residuals are normalised by this percentile so one outlier cannot flatten the curve.
 _ERROR_NORM_PERCENTILE = 95
 _CURVE_KNOTS = 20
+# Blend descriptors by NNLS stacking of their out-of-fold predictions (with the AD veto)
+# instead of skill x reliability weighting; see docs/regression.md.
+_STACK_DESCRIPTORS = True
 
 
 def _quality_rho(oof_rho, train_rho):
@@ -88,10 +92,22 @@ def _rank_error_curve(rank, value, y):
 
 
 def _regression_spec(
-    names, active_indices, skill, proxy, curves, cutoffs, intervals=None
+    names,
+    active_indices,
+    skill,
+    proxy,
+    curves,
+    cutoffs,
+    intervals=None,
+    descriptor_weights=None,
 ):
     def sliced(seq):
         return tuple(seq[i] for i in active_indices) if seq else None
+
+    weights = None
+    if descriptor_weights is not None:
+        w = np.array([descriptor_weights[i] for i in active_indices], dtype=float)
+        weights = tuple((w / w.sum()).tolist()) if w.sum() > 0 else None
 
     return EnsembleSpec(
         descriptor_names=tuple(names[i] for i in active_indices),
@@ -101,6 +117,7 @@ def _regression_spec(
         ad_hard_cutoffs=sliced(cutoffs),
         task="regression",
         intervals=intervals,
+        descriptor_weights=weights,
     )
 
 
@@ -264,6 +281,7 @@ class LazyRegressorQSAR(_RegressionPredictMixin, _QSARBase):
             self._rank_error_curves_,
             self.ad_hard_cutoffs_,
             getattr(self, "intervals_", None),
+            getattr(self, "descriptor_weights_", None),
         )
 
     def _interval_spec(self):
@@ -276,11 +294,17 @@ class LazyRegressorQSAR(_RegressionPredictMixin, _QSARBase):
         residuals binned by the training rows' AD score, and returns the OOF metrics.
         """
         self.intervals_ = None
+        self.descriptor_weights_ = None
         active = self._active_indices()
         cols = [oof_channels[i] for i in active]
         if any(c is None for c in cols):
             return None
         Y = np.column_stack([c[0] for c in cols])
+        if _STACK_DESCRIPTORS and len(active) > 1:
+            # One weight per descriptor, fitted on their out-of-fold predictions.
+            weights = np.zeros(len(self.descriptor_types))
+            weights[active] = stacking_weights(Y, y)
+            self.descriptor_weights_ = weights.tolist()
         R = np.column_stack([c[1] for c in cols])
         A = np.column_stack([train_ad[i] for i in active])
         result = combine(Y, R, None, A, spec=self._spec(active), outputs=("value",))
@@ -349,6 +373,14 @@ class LazyRegressorQSAR(_RegressionPredictMixin, _QSARBase):
             },
             "oof_metrics": getattr(self, "oof_metrics_", None),
             "intervals": getattr(self, "intervals_", None),
+            "descriptor_weights": (
+                None
+                if getattr(self, "descriptor_weights_", None) is None
+                else {
+                    name: float(w)
+                    for name, w in zip(self.descriptor_types, self.descriptor_weights_)
+                }
+            ),
         }
 
     def save_raw(self, model_dir: str):

@@ -21,7 +21,10 @@ against is versioned separately and its id is recorded in every checkpoint's
   - heads chosen by size: lr + xgb + svr up to 2,000 rows, lr + xgb to 5,000, xgb + rf
     above;
   - 3 out-of-fold folds above 2,000 rows, and the forest's out-of-bag predictions above
-    5,000.
+    5,000;
+  - in slow mode, descriptors blended by NNLS stacking of their out-of-fold predictions
+    (keeping the per-molecule applicability-domain veto) instead of skill x reliability
+    weighting: -0.63% RMSE, better on 59 of 90 splits.
   Regression checkpoints from 3.8 still load and predict as before.
 - **One task-neutral core.** Heads, head artifacts, poolers, assemblers, the head selector,
   the SMILES-level models, the feature-level API and `combine` each have one shared
