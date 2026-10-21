@@ -102,15 +102,24 @@ class OnnxBoundHead:
             native = np.asarray(self._raw_native(probe), dtype=np.float64)
             if self._onnx_kind == "decision":
                 self._onnx_column_ = self._resolve_decision_column(probe, native)
-            if self._onnx_bind_atol is not None:
-                atol = self._onnx_bind_atol
-            elif self._onnx_kind == "probability":
-                atol = 1e-4
-            else:
-                atol = _atol(native)
-            _assert_close(
-                self._raw_onnx(probe), native, type(self).__name__ + " (bound)", atol
-            )
+            got, expected, atol = self._bind_comparison(probe, native)
+            _assert_close(got, expected, type(self).__name__ + " (bound)", atol)
+
+    def _bind_comparison(self, probe, native):
+        """``(onnx, native, atol)``: what the bind-time check compares.
+
+        The raw output by default. A head whose raw output is discontinuous -- the
+        applicability domain's score is a step function over calibration knots, where a
+        float32 rounding of a tied distance legitimately moves it by many steps --
+        overrides this to compare the continuous quantity the graph computes instead.
+        """
+        if self._onnx_bind_atol is not None:
+            atol = self._onnx_bind_atol
+        elif self._onnx_kind == "probability":
+            atol = 1e-4
+        else:
+            atol = _atol(native)
+        return self._raw_onnx(probe), native, atol
 
     def _resolve_output(self, session) -> int:
         if self._onnx_kind == "values":

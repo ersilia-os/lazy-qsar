@@ -157,3 +157,23 @@ def test_loading_without_metadata_is_an_error(tmp_path):
     empty.mkdir()
     with pytest.raises(FileNotFoundError):
         ApplicabilityDomainArtifact.load(str(empty))
+
+
+@pytest.mark.parametrize("kind", ["fingerprint", "dense"])
+@pytest.mark.parametrize("n", [10, 15, 20, 30, 45])
+def test_small_training_sets_fit_and_export(kind, n, tmp_path):
+    """Below ~46 rows the AD used to keep up to n - 1 PCA components; its in-sample
+    distances then collapsed onto one value and the bound graph failed the export check,
+    so no model could be fitted on a small dataset at all."""
+    from lazyqsar.applicability import ApplicabilityDomainArtifact
+
+    rng = np.random.default_rng(n)
+    if kind == "fingerprint":
+        X = (rng.random((n, 2048)) < 0.05).astype(np.float32)
+    else:
+        X = rng.normal(size=(n, 200)).astype(np.float32)
+    ad = ApplicabilityDomain().fit(X)
+    assert ad.pca_.n_components_ <= max(1, (n - 1) // 3)
+    ad.save(str(tmp_path))
+    art = ApplicabilityDomainArtifact.load(str(tmp_path))
+    np.testing.assert_allclose(art.score(X), ad.score(X), rtol=0, atol=1e-6)
