@@ -60,4 +60,16 @@ def set_verbosity(verbose: bool) -> None:
     _logger.set_verbosity(verbose)
 
 
-__all__ = ["__version__", "set_verbosity"]
+def load(model_dir: str):
+    """Load any saved LazyQSAR checkpoint, whatever its task or level.
+
+    Dispatches on ``metadata.json``: a SMILES-level checkpoint (``LazyQSAR``) or a
+    feature-level one (``LazyClassifier`` / ``LazyRegressor``), classification or
+    regression, a directory or a ``.zip``. Returns the inference object for it.
+    """
+    from .agnostic import load as _load
+
+    return _load(model_dir)
+
+
+__all__ = ["__version__", "load", "set_verbosity"]

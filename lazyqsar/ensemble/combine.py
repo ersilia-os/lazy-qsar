@@ -419,13 +419,40 @@ class CombineResult:
     diagnostics: list[dict] | None = None
 
 
+def _skill_scores(spec: EnsembleSpec, D: int, task: str) -> np.ndarray:
+    """Global skill per descriptor from the mean of its OOF and proxy skill.
+
+    Classification: ``max(0, mean(auc) - 0.5)``. Regression: ``max(0, mean(rho)) / 2``;
+    halving puts ρ on the scale of ``AUC - 0.5`` (for a binary target, AUC - 0.5 is half
+    the rank-biserial correlation), so the 50/50 blend with reliability means the same
+    thing for both tasks. All-zero falls back to uniform.
+    """
+    base_scores = []
+    for j in range(D):
+        vals = []
+        if spec.oof_aucs and spec.oof_aucs[j] is not None:
+            vals.append(float(spec.oof_aucs[j]))
+        if spec.proxy_aucs and spec.proxy_aucs[j] is not None:
+            vals.append(float(spec.proxy_aucs[j]))
+        if not vals:
+            base_scores.append(0.0)
+        elif task == "regression":
+            base_scores.append(max(0.0, float(np.mean(vals))) / 2.0)
+        else:
+            base_scores.append(max(0.0, float(np.mean(vals)) - 0.5))
+    base = np.array(base_scores, dtype=np.float64)
+    if base.sum() == 0:
+        base = np.ones(D, dtype=np.float64)
+    return base
+
+
 def build_weight_matrix(Y, R, A, spec: EnsembleSpec):
     """Return the normalised per-sample weight matrix and the global skill scores.
 
     Parameters
     ----------
     Y : ndarray of shape (n_samples, n_descriptors)
-        Calibrated probabilities. Only its shape is used.
+        Per-descriptor predictions. Only its shape is used.
     R : ndarray or None
         Per-descriptor ranks, or ``None`` when unavailable.
     A : ndarray or None
@@ -439,38 +466,31 @@ def build_weight_matrix(Y, R, A, spec: EnsembleSpec):
     W : ndarray of shape (n_samples, n_descriptors)
         Rows sum to 1.
     base : ndarray of shape (n_descriptors,)
-        ``max(0, mean(oof_auc, proxy_auc) - 0.5)`` per descriptor, or all ones when no
-        descriptor carries usable skill information.
+        Global skill per descriptor (see :func:`_skill_scores`).
+
+    Notes
+    -----
+    The reliability term is ``1 - error`` read off each descriptor's rank -> error curve.
+    Without curves, classification falls back to ``|rank - 0.5| * 2`` ("confident at the
+    extremes"); regression has no such fallback, since an extreme predicted value is not
+    a more certain one.
     """
     B, D = Y.shape
-    if getattr(spec, "task", "classification") == "regression":
-        return _build_weight_matrix_regression(B, D, R, A, spec)
-    oof_aucs = spec.oof_aucs
-    proxy_aucs = spec.proxy_aucs
-
-    base_scores = []
-    for j in range(D):
-        vals = []
-        if oof_aucs and oof_aucs[j] is not None:
-            vals.append(float(oof_aucs[j]))
-        if proxy_aucs and proxy_aucs[j] is not None:
-            vals.append(float(proxy_aucs[j]))
-        base_scores.append(max(0.0, float(np.mean(vals)) - 0.5) if vals else 0.0)
-    base = np.array(base_scores, dtype=np.float64)
-    if base.sum() == 0:
-        base = np.ones(D, dtype=np.float64)
-
+    task = getattr(spec, "task", "classification")
+    base = _skill_scores(spec, D, task)
     if A is None:
         return np.full((B, D), 1.0 / D, dtype=np.float64), base
 
     curves = spec.rank_error_curves
+    reliability = None
     if R is not None:
         if curves and all(c is not None for c in curves):
             reliability = np.zeros((B, D), dtype=np.float64)
             for j, (r_knots, e_knots) in enumerate(curves):
                 reliability[:, j] = 1.0 - np.interp(R[:, j], r_knots, e_knots)
-        else:
+        elif task != "regression":
             reliability = np.abs(R - 0.5) * 2
+    if reliability is not None:
         W = 0.5 * base[np.newaxis, :] + 0.5 * reliability
     else:
         W = np.tile(base, (B, 1))
@@ -481,60 +501,6 @@ def build_weight_matrix(Y, R, A, spec: EnsembleSpec):
 
     # A sample vetoed on every descriptor has nothing left to weight with; fall back to
     # global skill rather than emitting NaN.
-    all_ood = W.sum(axis=1) == 0
-    if all_ood.any():
-        W[all_ood] = base
-
-    W /= W.sum(axis=1, keepdims=True)
-    return W, base
-
-
-def _regression_skill(spec: EnsembleSpec, D: int) -> np.ndarray:
-    """Global skill per descriptor: ``max(0, mean(oof_rho, proxy_rho)) / 2``.
-
-    Halving puts ρ on the scale of the classification ``AUC - 0.5`` term (for a binary
-    target, AUC - 0.5 is half the rank-biserial correlation), so the 50/50 blend with
-    reliability means the same thing for both tasks. All-zero falls back to uniform.
-    """
-    base_scores = []
-    for j in range(D):
-        vals = []
-        if spec.oof_aucs and spec.oof_aucs[j] is not None:
-            vals.append(float(spec.oof_aucs[j]))
-        if spec.proxy_aucs and spec.proxy_aucs[j] is not None:
-            vals.append(float(spec.proxy_aucs[j]))
-        base_scores.append(max(0.0, float(np.mean(vals))) / 2.0 if vals else 0.0)
-    base = np.array(base_scores, dtype=np.float64)
-    if base.sum() == 0:
-        base = np.ones(D, dtype=np.float64)
-    return base
-
-
-def _build_weight_matrix_regression(B, D, R, A, spec: EnsembleSpec):
-    """Regression weights: skill, rank-error reliability, AD veto.
-
-    Same structure as the classification matrix with one deliberate difference: with no
-    rank-error curves there is no reliability term at all. The classification fallback
-    ``|rank - 0.5| * 2`` encodes "confident at the extremes", which is meaningless for a
-    regression rank (an extreme predicted value is not a more certain one).
-    """
-    base = _regression_skill(spec, D)
-    if A is None:
-        return np.full((B, D), 1.0 / D, dtype=np.float64), base
-
-    curves = spec.rank_error_curves
-    if R is not None and curves and all(c is not None for c in curves):
-        reliability = np.zeros((B, D), dtype=np.float64)
-        for j, (r_knots, e_knots) in enumerate(curves):
-            reliability[:, j] = 1.0 - np.interp(R[:, j], r_knots, e_knots)
-        W = 0.5 * base[np.newaxis, :] + 0.5 * reliability
-    else:
-        W = np.tile(base, (B, 1))
-
-    if spec.ad_hard_cutoffs is not None:
-        for j, cutoff in enumerate(spec.ad_hard_cutoffs):
-            W[A[:, j] < cutoff, j] = 0.0
-
     all_ood = W.sum(axis=1) == 0
     if all_ood.any():
         W[all_ood] = base
@@ -576,6 +542,48 @@ def _as_2d(X, name):
             f"{name} must be 2-D (n_samples, n_descriptors); got {arr.shape}"
         )
     return arr
+
+
+def _checked_shapes(Y, spec):
+    B, D = Y.shape
+    if spec.descriptor_names and len(spec.descriptor_names) != D:
+        raise ValueError(
+            f"spec covers {len(spec.descriptor_names)} descriptors but Y has {D} columns"
+        )
+    return B, D
+
+
+def _diagnostics(Y, A, W, spec, skill_name):
+    """Per-descriptor summary rows of a combination, or None without AD scores.
+
+    Every entry is a reduction over the query rows, so there is nothing to report for a
+    query of no molecules -- and ``.min()`` on a zero-size array raises.
+    """
+    B, D = Y.shape
+    if A is None or B == 0:
+        return None
+    names = spec.descriptor_names or tuple(str(j) for j in range(D))
+    oof, proxy = spec.oof_aucs, spec.proxy_aucs
+    return [
+        {
+            "name": names[j],
+            f"oof_{skill_name}": float(oof[j])
+            if (oof and oof[j] is not None)
+            else float("nan"),
+            f"proxy_{skill_name}": float(proxy[j])
+            if (proxy and proxy[j] is not None)
+            else None,
+            "ad_mean": float(A[:, j].mean()),
+            "ad_std": float(A[:, j].std()),
+            "ad_min": float(A[:, j].min()),
+            "ad_max": float(A[:, j].max()),
+            "weight_mean": float(W[:, j].mean()),
+            "weight_std": float(W[:, j].std()),
+            "vetoed": int((W[:, j] == 0).sum()),
+            "pred_mean": float(Y[:, j].mean()),
+        }
+        for j in range(D)
+    ]
 
 
 def combine(Y, R=None, S=None, A=None, *, spec, outputs=None, cutoff=None):
@@ -634,40 +642,9 @@ def combine(Y, R=None, S=None, A=None, *, spec, outputs=None, cutoff=None):
     R = _as_2d(R, "R")
     S = _as_2d(S, "S")
     A = _as_2d(A, "A")
-    B, D = Y.shape
-    if spec.descriptor_names and len(spec.descriptor_names) != D:
-        raise ValueError(
-            f"spec covers {len(spec.descriptor_names)} descriptors but Y has {D} columns"
-        )
+    B, D = _checked_shapes(Y, spec)
     W, base = build_weight_matrix(Y, R, A, spec)
-
-    diagnostics = None
-    # Every entry below is a reduction over the query rows, so there is nothing to report
-    # for a query of no molecules -- and `.min()` on a zero-size array raises rather than
-    # returning a neutral value.
-    if A is not None and B > 0:
-        names = spec.descriptor_names or tuple(str(j) for j in range(D))
-        oof_aucs, proxy_aucs = spec.oof_aucs, spec.proxy_aucs
-        diagnostics = [
-            {
-                "name": names[j],
-                "oof_auc": float(oof_aucs[j])
-                if (oof_aucs and oof_aucs[j] is not None)
-                else float("nan"),
-                "proxy_auc": float(proxy_aucs[j])
-                if (proxy_aucs and proxy_aucs[j] is not None)
-                else None,
-                "ad_mean": float(A[:, j].mean()),
-                "ad_std": float(A[:, j].std()),
-                "ad_min": float(A[:, j].min()),
-                "ad_max": float(A[:, j].max()),
-                "weight_mean": float(W[:, j].mean()),
-                "weight_std": float(W[:, j].std()),
-                "vetoed": int((W[:, j] == 0).sum()),
-                "pred_mean": float(Y[:, j].mean()),
-            }
-            for j in range(D)
-        ]
+    diagnostics = _diagnostics(Y, A, W, spec, "auc")
 
     if R is None:
         R = np.full((B, D), 0.5, dtype=np.float64)
@@ -763,37 +740,9 @@ def _combine_regression(Y, R, A, *, spec, outputs):
     Y = _as_2d(Y, "Y")
     R = _as_2d(R, "R")
     A = _as_2d(A, "A")
-    B, D = Y.shape
-    if spec.descriptor_names and len(spec.descriptor_names) != D:
-        raise ValueError(
-            f"spec covers {len(spec.descriptor_names)} descriptors but Y has {D} columns"
-        )
+    _checked_shapes(Y, spec)
     W, base = build_weight_matrix(Y, R, A, spec)
-
-    diagnostics = None
-    if A is not None and B > 0:
-        names = spec.descriptor_names or tuple(str(j) for j in range(D))
-        oof, proxy = spec.oof_aucs, spec.proxy_aucs
-        diagnostics = [
-            {
-                "name": names[j],
-                "oof_rho": float(oof[j])
-                if (oof and oof[j] is not None)
-                else float("nan"),
-                "proxy_rho": float(proxy[j])
-                if (proxy and proxy[j] is not None)
-                else None,
-                "ad_mean": float(A[:, j].mean()),
-                "ad_std": float(A[:, j].std()),
-                "ad_min": float(A[:, j].min()),
-                "ad_max": float(A[:, j].max()),
-                "weight_mean": float(W[:, j].mean()),
-                "weight_std": float(W[:, j].std()),
-                "vetoed": int((W[:, j] == 0).sum()),
-                "pred_mean": float(Y[:, j].mean()),
-            }
-            for j in range(D)
-        ]
+    diagnostics = _diagnostics(Y, A, W, spec, "rho")
 
     values: dict[str, np.ndarray] = {}
     if "value" in outputs:

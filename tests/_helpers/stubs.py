@@ -34,8 +34,11 @@ STUB_DIM = 24
 # `packaging/test_stub_bindings.py` asserts this list stays exhaustive, so a new re-export
 # fails loudly instead of quietly making the suite require RDKit.
 STUBBED_BINDINGS = (
+    ("lazyqsar.qsar_base", "validate_smiles"),
+    ("lazyqsar.qsar_base", "invalid_smiles_indices"),
     ("lazyqsar.qsar", "validate_smiles"),
     ("lazyqsar.qsar", "invalid_smiles_indices"),
+    ("lazyqsar.qsar_regressor", "validate_smiles"),
     ("lazyqsar.api.classifier_fit", "validate_smiles"),
     ("lazyqsar.api.classifier_predict", "invalid_smiles_indices"),
 )

@@ -1,12 +1,10 @@
 import os
-import shutil
 
 import h5py
 import numpy as np
 
 from .artifacts.classifier import LazyClassifierArtifact
 from .artifacts.regressor import LazyRegressorArtifact
-from .utils.archives import unpack_to_scratch
 from .utils.logging import logger
 from .utils.ranking import (
     DECISION_CUTOFF_SOURCE,
@@ -90,13 +88,88 @@ def _checked_features(X):
 NO_REFERENCE_MESSAGE = _NO_REFERENCE_MESSAGE
 
 
-class LazyClassifier:
+def _resolve_X(X, h5_file, h5_idxs):
+    """The feature matrix from *X* or an Ersilia ``.h5``, checked for ONNX-safe values."""
+    if X is None:
+        if h5_file is None:
+            raise ValueError("Provide either X or h5_file.")
+        X = _load_h5(h5_file, h5_idxs)
+    return _checked_features(X)
+
+
+class _AgnosticBase:
+    """Fit-on-features wrapper around an assembler; saves and loads its ONNX checkpoint.
+
+    A subclass names its ``task`` and the artifact class a checkpoint loads as.
+    """
+
+    task = ""
+    _artifact_class = None
+
+    def _oof_percentile(self, X=None, h5_file=None, h5_idxs=None) -> np.ndarray:
+        """Percentile against this model's own out-of-fold distribution.
+
+        Internal: the per-sample reliability signal the QSAR ensemble weights descriptors
+        by. Relative to this model's training data, so not comparable with a position
+        against the reference library, and deliberately not public.
+        """
+        return self._model._oof_percentile(_resolve_X(X, h5_file, h5_idxs))
+
+    def oof_channels(self, X=None, h5_file=None, h5_idxs=None):
+        """Out-of-fold channels on the training rows, or None.
+
+        Fit-time only, and only on the object that did the fitting -- a loaded checkpoint
+        has no out-of-fold predictions.
+        """
+        X = _resolve_X(X, h5_file, h5_idxs)
+        getter = getattr(self._model, "oof_channels", None)
+        return getter(X) if getter is not None else None
+
+    def save(self, model_dir: str) -> str:
+        """Write the checkpoint; a path ending in ``.zip`` writes a zip archive."""
+        from .qsar_base import _save_maybe_zipped
+
+        def write(directory):
+            logger.info(f"Saving model to {directory!r}")
+            os.makedirs(directory, exist_ok=True)
+            self._model.save(directory)
+
+        out = _save_maybe_zipped(model_dir, write)
+        logger.success(f"Model saved → {out}")
+        return out
+
+    @classmethod
+    def load(cls, model_dir: str):
+        """Load a saved checkpoint as its numpy + onnxruntime artifact.
+
+        Unpacked into scratch, not alongside the archive. Sessions are built before the
+        scratch copy goes, and onnxruntime holds the graph in memory, so they outlive it.
+        """
+        from .qsar_base import _unpacked
+
+        with _unpacked(model_dir) as path:
+            if not os.path.isfile(os.path.join(path, "metadata.json")):
+                raise NotImplementedError(
+                    "Loading a raw (non-ONNX) model is not supported. Every checkpoint "
+                    "`save` writes carries metadata.json, so this is reachable only for "
+                    "a hand-assembled directory."
+                )
+            logger.info(f"Loading ONNX artifact from {path!r}")
+            artifact = cls._artifact_class.load(path)
+            logger.success(f"Artifact loaded from {path!r}")
+            return artifact
+
+
+class LazyClassifier(_AgnosticBase):
     """
     Descriptor-agnostic binary classifier.
 
     Accepts pre-computed feature arrays (X) or Ersilia .h5 files directly.
     Wraps the internal assembler and saves/loads via ONNX.
     """
+
+    task = "classification"
+    _artifact_class = LazyClassifierArtifact
 
     def __init__(
         self,
@@ -136,14 +209,7 @@ class LazyClassifier:
         from .assemblers.classifier import LazyClassifier as _AssemblerClassifier
 
         logger.rule("LazyClassifier (agnostic) — fit")
-
-        if X is None:
-            if h5_file is None:
-                raise ValueError("Provide either X or h5_file.")
-            logger.info(f"Loading features from {h5_file!r}")
-            X = _load_h5(h5_file, h5_idxs)
-        X = _checked_features(X)
-
+        X = _resolve_X(X, h5_file, h5_idxs)
         y = np.asarray(y, dtype=int)
 
         self._model = _AssemblerClassifier(
@@ -286,9 +352,7 @@ class LazyClassifier:
 
     def predict_proba(self, X=None, h5_file=None, h5_idxs=None) -> np.ndarray:
         """Return calibrated class probabilities, shape (n, 2)."""
-        if X is None:
-            X = _load_h5(h5_file, h5_idxs)
-        X = _checked_features(X)
+        X = _resolve_X(X, h5_file, h5_idxs)
         logger.debug(f"predict_proba: X={X.shape}")
         return self._model.predict_proba(X)
 
@@ -306,44 +370,23 @@ class LazyClassifier:
         Pass ``cutoff`` to override it. It is interpreted on whichever scale the model's
         own cutoff uses, so on a reference-carrying model it is a probability.
         """
-        if X is None:
-            X = _load_h5(h5_file, h5_idxs)
-        X = _checked_features(X)
+        X = _resolve_X(X, h5_file, h5_idxs)
         return self._model.predict(X, cutoff=cutoff)
 
     def predict_lift(self, X=None, h5_file=None, h5_idxs=None) -> np.ndarray:
         """Return lift over population prior, shape (n, 2)."""
-        if X is None:
-            X = _load_h5(h5_file, h5_idxs)
-        X = _checked_features(X)
+        X = _resolve_X(X, h5_file, h5_idxs)
         return self._model.predict_lift(X)
 
     def predict_logit(self, X=None, h5_file=None, h5_idxs=None) -> np.ndarray:
         """Return log-odds of calibrated probabilities, shape (n, 2)."""
-        if X is None:
-            X = _load_h5(h5_file, h5_idxs)
-        X = _checked_features(X)
+        X = _resolve_X(X, h5_file, h5_idxs)
         return self._model.predict_logit(X)
 
     def predict_score(self, X=None, h5_file=None, h5_idxs=None) -> np.ndarray:
         """Return raw (pre-calibration) scores, shape (n, 2)."""
-        if X is None:
-            X = _load_h5(h5_file, h5_idxs)
-        X = _checked_features(X)
+        X = _resolve_X(X, h5_file, h5_idxs)
         return self._model.predict_score(X)
-
-    def _oof_percentile(self, X=None, h5_file=None, h5_idxs=None) -> np.ndarray:
-        """Percentile against this model's own out-of-fold distribution, shape (n, 2).
-
-        Internal. This is the weighting signal -- ``LazyClassifierQSAR`` blends descriptors
-        by how reliable each one looks at a given percentile -- and it is deliberately not a
-        public rank: it is relative to this model's training data, so it is not comparable
-        with a position against the reference library, and would be read as one.
-        """
-        if X is None:
-            X = _load_h5(h5_file, h5_idxs)
-        X = _checked_features(X)
-        return self._model._oof_percentile(X)
 
     def predict_rank(self, X=None, h5_file=None, h5_idxs=None) -> np.ndarray:
         """Position against the reference library given at fit, shape (n, 2).
@@ -363,9 +406,7 @@ class LazyClassifier:
         knots = getattr(self._model, "reference_rank_knots_", None)
         if knots is None or not len(knots):
             raise ValueError(NO_REFERENCE_MESSAGE)
-        if X is None:
-            X = _load_h5(h5_file, h5_idxs)
-        X = _checked_features(X)
+        X = _resolve_X(X, h5_file, h5_idxs)
         anchors = getattr(self._model, "reference_rank_anchors_", None) or {}
         pair = (
             anchors.get("anchor_low") if anchors.get("anchor_low_used") else None,
@@ -378,66 +419,8 @@ class LazyClassifier:
         )
         return np.column_stack([1 - rank_1, rank_1])
 
-    def oof_channels(self, X=None, h5_file=None, h5_idxs=None):
-        """Out-of-fold ``(proba, rank, score)`` on the training rows, or None.
 
-        Fit-time only, and only on the object that did the fitting -- a loaded checkpoint
-        has no out-of-fold predictions. Used to build the pooled rank reference; see
-        :meth:`lazyqsar.assemblers.classifier.LazyClassifier.oof_channels`.
-        """
-        if X is None:
-            X = _load_h5(h5_file, h5_idxs)
-        X = _checked_features(X)
-        getter = getattr(self._model, "oof_channels", None)
-        return getter(X) if getter is not None else None
-
-    # ------------------------------------------------------------------
-    # Save / load
-    # ------------------------------------------------------------------
-
-    def save(self, model_dir: str) -> str:
-        if model_dir.endswith(".zip"):
-            zip_out = True
-            model_dir = model_dir[:-4]
-        else:
-            zip_out = False
-        logger.info(f"Saving model to {model_dir!r}")
-        os.makedirs(model_dir, exist_ok=True)
-        self._model.save(model_dir)
-        if zip_out:
-            shutil.make_archive(model_dir, "zip", model_dir)
-            shutil.rmtree(model_dir)
-            logger.success(f"Model saved → {model_dir}.zip")
-            return model_dir + ".zip"
-        logger.success(f"Model saved → {model_dir}")
-        return model_dir
-
-    @classmethod
-    def load(cls, model_dir: str):
-        # Unpacked into scratch, not alongside the archive: the old code deleted the
-        # sibling directory of the same name without asking. Sessions are built before
-        # the scratch copy goes, and onnxruntime holds the graph in memory, so they
-        # outlive it.
-        scratch = None
-        try:
-            if model_dir.endswith(".zip"):
-                scratch, model_dir = unpack_to_scratch(model_dir)
-            if os.path.isfile(os.path.join(model_dir, "metadata.json")):
-                logger.info(f"Loading ONNX artifact from {model_dir!r}")
-                artifact = LazyClassifierArtifact.load(model_dir)
-                logger.success(f"Artifact loaded from {model_dir!r}")
-                return artifact
-            raise NotImplementedError(
-                "Loading a raw (non-ONNX) LazyClassifier is not yet supported. Every "
-                "checkpoint `save` writes carries metadata.json, so this is reachable "
-                "only for a hand-assembled directory."
-            )
-        finally:
-            if scratch is not None:
-                shutil.rmtree(scratch, ignore_errors=True)
-
-
-class LazyRegressor:
+class LazyRegressor(_AgnosticBase):
     """
     Descriptor-agnostic regressor.
 
@@ -447,6 +430,7 @@ class LazyRegressor:
     """
 
     task = "regression"
+    _artifact_class = LazyRegressorArtifact
 
     def __init__(self, max_rounds: int | None = None, max_batch_size: int = 100_000):
         self._model = None
@@ -458,12 +442,7 @@ class LazyRegressor:
         from .assemblers.regressor import LazyRegressor as _AssemblerRegressor
 
         logger.rule("LazyRegressor (agnostic) — fit")
-        if X is None:
-            if h5_file is None:
-                raise ValueError("Provide either X or h5_file.")
-            logger.info(f"Loading features from {h5_file!r}")
-            X = _load_h5(h5_file, h5_idxs)
-        X = _checked_features(X)
+        X = _resolve_X(X, h5_file, h5_idxs)
         y = np.asarray(y, dtype=float)
 
         self._model = _AssemblerRegressor(
@@ -482,62 +461,30 @@ class LazyRegressor:
 
     def predict(self, X=None, h5_file=None, h5_idxs=None) -> np.ndarray:
         """Return predicted values, shape (n,)."""
-        if X is None:
-            X = _load_h5(h5_file, h5_idxs)
-        X = _checked_features(X)
+        X = _resolve_X(X, h5_file, h5_idxs)
         logger.debug(f"predict: X={X.shape}")
         return self._model.predict(X)
-
-    def _oof_percentile(self, X=None, h5_file=None, h5_idxs=None) -> np.ndarray:
-        """Percentile of the prediction among this model's out-of-fold predictions.
-
-        Internal: the per-sample reliability signal ``LazyRegressorQSAR`` weights
-        descriptors by. Relative to this model's training set, so not a public output.
-        """
-        if X is None:
-            X = _load_h5(h5_file, h5_idxs)
-        X = _checked_features(X)
-        return self._model._oof_percentile(X)
 
     def _oof_percentile_from_value(self, values):
         return self._model._oof_percentile_from_value(values)
 
-    def oof_channels(self, X=None, h5_file=None, h5_idxs=None):
-        """Out-of-fold ``(value, rank)`` on the training rows, or None. Fit-time only."""
-        if X is None:
-            X = _load_h5(h5_file, h5_idxs)
-        X = _checked_features(X)
-        getter = getattr(self._model, "oof_channels", None)
-        return getter(X) if getter is not None else None
 
-    def save(self, model_dir: str) -> str:
-        if model_dir.endswith(".zip"):
-            zip_out = True
-            model_dir = model_dir[:-4]
-        else:
-            zip_out = False
-        logger.info(f"Saving model to {model_dir!r}")
-        os.makedirs(model_dir, exist_ok=True)
-        self._model.save(model_dir)
-        if zip_out:
-            shutil.make_archive(model_dir, "zip", model_dir)
-            shutil.rmtree(model_dir)
-            logger.success(f"Model saved → {model_dir}.zip")
-            return model_dir + ".zip"
-        logger.success(f"Model saved → {model_dir}")
-        return model_dir
+def load(model_dir: str):
+    """Load any saved LazyQSAR checkpoint, dispatching on its task and kind.
 
-    @classmethod
-    def load(cls, model_dir: str):
-        """Load a saved regressor as its numpy + onnxruntime artifact."""
-        scratch = None
-        try:
-            if model_dir.endswith(".zip"):
-                scratch, model_dir = unpack_to_scratch(model_dir)
-            logger.info(f"Loading ONNX artifact from {model_dir!r}")
-            artifact = LazyRegressorArtifact.load(model_dir)
-            logger.success(f"Artifact loaded from {model_dir!r}")
-            return artifact
-        finally:
-            if scratch is not None:
-                shutil.rmtree(scratch, ignore_errors=True)
+    A SMILES-level checkpoint (``LazyQSAR`` / ``LazyClassifierQSAR`` /
+    ``LazyRegressorQSAR``) has one sub-directory per descriptor; a feature-level one
+    (``LazyClassifier`` / ``LazyRegressor``) has ``batch_*`` sub-directories. Either loads
+    as the inference object for its task.
+    """
+    from .qsar_base import _descriptor_dirs, _read_task, _unpacked
+
+    with _unpacked(model_dir) as path:
+        task = _read_task(path)
+        smiles_level = bool(_descriptor_dirs(path))
+        if smiles_level:
+            from .qsar import LazyQSAR
+
+            return LazyQSAR.load(path)
+        cls = LazyRegressor if task == "regression" else LazyClassifier
+        return cls.load(path)
