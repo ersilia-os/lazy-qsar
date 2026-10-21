@@ -30,8 +30,8 @@ import numpy as np
 class Channels:
     """Per-descriptor predictions for one task, one descriptor.
 
-    Each is ``(n_samples,)`` float32, or ``None`` when that channel was not requested or
-    the artifact could not supply it.
+    Each is ``(n_samples,)`` float32 -- except a regression ``y``, which is float64 --
+    or ``None`` when that channel was not requested or the artifact could not supply it.
     """
 
     y: np.ndarray | None = None
@@ -144,7 +144,12 @@ def _score_chunks(chunks, artifact, ad_artifact, want, logger=None):
     def joined(key):
         if key in unavailable or not parts[key]:
             return None
-        return np.concatenate(parts[key]).astype(np.float32, copy=False)
+        # A regression value keeps float64: it is the prediction itself, in target
+        # units, and float32 would round a target with a large offset (a raw clearance
+        # in the thousands) to the third decimal -- a difference between a fitted model
+        # and its checkpoint that has nothing to do with the model.
+        dtype = np.float64 if (regression and key == "y") else np.float32
+        return np.concatenate(parts[key]).astype(dtype, copy=False)
 
     return Channels(y=joined("y"), r=joined("r"), s=joined("s"), a=joined("a"))
 

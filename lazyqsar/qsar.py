@@ -1173,6 +1173,13 @@ class LazyClassifierQSAR(_ClassifierPredictMixin, _QSARBase):
             _meta = read_json(meta_path)
             mode = _meta.get("mode")
             active_map = _meta.get("active_descriptors") or {}
+            # A directory this fit did not write (a leftover in a reused output path)
+            # is not part of the model.
+            listed = _meta.get("descriptor_types")
+            if listed:
+                descriptor_types = [
+                    d for d in descriptor_types if d in listed
+                ] or descriptor_types
         if mode is None:
             for k, v in DESCRIPTORS_MODE.items():
                 if set(v) == set(descriptor_types):

@@ -288,9 +288,7 @@ class EnsembleSpec:
         cutoff_map = metadata.get("ad_hard_cutoffs", {}) or {}
         curve_map = metadata.get("rank_error_curves", {}) or {}
 
-        active_names = [d for d in descriptor_names if active_map.get(d, True)]
-        if not active_names:
-            active_names = list(descriptor_names)
+        active_names = _active_names(metadata, descriptor_names, active_map)
 
         curves = None
         if curve_map:
@@ -366,9 +364,7 @@ class EnsembleSpec:
         cutoff_map = metadata.get("ad_hard_cutoffs", {}) or {}
         curve_map = metadata.get("rank_error_curves", {}) or {}
 
-        active_names = [d for d in descriptor_names if active_map.get(d, True)]
-        if not active_names:
-            active_names = list(descriptor_names)
+        active_names = _active_names(metadata, descriptor_names, active_map)
 
         curves = None
         if curve_map:
@@ -397,6 +393,23 @@ class EnsembleSpec:
             ),
             active_names,
         )
+
+
+def _active_names(metadata, descriptor_names, active_map):
+    """The descriptors to score: on disk, written by this fit, and marked active.
+
+    A descriptor directory the metadata does not list is a leftover -- a checkpoint
+    re-saved into a directory that held a different fit -- and is never scored: it would
+    otherwise join the ensemble with default skill. Checkpoints that predate the
+    ``descriptor_types`` key keep every directory. If the mask rejects everything, every
+    listed descriptor is scored rather than none.
+    """
+    listed = metadata.get("descriptor_types")
+    candidates = (
+        [d for d in descriptor_names if d in listed] if listed else list(descriptor_names)
+    )
+    active = [d for d in candidates if active_map.get(d, True)]
+    return active or candidates or list(descriptor_names)
 
 
 @dataclass
