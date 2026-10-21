@@ -130,6 +130,34 @@ On random splits coverage is nominal. On new scaffolds it falls 2–3 points sho
 conformal coverage assumes test molecules resemble the training ones, and the
 applicability-domain binning of the SMILES-level model is there to soften exactly that.
 
+## Against published results
+
+**MoleculeACE**, with the benchmark's own splits on all 30 datasets, in fast mode (Morgan only). Source: `ace_reference.py`.
+
+| Method | RMSE | RMSE on cliff compounds |
+|---|---|---|
+| SVR on ECFP, the best published method (our reproduction) | 0.671 | 0.751 |
+| GBM on ECFP (reproduction) | 0.698 | 0.787 |
+| RF on ECFP (reproduction) | 0.700 | 0.785 |
+| LazyQSAR 3.8 | 0.678 | 0.766 |
+| **LazyQSAR now** | **0.664** | **0.752** |
+
+**TDC ADMET group**, on the fixed test split with the leaderboard metrics (MAE ↓, or Spearman ↑ for the last four tasks). Fast mode, seed 0. Source: `tdc_official.py`.
+
+| Task | 3.8 | Now |
+|---|---|---|
+| Caco2 (MAE) | 0.363 | **0.355** |
+| Lipophilicity (MAE) | 0.644 | **0.634** |
+| Solubility (MAE) | — (NaN score) | 0.970 |
+| PPBR (MAE) | 9.633 | **9.022** |
+| LD50 (MAE) | 0.642 | **0.640** |
+| VDss (ρ) | 0.616 | **0.642** |
+| Half-life (ρ) | **0.550** | 0.516 |
+| Hepatocyte clearance (ρ) | 0.412 | **0.419** |
+| Microsomal clearance (ρ) | **0.574** | 0.547 |
+
+Slow mode (all five descriptors), measured with 3.8, reached 0.535 MAE on lipophilicity (MapLight: 0.539) and 0.297 on Caco2. It has not yet been rerun with the new portfolio.
+
 ## Results against 3.8
 
 *To be filled from `run.py --label v2` (3 random + 1 structural split per task, with
