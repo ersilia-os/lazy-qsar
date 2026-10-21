@@ -26,6 +26,8 @@ no package beyond LazyQSAR's own dependencies.
 | `heads.py` | Each candidate preset of each head, fitted alone |
 | `poolers.py` | Pooling rules and head subsets, scored offline on one set of head predictions |
 | `tdc_official.py` | TDC's fixed `admet_group` split, with the leaderboard metrics |
+| `svr_guard.py` | What the SVR slot is worth under its 5 MB ONNX cap, against an uncapped kernel |
+| `xgb_stop.py` | Early-stopping rules for XGBoost, replayed on stored validation curves |
 | `ace_reference.py` | Reproduces MoleculeACE's best published method (SVR on ECFP with its per-dataset tuned hyperparameters: 0.671 RMSE / 0.751 on cliff compounds, as published) and runs LazyQSAR on the same splits |
 
 ## Heads: one preset each
@@ -100,6 +102,29 @@ once size was accounted for, so the regression selector has no profile scores.
 Effect on the two large TDC tasks:
 - solubility (7,984 rows): 163 s → 61 s, against about 55 s for classification;
 - lipophilicity (3,360 rows): 46 s → 42 s, against 21 s for classification.
+
+**XGBoost early stopping, tried and kept as is.** At η 0.08 the validation RMSE keeps
+creeping down, so lipophilicity runs to 1,100 rounds. On 46 splits with at least 1,000
+rows (`xgb_stop.py`), the stopping rules tried all lost accuracy for little time:
+- a minimum improvement of 1e-4 (standardised RMSE) saved 6% of rounds and cost +0.13% RMSE, up to +4.6% on one split;
+- 1e-3 saved 20% of rounds and cost +0.28%;
+- a patience of 25 instead of 50 saved 22% and cost +0.42%.
+
+**The SVR under its size cap.** The kernel SVR's ONNX graph stores every support vector
+densely. At ε=0.05 about 90% of rows become support vectors, so on 2,048 Morgan bits the
+5 MB cap is exceeded from about 700 rows, and the head falls back to a LinearSVR.
+`svr_guard.py` measured that fallback on the 45 splits between 600 and 2,000 rows:
+
+| SVR in the stack | Stack RMSE vs shipped | Better on | Median ONNX size |
+|---|---|---|---|
+| LinearSVR fallback (shipped) | — | — | < 0.1 MB |
+| No SVR (lr + xgb) | +0.39% | 8/45 | — |
+| Kernel SVR, no cap | −0.89% | 33/45 | 8.5 MB (max 17.7) |
+| Kernel SVR, ε=0.2, no cap | −0.34% | 29/45 | 6.7 MB |
+| Random forest instead | +0.24% | 21/45 | 2.4 MB |
+
+The kernel is worth about 0.9% RMSE in this range. Getting it means raising the cap,
+which is a trade against checkpoint size.
 
 ## Prediction intervals
 
