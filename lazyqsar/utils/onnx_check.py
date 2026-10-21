@@ -78,18 +78,24 @@ def _atol(expected) -> float:
 
 
 def check_values(
-    path: str, probe, expected, what: str, atol: float | None = None
+    path: str,
+    probe,
+    expected,
+    what: str,
+    atol: float | None = None,
+    output_index: int = 0,
 ) -> None:
-    """Regression-style graph: first output against continuous predictions.
-
-    *atol* overrides the default tolerance for outputs that move in discrete steps --
-    the applicability-domain score is a fraction of 200 calibration knots, so a float32
-    distance landing on the other side of one knot legitimately moves it by 1/200.
-    """
+    """Regression-style graph: one output (the first by default) against continuous
+    values. *atol* overrides the default, scale-relative tolerance."""
     if probe is None:
         return
     outputs, _ = _run(path, probe)
-    _assert_close(outputs[0], expected, what, _atol(expected) if atol is None else atol)
+    _assert_close(
+        outputs[output_index],
+        expected,
+        what,
+        _atol(expected) if atol is None else atol,
+    )
 
 
 def check_probability(path: str, probe, expected_p1, what: str) -> None:

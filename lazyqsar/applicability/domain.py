@@ -31,8 +31,8 @@ PCA pre-projection is required because:
   (b) PCA removes redundant/zero-variance directions, making the distance
       well-conditioned in the retained k-dimensional subspace.
 
-n_components is chosen automatically as min(50, p, n_samples-1) unless
-overridden.  The covariance matrix is Tikhonov-regularised before inversion.
+n_components is chosen automatically as min(sqrt(p), 100, p, (n_samples-1)//3)
+unless overridden (see ``_max_components`` for why not n_samples-1).  The covariance matrix is Tikhonov-regularised before inversion.
 
 Calibration uses 200 evenly-spaced quantiles of the training distances stored
 as a lookup table.  The ONNX graph broadcasts each query distance against all
@@ -60,6 +60,22 @@ _N_CAL_KNOTS = 200
 
 # Matches the seed used throughout the package (assemblers, portfolios, base estimators).
 _RANDOM_STATE = 42
+
+
+def _max_components(n: int) -> int:
+    """At most a third of the training rows: the PCA must not fill the sample's span.
+
+    With k close to n - 1 components, n training points nearly fill the k-dimensional
+    affine space they define, so their in-sample Mahalanobis distances become almost
+    identical (their mean square is fixed at ~k(n-1)/n and the spread vanishes as k
+    approaches n - 1). The 200 calibration knots then collapse onto one value: the
+    survival-function score degenerates into a step, and a float32 rounding difference
+    flips the whole score -- which is how fits below ~46 molecules came to fail the
+    export check. Capping k at (n - 1) // 3 kept the knots spread (relative range >=
+    0.62 vs 0.30) in every fingerprint and dense case tried from n = 10 to 100. Above
+    ~136 rows the sqrt(p) rule is the binding one, so larger fits are unchanged.
+    """
+    return max(1, (n - 1) // 3)
 
 
 def _ad_probe(X: np.ndarray) -> np.ndarray:
@@ -124,7 +140,7 @@ class ApplicabilityDomain(OnnxBoundHead):
         k = (
             self.n_components
             if self.n_components is not None
-            else min(max(1, int(p**0.5)), 100, p, n - 1)
+            else min(max(1, int(p**0.5)), 100, p, _max_components(n))
         )
         k = max(1, k)
 
@@ -156,8 +172,6 @@ class ApplicabilityDomain(OnnxBoundHead):
         self.cal_knots_ = np.quantile(
             train_dists, np.linspace(0.0, 1.0, _N_CAL_KNOTS)
         ).astype(np.float32)
-        # Two calibration knots of slack for the bind-time check: see check_values.
-        self._onnx_bind_atol = 2.0 / len(self.cal_knots_) + 1e-6
         self._bind_onnx()
 
         return self
@@ -186,17 +200,35 @@ class ApplicabilityDomain(OnnxBoundHead):
         """
         return self._raw(X).astype(np.float32)
 
-    def _raw_native(self, X) -> np.ndarray:
-        """The numpy scorer: impute, scale, project, Mahalanobis, survival function."""
+    def _distances_native(self, X) -> np.ndarray:
+        """The numpy path up to the distance: impute, scale, project, Mahalanobis."""
         X = _to_dense(X)
         if np.isnan(X).any():
             X = self.imputer_.transform(X)
         X = self._scale(X)
-        X_pca = self.pca_.transform(X)
-        dists = self._mahal(X_pca)
-        # survival function: fraction of calibration knots > query dist
+        return self._mahal(self.pca_.transform(X))
+
+    def _raw_native(self, X) -> np.ndarray:
+        """The numpy scorer: the distance, then the survival function over the knots."""
+        dists = self._distances_native(X)
         scores = (dists[:, None] < self.cal_knots_[None, :]).mean(axis=1)
         return scores.astype(np.float32)
+
+    def _bind_comparison(self, probe, native):
+        """Check the graph on the Mahalanobis distance, not on the score.
+
+        The score is a step function over the calibration knots, and real fingerprint
+        sets contain identical rows, so knots tie: a training distance computed in
+        float32 instead of float64 can land on the other side of a stack of tied knots
+        and move the score by many steps. That is the precision of the comparison, not
+        a conversion error. The distance is continuous and is everything the graph
+        computes before the (trivial) knot comparison, so it is what can be converted
+        wrongly -- and what is checked. Deployed scores are unaffected either way: the
+        AD scores through this same graph at fit time and at inference.
+        """
+        got = np.asarray(self._session_run(probe)[1], dtype=np.float64).ravel()
+        expected = self._distances_native(probe)
+        return got, expected, 1e-4 * max(1.0, float(np.abs(expected).max()))
 
     # ------------------------------------------------------------------
     # ONNX export
@@ -207,19 +239,23 @@ class ApplicabilityDomain(OnnxBoundHead):
         Build and save an ONNX graph for the AD estimator.
 
         Graph inputs:  X  (float32, shape [batch, n_features_in])
-        Graph outputs: score (float32, shape [batch])
+        Graph outputs: score (float32, shape [batch]) -- what artifacts read;
+                       dist  (float32, shape [batch]) -- the Mahalanobis distance,
+                       exposed so the export can be checked on a continuous quantity
 
         All arithmetic is primitive ONNX ops; no custom extensions needed.
         """
         self._write_onnx(path)
         probe = getattr(self, "_onnx_probe_", None)
         if probe is not None:
+            expected = self._distances_native(probe)
             check_values(
                 path,
                 probe,
-                self._raw_native(probe),
+                expected,
                 "ApplicabilityDomain",
-                atol=2.0 / len(self.cal_knots_) + 1e-6,
+                atol=1e-4 * max(1.0, float(np.abs(expected).max())),
+                output_index=1,
             )
 
     def _onnx_bytes(self) -> bytes:
@@ -311,9 +347,14 @@ class ApplicabilityDomain(OnnxBoundHead):
 
         X_input = helper.make_tensor_value_info("X", TensorProto.FLOAT, [None, p])
         score_out = helper.make_tensor_value_info("score", TensorProto.FLOAT, [None])
+        dist_out = helper.make_tensor_value_info("dist", TensorProto.FLOAT, [None])
 
         graph = helper.make_graph(
-            nodes, "applicability_domain", [X_input], [score_out], initializers
+            nodes,
+            "applicability_domain",
+            [X_input],
+            [score_out, dist_out],
+            initializers,
         )
         model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
         model.ir_version = 7

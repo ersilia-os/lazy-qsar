@@ -90,6 +90,13 @@ against is versioned separately and its id is recorded in every checkpoint's
 
 ### Fixed
 
+- **Small datasets fit again.** Fits with fewer than ~46 compounds (both tasks) failed
+  with `OnnxExportMismatch` from the applicability domain. With up to n - 1 PCA
+  components the training distances collapsed onto one value, so the AD score became a
+  step that float32 rounding could flip. The AD now keeps at most (n - 1) // 3 components
+  (fits above ~136 rows are unchanged), and its export is checked on the continuous
+  Mahalanobis distance -- exposed as a second graph output, `dist` -- rather than on the
+  step-valued score, where tied fingerprints made the comparison flip by whole knots.
 - **The applicability-domain ONNX graph now imputes missing values.** The numpy scorer
   replaced NaN with the training medians; the exported graph did not, so a molecule with
   an undefined descriptor value scored 0 at inference -- vetoing that descriptor for it --
