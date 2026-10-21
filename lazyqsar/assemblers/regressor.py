@@ -161,9 +161,7 @@ class LazyRegressor(_AssemblerBase):
             pooled = (
                 batch.pooler._pool(P)
                 if getattr(batch.pooler, "_head_weights", None) is not None
-                else (batch.pooler.get_weights(batch.prep.transform(X[idx])) * P).sum(
-                    axis=1
-                )
+                else (batch.training_weights(X[idx]) * P).sum(axis=1)
             )
             out[idx] = pooled * self.y_std_ + self.y_mean_
         if not np.isfinite(out).all():

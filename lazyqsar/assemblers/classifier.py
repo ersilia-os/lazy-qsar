@@ -350,7 +350,7 @@ class LazyClassifier(_AssemblerBase):
             try:
                 S_cal = np.column_stack([m.oof_probas_ for m in heads])
                 S_raw = np.column_stack([m.oof_raw_ for m in heads])
-                W = batch.pooler.get_weights(batch.prep.transform(X[idx]))
+                W = batch.training_weights(X[idx])
             except Exception as exc:  # noqa: BLE001 - deliberately broad; degrade, don't raise
                 logger.debug(
                     f"pooled rank reference unavailable: {type(exc).__name__}: {exc}"
@@ -400,8 +400,7 @@ class LazyClassifier(_AssemblerBase):
                     )
                     return None
                 S = np.column_stack([h.model.oof_probas_ for h in heads])
-                X_prep = batch_clf.prep.transform(X[indices])
-                W_oof = batch_clf.pooler.get_weights(X_prep)
+                W_oof = batch_clf.training_weights(X[indices])
                 pooled = (W_oof * S).sum(axis=1)
                 batch_aucs.append(roc_auc_score(y[indices], pooled))
             return float(np.mean(batch_aucs))
