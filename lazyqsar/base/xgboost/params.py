@@ -524,11 +524,11 @@ def get_params(
     # ------------------------------------------------------------------
     # Task-specific parameters
     # ------------------------------------------------------------------
-    if profile.task == "classification":
-        _set_classification_params(params, profile)
-    else:
-        _set_regression_params(params, profile)
-
+    if profile.task != "classification":
+        # Regression fits one benchmark-selected preset instead:
+        # `lazyqsar.base.xgboost.presets.probst_regression_params`.
+        raise ValueError("The XGBoost heuristic preset is for classification only.")
+    _set_classification_params(params, profile)
     return params
 
 
@@ -556,25 +556,3 @@ def _set_classification_params(params: Dict[str, Any], profile: DatasetProfile) 
         params["eval_metric"] = "aucpr"
     else:
         params["eval_metric"] = "auc"
-
-
-def _set_regression_params(params: Dict[str, Any], profile: DatasetProfile) -> None:
-    """Squared error, scored by RMSE -- always.
-
-    The heuristic used to switch to Tweedie (positive, skewed y) or pseudo-Huber
-    (skewed y with both signs). Neither held up:
-
-    - Inside LazyQSAR the target is standardised before any head sees it, so it is
-      never all-positive and Tweedie could not trigger -- dead code.
-    - Choosing the objective by skew also changed the *validation metric* (MAE instead
-      of RMSE), so in the preset race the heuristic was scored on a different, smaller
-      number than every other preset: a built-in bias, not a fair comparison.
-    - No QSAR benchmark we found shows pseudo-Huber beating squared error; skewed
-      bioactivity targets are conventionally handled by working in log units
-      (pIC50, logS, log CLint), which the user's data already is.
-
-    A user can still construct a booster with any objective; its export is faithful
-    (see ``_booster_to_sklearn_wrapper``).
-    """
-    params["objective"] = "reg:squarederror"
-    params["eval_metric"] = "rmse"

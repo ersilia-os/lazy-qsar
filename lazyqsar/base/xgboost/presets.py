@@ -104,7 +104,7 @@ def flaml_params(
     FLAML configuration via 1-NN meta-feature matching.
 
     Selects one of four portfolio configs from FLAML's lossguide portfolio
-    (microsoft/FLAML, flaml/default/xgboost/{binary,regression}.json, MIT).
+    (microsoft/FLAML, flaml/default/xgboost/binary.json, MIT); classification only.
 
     Post-processing applied for small-dataset robustness:
       - n_estimators capped at 2000 (early stopping is the real control)
@@ -120,8 +120,8 @@ def flaml_params(
     p = profile.n_features
     pct_numeric = 1.0 - profile.binary_feature_fraction
 
-    data = _fd.BINARY if profile.task == "classification" else _fd.REGRESSION
-    n_classes = 2 if profile.task == "classification" else 0
+    data = _fd.BINARY
+    n_classes = 2
 
     center = np.array(data["preprocessing"]["center"])
     scale = np.array(data["preprocessing"]["scale"])

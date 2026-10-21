@@ -83,7 +83,6 @@ from lazyqsar.utils.metrics import spearman_score
 from lazyqsar.utils.splits import (
     make_quantile_oof_splits,
     make_stratified_oof_splits,
-    quantile_bins,
     quantile_strata,
 )
 
@@ -704,15 +703,12 @@ def _train_phase2(
 
 
 def _min_gain_threshold(profile: DatasetProfile, y_train: np.ndarray) -> float:
-    """Noise-adaptive margin a challenger preset must win by (see ``min_gain_threshold``).
+    """AUC margin a challenger preset must win by (see ``min_gain_threshold``).
 
-    The effective size is the minority-class count for classification (AUC noise) and
-    the training size for regression (relative RMSE noise).
+    The classifier's preset race only: the effective size is the minority-class count,
+    which sets the noise of an AUC. (Regression fits a single preset.)
     """
-    if profile.task == "classification":
-        n_eff = int(min(np.sum(y_train == 0), np.sum(y_train == 1)))
-    else:
-        n_eff = len(y_train)
+    n_eff = int(min(np.sum(y_train == 0), np.sum(y_train == 1)))
     return min_gain_threshold(n_eff, len(y_train))
 
 
@@ -1039,10 +1035,6 @@ def _portfolio_select(
     elif best_name != "default":
         threshold = _min_gain_threshold(profile, y)
         gain = best_score - default_score
-        if profile.task == "regression":
-            # RMSE carries the target's scale; compare relative improvement so the
-            # margin means the same for a z-scored target and for raw units.
-            gain = gain / max(abs(default_score), 1e-12)
         if gain < threshold:
             best_name = "default"
             best_score = default_score
@@ -1270,14 +1262,7 @@ def _validation_split(
             needed = _VAL_MIN_MINORITY / minority_count
             val_fraction = max(_VAL_FRACTION, min(0.25, needed))
 
-    if stratify:
-        strat = y
-    elif profile.task == "regression":
-        # Quantile bins of y, so the early-stopping fold spans the target's whole
-        # range instead of whatever a random 10% happens to cover.
-        strat = quantile_bins(np.asarray(y, dtype=float), 5)
-    else:
-        strat = None
+    strat = y if stratify else None
     X_train, X_val, y_train, y_val = train_test_split(
         X,
         y,
