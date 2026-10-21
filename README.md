@@ -356,8 +356,8 @@ computes what the fitted model computed. Several layers answer it:
   graph, so a fitted model and its checkpoint run the same function.
 - **Verify at bind time.** Each graph is checked against the native model on training
   rows before it is used. The tolerance is 1e-5 relative for trees and linear models —
-  tight enough to catch a single dropped tree — and 1e-4 for kernel SVMs, whose float32
-  rounding is larger. The preprocessor's graph is checked against the scikit-learn
+  tight enough to catch a single dropped tree — and 1e-3 for kernel SVMs, whose float32
+  rounding reaches a few 1e-4 on wide-range descriptors such as RDKit's. The preprocessor's graph is checked against the scikit-learn
   pipeline. A failure raises; nothing falls back silently.
 - **Write what was verified.** `save` writes exactly the bound bytes and checks the file
   against them.

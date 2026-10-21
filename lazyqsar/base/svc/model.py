@@ -427,8 +427,6 @@ class BaseSVCClassifier(_SVMHead, ClassifierHead, BaseEstimator, ClassifierMixin
     """
 
     _onnx_kind = "decision"
-    # A kernel sums over every support vector and feature in float32: ~1e-4 of rounding.
-    _onnx_tolerance = 1e-4
     _fitted_attr = "svc_"
 
     def __init__(
@@ -561,7 +559,7 @@ class BaseSVCClassifier(_SVMHead, ClassifierHead, BaseEstimator, ClassifierMixin
 
         # The calibrator, cutoffs and ranks live on sigmoid(decision_function).
         oof_raw = self._oof_loop(
-            fold_splits, fit_predict, n_jobs=_fold_jobs(len(fold_splits))
+            fold_splits, fit_predict, n_jobs=_fold_jobs(len(fold_splits), self.params_)
         )
         self._finish_calibration(y, _sigmoid(oof_raw))
         return self

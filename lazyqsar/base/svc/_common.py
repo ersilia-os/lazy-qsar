@@ -20,15 +20,18 @@ _ONNX_MAX_BYTES = 5_000_000
 _ONNX_MAX_RETRIES = 3
 
 
-def _fold_jobs(k: int) -> int:
+def _fold_jobs(k: int, params: dict) -> int:
     """Threads for the k OOF fold fits.
 
-    libsvm and liblinear release the GIL and are single-threaded, so independent fold
-    fits run concurrently; each fit is unchanged (checked identical), only the wall
-    time drops.
+    libsvm releases the GIL and its kernel solver draws no random numbers, so fold fits
+    run concurrently with unchanged results. liblinear (LinearSVC/LinearSVR) shuffles
+    with the process-wide C ``rand()``, which concurrent fits interleave: those folds
+    stay serial to keep the fit deterministic.
     """
     import os
 
+    if params.get("use_linear", False):
+        return 1
     return max(1, min(k, os.cpu_count() or 1))
 
 
@@ -52,6 +55,11 @@ class _SVMHead:
     A subclass names the fitted-model attribute (``_fitted_attr``) and provides
     ``_make(params)`` and ``_linear_fallback_params(profile)``.
     """
+
+    # A kernel sums over every support vector and feature in float32. On RDKit
+    # descriptors (wide value ranges) that rounding reached 2.4e-4 of the output scale on
+    # real data; every other head family stays below 1.1e-6 (dev/benchmarks measurement).
+    _onnx_tolerance = 1e-3
 
     def _fit_final(self, X, target, profile) -> None:
         """Fit ``self.params_`` on all rows; shrink the model if its graph is too big."""
