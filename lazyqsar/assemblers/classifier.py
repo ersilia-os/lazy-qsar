@@ -16,7 +16,7 @@ from lazyqsar.utils.ranking import (
 
 from ..portfolios.classification import Portfolio
 from ..poolers.classification import InnerPooler
-from ._base import _AssemblerBase, _BatchBase
+from ._base import _AssemblerBase, _BatchBase, _digest
 from lazyqsar.utils.logging import logger
 from lazyqsar.utils.splits import check_trainable
 
@@ -286,8 +286,10 @@ class LazyClassifier(_AssemblerBase):
         from sklearn.metrics import roc_auc_score
 
         try:
-            train_proba = self.predict_proba(X)[:, 1]
-            return float(roc_auc_score(y, train_proba))
+            proba = self.predict_proba(X)
+            # The QSAR layer asks for the training-set probabilities again; keep them.
+            self._train_proba_ = (_digest(X), X.shape, proba)
+            return float(roc_auc_score(y, proba[:, 1]))
         except Exception as exc:  # noqa: BLE001 - reported, then degraded deliberately
             logger.warning(
                 f"Training AUC could not be computed ({type(exc).__name__}: {exc}); "
@@ -416,6 +418,10 @@ class LazyClassifier(_AssemblerBase):
 
     def predict_proba(self, X):
         """Return prior-corrected calibrated probabilities, shape (n, 2)."""
+        cached = getattr(self, "_train_proba_", None)
+        if cached is not None and cached[1] == X.shape and cached[0] == _digest(X):
+            # Exactly the training rows: the same numbers, without another full pass.
+            return cached[2].copy()
         logger.debug(f"predict_proba: X={X.shape}  batches={len(self.models)}")
         R = np.array(
             [
