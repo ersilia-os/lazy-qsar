@@ -10,7 +10,7 @@ A Python library for building supervised QSAR models quickly, with minimal confi
 - **`LazyClassifierQSAR`** / **`LazyRegressorQSAR`**: pass SMILES strings directly; built-in descriptors are computed automatically
 - **`LazyClassifier`** / **`LazyRegressor`**: bring your own pre-computed descriptor arrays
 
-`LazyQSAR(task="classification" | "regression")` picks the right SMILES class, and `LazyQSAR.load` reopens a checkpoint of either task.
+`LazyQSAR(task="classification" | "regression")` picks the right SMILES class, and `lazyqsar.load(path)` reopens any checkpoint, of either task and either level.
 
 ## Table of Contents
 
@@ -102,7 +102,7 @@ behind. Each of these is a deliberate refusal, not a bug:
 | `This checkpoint's reference rank was built from [...] but [...] missing` | Descriptor directories have been removed from the checkpoint, so it would be scored with fewer descriptors than its reference describes. | Restore the directories or refit. |
 | A warning that the cutoff `admits X% of the reference library, not 1%` | The reference's probabilities are too concentrated for the anchors to separate, so this model's `rank` is not comparable with others. | Check `LAZYQSAR_REFERENCE_N` and whether the model saturates. |
 | `every target value is N` / `target value(s) are NaN or infinite` | Regression needs a finite, non-constant target; raised before any descriptor is computed. | Clean the target column. |
-| `predict_type 'proba' is not available for regression models` | Each checkpoint records its task, and outputs belong to one task: classification has six, regression has `value`. | Omit `--predict_type` (it defaults to the checkpoint's task) or use `value`. |
+| `predict_type 'proba' is not available for regression models` | Each checkpoint records its task, and outputs belong to one task: classification has six, regression has `value`, `lower` and `upper`. | Omit `--predict_type` (it defaults to the checkpoint's task) or use `value`. |
 | `These models mix classification and regression checkpoints` | One predict call writes one output type for every column. | Predict the two kinds of model in separate calls. |
 | A warning that the actives anchor was dropped | The model's known actives do not reach the top 0.1% of drug-like space. Informative, not an error — see the changelog's Known limitations. | Nothing; above the last reference anchor the scale runs on to certainty. |
 
@@ -197,7 +197,7 @@ The same prediction methods listed above are available, using `X=` instead of `s
 
 ### Regression
 
-Continuous targets (pIC50, logS, ...) use the same pipeline with regression heads. The one output is `value`, the predicted target in its own units.
+Continuous targets (pIC50, logS, ...) use the same pipeline with regression heads. The output is `value`, the predicted target in its own units, with a prediction interval around it.
 
 ```python
 from lazyqsar.qsar import LazyQSAR                 # or: from lazyqsar.qsar import LazyRegressorQSAR
@@ -205,6 +205,7 @@ from lazyqsar.qsar import LazyQSAR                 # or: from lazyqsar.qsar impo
 model = LazyQSAR(task="regression", mode="slow")
 model.fit(smiles_list=smiles_train, y=pic50_train)
 pic50_hat = model.predict(smiles_list=smiles_test)   # shape (n,), NaN for unparseable SMILES
+lower, upper = model.predict_interval(smiles_list=smiles_test, level=0.9)
 model.oof_metrics_                                   # out-of-fold Spearman, R², RMSE, MAE
 
 from lazyqsar.agnostic import LazyRegressor        # bring your own descriptors
@@ -215,10 +216,13 @@ y_hat = reg.predict(X=X_test)
 
 What differs from classification:
 
-- Heads are the regression twins (linear, XGBoost, random forest, SVR), each with zero-shot hyperparameters and out-of-fold predictions. The target is standardised internally and predictions are returned in the original units.
-- Skill is **Spearman ρ** wherever classification uses AUC: head gating, descriptor screening, descriptor weighting (`2·ρ_oof − ρ_train`), and pruning (a descriptor is dropped below ρ 0.10 or more than 0.20 below the best).
-- Per-sample reliability comes from where a prediction sits among the model's out-of-fold predictions and how wrong the model tends to be there; the applicability-domain veto is the same as for classification.
+- **Heads** are linear (ridge), XGBoost, random forest and SVR, each with one preset chosen on a regression benchmark (TDC ADMET, Biogen ADME, MoleculeACE; random and scaffold splits). Which heads are fitted depends on dataset size: linear + XGBoost + SVR up to 2,000 compounds, linear + XGBoost up to 5,000, XGBoost + random forest above. The target is standardised internally and predictions come back in the original units.
+- **Heads are blended by stacking**: one non-negative weight per head, fitted by least squares on the heads' out-of-fold predictions.
+- **Prediction intervals** are split-conformal, from the ensemble's out-of-fold residuals, binned by applicability-domain score: about `level` of molecules like the training set fall inside, and molecules far from it get wider intervals.
+- **Skill** is Spearman ρ wherever classification uses AUC: descriptor screening, descriptor weighting (`2·ρ_oof − ρ_train`), and pruning (a descriptor is dropped below ρ 0.10 or more than 0.20 below the best).
 - There is no calibration, reference library, `rank` or decision cutoff. Censored values (`>10 µM`), automatic log transforms and multi-output targets are not supported: give a clean numeric target.
+
+See [docs/regression.md](docs/regression.md) for the evidence behind each choice and the benchmark results.
 
 ### Saving and loading
 
@@ -238,6 +242,9 @@ model = LazyClassifierQSAR.load(model_dir)
 y_hat = model.predict_proba(smiles_list=smiles_test)[:, 1]
 
 model = LazyQSAR.load(model_dir)               # either task, read from the checkpoint
+
+import lazyqsar
+model = lazyqsar.load(path)                    # any checkpoint: either task, SMILES or features
 
 model = LazyClassifier.load(model_dir)
 y_hat = model.predict_proba(X=X_test)[:, 1]
@@ -263,10 +270,10 @@ Pass `--models_txt` to train a subset of tasks (one CSV stem per line); without 
 **Predict:**
 
 ```bash
-lazyqsar predict --input $INPUT_CSV --model $MODEL_DIR --output $OUTPUT_CSV [--models_txt FILE] [--predict_type TYPE]
+lazyqsar predict --input $INPUT_CSV --model $MODEL_DIR --output $OUTPUT_CSV [--models_txt FILE] [--predict_type TYPE] [--interval_level LEVEL]
 ```
 
-The output CSV contains one column per task, ordered alphabetically by task name, or filtered and ordered by `--models_txt` at predict time. The task is read from each checkpoint: regression models write `value` (their only output, and the default), and every model in one call must be the same task. For classification, `--predict_type` controls the output format:
+The output CSV contains one column per task, ordered alphabetically by task name, or filtered and ordered by `--models_txt` at predict time. The task is read from each checkpoint, and every model in one call must be the same task. Regression models write `value` by default, or `lower` / `upper`, the bounds of a prediction interval whose coverage `--interval_level` sets (default 0.9). For classification, `--predict_type` controls the output format:
 
 | type | meaning |
 |------|---------|
@@ -296,7 +303,7 @@ LazyQSAR builds an ensemble for each descriptor set through four steps:
 
 4. **Pooling**: head predictions are combined via a learned gating network (`InnerClassifierPooler`). When using `LazyClassifierQSAR`, a separate ensemble is trained per descriptor type and their predictions are combined via an AUC-weighted ensemble that accounts for per-sample prediction confidence.
 
-Regression follows the same four steps with regression heads, a gate trained on each head's Gaussian likelihood of the out-of-fold residual (`InnerRegressorPooler`), size-only batching, and a Spearman-ρ-weighted ensemble across descriptors.
+Regression follows the same four steps with a size-based head choice, one benchmark-selected preset per head, stacking weights fitted on the heads' out-of-fold predictions (`InnerRegressorPooler`), size-only batching, a Spearman-ρ-weighted ensemble across descriptors, and conformal prediction intervals.
 
 The full pipeline is exported to ONNX, so inference requires only `numpy` and `onnxruntime`.
 
