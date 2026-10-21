@@ -46,8 +46,8 @@ cost more fit time than it recovered, and for the SVR it sometimes picked the Li
 44% worse than the kernel. With one preset per head:
 - XGBoost's number of rounds comes from early stopping on a quantile-stratified held-out
   split: 10% of the rows, 20% below 200 rows, and a fixed 100 rounds below 50 rows.
-- The SVR's ONNX size guard can still halve C, or fall back to the LinearSVR, when the
-  support vectors would make the graph larger than 5 MB.
+- The SVR's ONNX size guard falls back to a LinearSVR when the support vectors would
+  make the graph larger than 5 MB. On Morgan bits that happens from about 700 rows.
 
 **Above 2,000 rows**, XGBoost uses η 0.08 with depth 8. On the 32 benchmark splits of that
 size this costs 0.8% RMSE on the head and 31% of its fit time. It was the cheapest of the

@@ -93,9 +93,14 @@ with the stored `y_mean` / `y_std`.
   [docs/regression.md](../../../docs/regression.md)): RBF kernel, `C=10`,
   `epsilon=0.05`, `gamma="scale"`. Within 0.3% of the per-task best RMSE on average;
   sklearn's defaults (`C=1`) were 3.8% worse and a `LinearSVR` 44% worse. No preset race.
-- **Size guard**: as for the SVC -- halve `C` up to three times, then fall back to
-  `LinearSVR` (the only place a linear SVR is used).
-- **Out of fold**: quantile-stratified k-fold with the preset (folds fitted concurrently)
+- **Size guard**: when the kernel's graph would exceed 5 MB (on 2,048 Morgan bits,
+  from about 700 rows, since ~90% of rows become support vectors at `epsilon=0.05`), fall
+  back to `LinearSVR` with `C=1.25` -- the only place a linear SVR is used. Unlike the
+  SVC, `C` is not halved first: the epsilon tube, not `C`, sets an SVR's support set.
+- **Out-of-fold threads**: kernel folds are fitted concurrently (libsvm draws no random
+  numbers); `LinearSVR`/`LinearSVC` folds stay serial, because liblinear shuffles with the
+  process-wide C `rand()` and concurrent fits would not be reproducible.
+- **Out of fold**: quantile-stratified k-fold with the preset
   gives `oof_preds_`, `oof_rho_`, `train_rho_` and the ECDF behind `predict_rank`.
 
 `save` writes `svr.onnx` (standardised output) and `svr.json` (task, preset, params,
