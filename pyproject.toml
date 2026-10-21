@@ -31,7 +31,6 @@ dependencies = [
     "h5py==3.14.0",
     "psutil==7.0.0",
     "rich==14.1.0",
-    "loguru==0.7.3",
 ]
 
 [project.optional-dependencies]

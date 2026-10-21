@@ -82,7 +82,8 @@ It changes what `rank` means, and the value is stamped into every checkpoint as
 on `rank` even though both report a number in [0, 1]. Leave it alone unless you know why
 you are changing it.
 
-`LAZYQSAR_FIT_SCRATCH` redirects where a fit stages its descriptor matrices. Worth setting
+`LAZYQSAR_FIT_SCRATCH` redirects where a fit stages its descriptor matrices: the fit creates
+a fresh `lazyqsar-fit-*` subdirectory inside it and removes only that. Worth setting
 on a node with a small `/tmp`: a slow-mode fit over many tasks stages one matrix per
 descriptor over the union of every task, which for 175,000 compounds across five
 descriptors is several gigabytes.
@@ -333,8 +334,8 @@ pull request finishes in a few minutes. There is no third, larger one: `pip inst
 suite executes them.
 
 The base selection is the contract Ersilia Model Hub templates depend on: it must pass on
-the core dependencies alone — `numpy`, `onnxruntime`, `pandas`, `h5py`, `psutil`, `rich`
-and `loguru` — with no `scikit-learn`, `xgboost` or RDKit anywhere on the path. Add
+the core dependencies alone — `numpy`, `onnxruntime`, `pandas`, `h5py`, `psutil` and
+`rich` — with no `scikit-learn`, `xgboost` or RDKit anywhere on the path. Add
 `-n auto --dist loadfile` for the heavier tier, and `--durations=15` to see where the time
 goes.
 
