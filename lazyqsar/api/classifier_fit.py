@@ -166,10 +166,15 @@ def fit(
 
     # Scratch lives outside model_dir: a crash must not strew .npy files among the
     # checkpoints, which is what the previous in-place staging did.
-    scratch = os.environ.get("LAZYQSAR_FIT_SCRATCH") or tempfile.mkdtemp(
-        prefix="lazyqsar-fit-"
-    )
-    os.makedirs(scratch, exist_ok=True)
+    #
+    # Always a fresh subdirectory this fit creates, so the cleanup below can only remove
+    # what the fit made. LAZYQSAR_FIT_SCRATCH names the *parent*: it used to be used as
+    # the scratch directory itself and then removed wholesale, so pointing it at a
+    # shared scratch disk -- as the README suggests -- deleted everything in it.
+    scratch_parent = os.environ.get("LAZYQSAR_FIT_SCRATCH") or None
+    if scratch_parent is not None:
+        os.makedirs(scratch_parent, exist_ok=True)
+    scratch = tempfile.mkdtemp(prefix="lazyqsar-fit-", dir=scratch_parent)
     chunk_size = get_chunk_size()
     try:
         # Phase 1 -- featurize the union once per descriptor.

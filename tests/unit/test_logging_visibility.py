@@ -1,9 +1,9 @@
 """Warnings must reach stderr without the caller opting in.
 
-This exists because they did not. ``utils.logging`` drops loguru's default sink at import
-and used to add one only under ``set_verbosity(True)``, so every ``logger.warning`` in the
-package was a no-op in the default configuration -- including the message that explains why
-a prediction came back blank. The CLI has no verbosity flag, so on the deployed path that
+This exists because they did not. ``utils.logging`` used to emit only under
+``set_verbosity(True)``, so every ``logger.warning`` in the package was a no-op in the
+default configuration -- including the message that explains why a prediction came back
+blank. The CLI has no verbosity flag, so on the deployed path that
 warning could not be seen at all. A unit test is the only thing that keeps it visible,
 because nothing else fails when a warning silently stops being printed.
 """
@@ -17,9 +17,9 @@ from lazyqsar.utils.logging import logger as _singleton
 def log(capsys):
     """The package's own logger, left exactly as it was found.
 
-    Deliberately not a fresh ``Logger()``. ``loguru.logger`` is process-wide, so what is
-    under test is the sink configuration of the real singleton -- the thing a user
-    actually gets. Verbosity is restored afterwards because it is global state.
+    Deliberately not a fresh ``Logger()``: what is under test is the handler configuration
+    of the real singleton -- the thing a user actually gets. Verbosity is restored
+    afterwards because it is process-wide state.
     """
     was_verbose = _singleton.verbose
     _singleton.set_verbosity(False)
@@ -84,3 +84,57 @@ def test_nan_descriptor_rows_truncates_a_long_index_list(log, capsys):
 def test_nan_descriptor_rows_says_nothing_when_there_is_nothing_to_say(log, capsys):
     log.nan_descriptor_rows("morgan", [], 100)
     assert _stderr(capsys) == ""
+
+
+# ------------------------------------------------------------------ host isolation
+
+
+_HOST_SCRIPT = r"""
+import logging, sys
+from io import StringIO
+
+# A host application configures logging before importing lazyqsar.
+root_stream = StringIO()
+logging.basicConfig(stream=root_stream, level=logging.DEBUG, force=True)
+try:
+    from loguru import logger as host_loguru
+    host_sink = []
+    host_loguru.add(host_sink.append, level="DEBUG")
+except ImportError:
+    host_loguru = None
+
+import lazyqsar  # noqa: F401
+from lazyqsar.utils.logging import logger
+
+logger.set_verbosity(True)
+logger.warning("from-lazyqsar")
+logging.getLogger("host").info("from-host")
+if host_loguru is not None:
+    host_loguru.info("from-host-loguru")
+
+out = root_stream.getvalue()
+assert "from-host" in out, "the host's root logging handler was disturbed"
+assert "from-lazyqsar" not in out, "lazyqsar records leaked into the host's root logger"
+if host_loguru is not None:
+    got = [str(m) for m in host_sink]
+    assert any("from-host-loguru" in m for m in got), "importing lazyqsar removed loguru handlers"
+    assert not any("from-lazyqsar" in m for m in got), "lazyqsar wrote through loguru"
+print("ok")
+"""
+
+
+def test_importing_lazyqsar_leaves_host_logging_alone():
+    """Importing the package must not remove, reconfigure or write into a host's logging.
+
+    It used to call ``loguru.logger.remove()`` at import, deleting every handler the host
+    (the Ersilia CLI, a notebook, a service) had installed on loguru's shared logger. Run
+    in a fresh interpreter because the import has to be the first one in the process.
+    """
+    import subprocess
+    import sys
+
+    result = subprocess.run(
+        [sys.executable, "-c", _HOST_SCRIPT], capture_output=True, text=True
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "ok"

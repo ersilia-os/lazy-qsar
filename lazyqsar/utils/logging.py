@@ -7,71 +7,85 @@ from rich.console import Console
 from rich.table import Table
 from rich.tree import Tree
 from rich import box
-from loguru import logger as _loguru
+import logging as _logging
+import time as _time
 
-_loguru.remove()
-_loguru.level("DEBUG", color="<cyan><bold>")
-_loguru.level("INFO", color="<blue><bold>")
-_loguru.level("WARNING", color="<white><bold><bg yellow>")
-_loguru.level("ERROR", color="<white><bold><bg red>")
-_loguru.level("CRITICAL", color="<white><bold><bg red>")
-_loguru.level("SUCCESS", color="<black><bold><bg green>")
-
-_FORMAT = "<green>{time:HH:mm:ss}</green> <level>{level: <8}</level> {message}"
+# The package's own stdlib logger. Not loguru's process-wide singleton, and not the root
+# logger: ``propagate = False`` keeps records away from whatever handlers the host
+# application configured, and nothing here touches global logging state. The package
+# used to call ``loguru.logger.remove()`` at import, which deleted every handler a host
+# (the Ersilia CLI, a notebook, a service) had installed on that shared logger.
+_LOG = _logging.getLogger("lazyqsar")
+_LOG.propagate = False
+_LOG.setLevel(_logging.DEBUG)
 
 # How many row indices a NaN-descriptor warning names before it truncates.
 _MAX_LISTED_ROWS = 10
 
+_SUCCESS = "SUCCESS"
+_LEVEL_STYLE = {
+    "DEBUG": "\033[36;1m",
+    "INFO": "\033[34;1m",
+    "WARNING": "\033[37;1;43m",
+    "ERROR": "\033[37;1;41m",
+    "CRITICAL": "\033[37;1;41m",
+    _SUCCESS: "\033[30;1;42m",
+}
+_GREEN, _RESET = "\033[32m", "\033[0m"
 
-def _stderr_sink(message):
+
+class _StderrHandler(_logging.Handler):
     """Write to whatever ``sys.stderr`` is bound *now*.
 
-    Passing ``sys.stderr`` to ``logger.add`` would capture the stream object as it stands
-    at import time. Anything that later replaces it -- pytest's capture, a notebook
-    kernel, ``contextlib.redirect_stderr`` -- would then be written past, and if the
-    captured stream has since been closed loguru raises inside the handler. Resolving the
-    attribute per message costs nothing at these volumes and makes the sink indifferent to
-    all of it.
+    Binding the stream at import would capture it as it stands then. Anything that later
+    replaces it -- pytest's capture, a notebook kernel, ``contextlib.redirect_stderr`` --
+    would then be written past. Resolving the attribute per message costs nothing at
+    these volumes and makes the handler indifferent to all of it. Colour is used only
+    when that stream is a terminal.
     """
-    sys.stderr.write(message)
+
+    def emit(self, record):
+        try:
+            level = getattr(record, "lq_level", record.levelname)
+            stamp = _time.strftime("%H:%M:%S", _time.localtime(record.created))
+            stream = sys.stderr
+            if getattr(stream, "isatty", lambda: False)():
+                line = (
+                    f"{_GREEN}{stamp}{_RESET} "
+                    f"{_LEVEL_STYLE.get(level, '')}{level: <8}{_RESET} "
+                    f"{record.getMessage()}"
+                )
+            else:
+                line = f"{stamp} {level: <8} {record.getMessage()}"
+            stream.write(line + "\n")
+        except Exception:  # noqa: BLE001 - a logging failure must never break a fit
+            self.handleError(record)
 
 
 class Logger:
     """Quiet by default, but never silent about things the caller must know.
 
-    ``_loguru.remove()`` above drops loguru's default sink, so nothing is emitted unless
-    this class adds one. It used to add a sink only under ``set_verbosity(True)``, which
-    meant every ``logger.warning`` in the package went nowhere in the default
-    configuration -- including "N SMILES could not be parsed", the one message that
-    explains why a prediction came back blank. The CLI has no verbosity flag, so on the
-    deployed path that warning could not be seen at all.
+    Warnings and above are always printed; ``set_verbosity(True)`` lowers the floor to
+    DEBUG rather than switching output on, so a warning is never something the caller
+    has to opt in to. (Every ``logger.warning`` used to go nowhere unless verbose,
+    including "N SMILES could not be parsed" -- the one message that explains a blank
+    prediction -- and the CLI has no verbosity flag.)
 
-    So there are two sinks. A WARNING-level one is installed once per process and never
-    removed; ``set_verbosity(True)`` adds a second at DEBUG. Verbose mode therefore lowers
-    the floor rather than switching output on, and a warning is never something the caller
-    has to have opted in to. The two are filtered to disjoint level ranges so a warning is
-    not printed twice while verbose.
-
-    The WARNING sink is tracked on the class, not the instance. ``loguru.logger`` is a
-    process-wide singleton, so a per-instance sink would mean a second ``Logger()`` --
-    which this package does not create, but nothing stops a caller or a test from doing --
-    silently doubling every warning.
+    There is one handler, on the package's own ``"lazyqsar"`` logger; verbosity moves
+    its level. The handler is attached once per process and shared by every ``Logger``
+    instance, so a second instance -- which the package does not create, but a caller or
+    a test might -- cannot double every message.
     """
 
-    _warn_sink_id: Optional[int] = None
+    _handler: Optional[_StderrHandler] = None
 
     def __init__(self):
-        self.logger = _loguru
+        self.logger = _LOG
         self._console = Console(stderr=True, highlight=False)
-        self._sink_id: Optional[int] = None
         self._verbose: bool = False
-        if Logger._warn_sink_id is None:
-            Logger._warn_sink_id = self.logger.add(
-                _stderr_sink,
-                format=_FORMAT,
-                colorize=True,
-                level="WARNING",
-            )
+        if Logger._handler is None:
+            Logger._handler = _StderrHandler(level=_logging.WARNING)
+            _LOG.addHandler(Logger._handler)
 
     @property
     def verbose(self) -> bool:
@@ -79,21 +93,7 @@ class Logger:
 
     def set_verbosity(self, verbose: bool):
         self._verbose = verbose
-        if verbose and self._sink_id is None:
-            self._sink_id = self.logger.add(
-                _stderr_sink,
-                format=_FORMAT,
-                colorize=True,
-                level="DEBUG",
-                # The always-on sink already handles WARNING and above.
-                filter=lambda record: record["level"].no < _loguru.level("WARNING").no,
-            )
-        elif not verbose and self._sink_id is not None:
-            try:
-                self.logger.remove(self._sink_id)
-            except Exception:
-                pass
-            self._sink_id = None
+        Logger._handler.setLevel(_logging.DEBUG if verbose else _logging.WARNING)
 
     def debug(self, text):
         self.logger.debug(text)
@@ -111,7 +111,9 @@ class Logger:
         self.logger.critical(text)
 
     def success(self, text):
-        self.logger.success(text)
+        # INFO severity, labelled SUCCESS: a custom level would need
+        # logging.addLevelName, which edits the interpreter-wide level table.
+        self.logger.info(text, extra={"lq_level": _SUCCESS})
 
     def nan_descriptor_rows(self, tag: str, rows, n_total: int) -> None:
         """Warn that *rows* came back all-NaN from the ``tag`` descriptor.

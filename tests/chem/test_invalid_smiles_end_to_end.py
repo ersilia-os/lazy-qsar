@@ -105,20 +105,27 @@ def test_all_good_input_still_returns_integer_labels(morgan_checkpoint, probe):
 def test_a_warning_names_how_many_rows_were_blanked(morgan_checkpoint, probe):
     """Silence would be the worst outcome: a screen with holes and nothing saying so.
 
-    The package logs through loguru, which pytest's ``caplog`` does not see, so the sink is
-    attached directly rather than trusting a fixture that would capture nothing and make this
-    assertion vacuous.
+    The package logs to its own non-propagating ``"lazyqsar"`` logger, which pytest's
+    ``caplog`` (a root-logger handler) does not see, so a handler is attached to it directly
+    rather than trusting a fixture that would capture nothing and make this assertion
+    vacuous.
     """
-    from loguru import logger as loguru_logger
+    import logging
 
     records = []
-    sink_id = loguru_logger.add(records.append, level="WARNING")
+
+    class _Collect(logging.Handler):
+        def emit(self, record):
+            records.append(record.getMessage())
+
+    handler = _Collect(level=logging.WARNING)
+    logging.getLogger("lazyqsar").addHandler(handler)
     try:
         predict(model_dir=morgan_checkpoint["root"], smiles=probe["mixed"])
     finally:
-        loguru_logger.remove(sink_id)
+        logging.getLogger("lazyqsar").removeHandler(handler)
 
-    warnings = [str(r) for r in records]
+    warnings = list(records)
     assert any("could not be parsed" in w for w in warnings), (
         f"no warning was emitted for the unparseable row; got {warnings}"
     )
