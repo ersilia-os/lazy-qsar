@@ -246,6 +246,7 @@ def predict(
     models_txt: str = None,
     predict_type: str | None = None,
     smiles: list = None,
+    interval_level: float | None = None,
 ) -> tuple[np.ndarray, list[str]]:
     """Score every model in *model_dir* over the given SMILES.
 
@@ -263,10 +264,13 @@ def predict(
         One column name per line. Filters, and its order becomes the column order.
     predict_type : str, optional
         Classification: one of ``proba``, ``rank``, ``logit``, ``lift``, ``score``,
-        ``binary`` (default ``proba``). Regression: ``value`` (the default). Read from the
-        checkpoints' ``metadata.json``; every model in one call must share a task.
+        ``binary`` (default ``proba``). Regression: ``value`` (the default), or ``lower``
+        / ``upper``, the bounds of a prediction interval. Read from the checkpoints'
+        ``metadata.json``; every model in one call must share a task.
     smiles : list of str, optional
         SMILES to score, instead of reading *input_csv*.
+    interval_level : float, optional
+        Regression ``lower``/``upper``: the interval's coverage, in (0, 1). Default 0.9.
 
     Returns
     -------
@@ -328,6 +332,7 @@ def predict(
             chunk_size=chunk_size,
             show_progress=True,
             scan=scan,
+            interval_level=interval_level,
         )
 
         # Molecules RDKit cannot parse are blanked rather than dropped or imputed. Their

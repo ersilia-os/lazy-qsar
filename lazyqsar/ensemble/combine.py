@@ -53,7 +53,7 @@ from ..utils.ranking import (
 )
 
 OUTPUT_NAMES = ("proba", "logit", "rank", "score", "lift", "binary")
-REGRESSION_OUTPUT_NAMES = ("value",)
+REGRESSION_OUTPUT_NAMES = ("value", "lower", "upper")
 OUTPUT_NAMES_BY_TASK = {
     "classification": OUTPUT_NAMES,
     "regression": REGRESSION_OUTPUT_NAMES,
@@ -229,7 +229,12 @@ class EnsembleSpec:
         is written after the active set is settled and describes exactly that set.
     task : str
         ``"classification"`` (default) or ``"regression"``. Regression specs use only
-        the descriptor names, skill estimates, rank-error curves and AD cutoffs.
+        the descriptor names, skill estimates, rank-error curves, AD cutoffs and
+        ``intervals``.
+    intervals : dict, or None
+        Regression only: the conformal interval model of
+        :mod:`lazyqsar.ensemble.intervals`, behind the ``lower``/``upper`` outputs.
+        ``None`` on checkpoints fitted before intervals existed.
     """
 
     descriptor_names: tuple[str, ...] = ()
@@ -243,6 +248,7 @@ class EnsembleSpec:
     pooled_rank_anchors: tuple | None = None
     pooled_score_knots: tuple[np.ndarray, np.ndarray] | None = None
     task: str = "classification"
+    intervals: dict | None = None
 
     @classmethod
     def from_metadata(
@@ -387,6 +393,7 @@ class EnsembleSpec:
                     else None
                 ),
                 task="regression",
+                intervals=metadata.get("intervals"),
             ),
             active_names,
         )
@@ -417,6 +424,7 @@ class CombineResult:
     base: np.ndarray | None = None
     oof_percentiles: np.ndarray | None = None
     diagnostics: list[dict] | None = None
+    ad_summary: np.ndarray | None = None
 
 
 def _skill_scores(spec: EnsembleSpec, D: int, task: str) -> np.ndarray:
@@ -586,7 +594,7 @@ def _diagnostics(Y, A, W, spec, skill_name):
     ]
 
 
-def combine(Y, R=None, S=None, A=None, *, spec, outputs=None, cutoff=None):
+def combine(Y, R=None, S=None, A=None, *, spec, outputs=None, cutoff=None, level=None):
     """Combine per-descriptor predictions into a model's outputs.
 
     Parameters
@@ -608,6 +616,9 @@ def combine(Y, R=None, S=None, A=None, *, spec, outputs=None, cutoff=None):
         :data:`REGRESSION_OUTPUT_NAMES` for regression. Defaults to all of the task's.
     cutoff : float, optional
         Probability threshold for ``binary``. Defaults to ``spec.decision_cutoff``.
+    level : float, optional
+        Regression: coverage of the ``lower``/``upper`` interval, in (0, 1). Defaults to
+        :data:`lazyqsar.ensemble.intervals.DEFAULT_LEVEL` (0.9).
 
     Returns
     -------
@@ -629,6 +640,9 @@ def combine(Y, R=None, S=None, A=None, *, spec, outputs=None, cutoff=None):
     allowed = OUTPUT_NAMES_BY_TASK[task]
     if outputs is None:
         outputs = allowed
+        if task == "regression" and not getattr(spec, "intervals", None):
+            # Interval bounds by default only where the checkpoint can make them.
+            outputs = ("value",)
     unknown = set(outputs) - set(allowed)
     if unknown:
         raise ValueError(
@@ -636,7 +650,7 @@ def combine(Y, R=None, S=None, A=None, *, spec, outputs=None, cutoff=None):
             f"choose from {list(allowed)}"
         )
     if task == "regression":
-        return _combine_regression(Y, R, A, spec=spec, outputs=outputs)
+        return _combine_regression(Y, R, A, spec=spec, outputs=outputs, level=level)
 
     Y = _as_2d(Y, "Y")
     R = _as_2d(R, "R")
@@ -731,7 +745,7 @@ def combine(Y, R=None, S=None, A=None, *, spec, outputs=None, cutoff=None):
     )
 
 
-def _combine_regression(Y, R, A, *, spec, outputs):
+def _combine_regression(Y, R, A, *, spec, outputs, level=None):
     """Regression branch of :func:`combine`: weighted mean of per-descriptor values.
 
     ``Y`` holds predicted values in target units. ``value`` is ``(n_samples,)``. Row
@@ -744,13 +758,32 @@ def _combine_regression(Y, R, A, *, spec, outputs):
     W, base = build_weight_matrix(Y, R, A, spec)
     diagnostics = _diagnostics(Y, A, W, spec, "rho")
 
+    from .intervals import DEFAULT_LEVEL, ad_summary, interval_half_width
+
     values: dict[str, np.ndarray] = {}
+    value = (W * Y).sum(axis=1)
     if "value" in outputs:
-        values["value"] = (W * Y).sum(axis=1)
+        values["value"] = value
+    summary = ad_summary(A)
+    if {"lower", "upper"} & set(outputs):
+        if not spec.intervals:
+            raise ValueError(
+                "This checkpoint carries no prediction-interval model (fitted before "
+                "intervals existed); refit it to get `lower` and `upper`."
+            )
+        half = interval_half_width(
+            spec.intervals,
+            len(value),
+            summary,
+            DEFAULT_LEVEL if level is None else level,
+        )
+        values["lower"] = value - half
+        values["upper"] = value + half
     return CombineResult(
         values=values,
         weights=W,
         base=base,
         oof_percentiles=R,
         diagnostics=diagnostics,
+        ad_summary=summary,
     )

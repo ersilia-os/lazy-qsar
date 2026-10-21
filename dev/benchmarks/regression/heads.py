@@ -134,6 +134,10 @@ PRESETS = {
         ),
         # Classification's sqrt rule, for reference.
         "sqrt": _rf(max_features="sqrt", min_samples_leaf=1),
+        # Leaf-size floors: smaller trees (cheaper fits, far smaller ONNX graphs) and the
+        # usual regression-forest smoothing.
+        "p3_leaf3": _rf(max_features=1 / 3, min_samples_leaf=3),
+        "sqrt_leaf3": _rf(max_features="sqrt", min_samples_leaf=3),
     },
     "xgb": {
         # xgboost defaults (eta 0.3, depth 6): the baseline every preset must beat.
@@ -171,8 +175,11 @@ PRESETS = {
         "sklearn_default": _svr("rbf", C=1.0, epsilon=0.1),
         # Cherkassky & Ma (2004) analytic C and epsilon.
         "cherkassky_ma": _svr("rbf", cherkassky_ma=True),
-        # Wider margin penalty, for low-noise targets.
+        # Wider margin penalty, for low-noise targets. MoleculeACE's tuned SVR on ECFP
+        # (van Tilborg 2022) settles at C=10 on most of its 30 datasets.
+        "c3": _svr("rbf", C=3.0, epsilon=0.1),
         "c10": _svr("rbf", C=10.0, epsilon=0.1),
+        "c10_eps005": _svr("rbf", C=10.0, epsilon=0.05),
         "linear": _svr("linear"),
     },
     "lr": {
@@ -207,12 +214,20 @@ def _fit_predict(builder, Xtr, ztr, Xte, n, p, sparse):
         )
         rounds = booster.best_iteration + 1
         booster = xgb.train(params, xgb.DMatrix(Xtr, label=ztr), num_boost_round=rounds)
-        return booster.predict(xgb.DMatrix(Xte))
+        size = sum(t.count("leaf=") for t in booster.get_dump())
+        return booster.predict(xgb.DMatrix(Xte)), size
     if getattr(builder, "needs_data", False):
         est = builder(n, p, sparse, z_train=ztr, X_train=Xtr)
     else:
         est = builder(n, p, sparse)
-    return est.fit(Xtr, ztr).predict(Xte)
+    est.fit(Xtr, ztr)
+    if hasattr(est, "estimators_"):
+        size = int(sum(t.tree_.node_count for t in est.estimators_))
+    elif hasattr(est, "support_vectors_"):
+        size = int(est.support_vectors_.shape[0])
+    else:
+        size = None
+    return est.predict(Xte), size
 
 
 def run(label, heads, task_names, max_n):
@@ -240,13 +255,18 @@ def run(label, heads, task_names, max_n):
             n, p = Xtr.shape
             sparse = float((X == 0).mean()) > 0.85
             for head in heads:
+                if head == "svr" and n > 5000:
+                    continue  # the head selector never fits SVR above 5,000 rows
                 for preset, builder in PRESETS[head].items():
                     if (task, split, head, preset) in done:
                         continue
                     t0 = time.perf_counter()
                     try:
-                        pred = _fit_predict(builder, Xtr, ztr, Xte, n, p, sparse)
-                        record = {"test": regression_metrics(y[te], pred * sd + mu)}
+                        pred, size = _fit_predict(builder, Xtr, ztr, Xte, n, p, sparse)
+                        record = {
+                            "test": regression_metrics(y[te], pred * sd + mu),
+                            "model_size": size,
+                        }
                     except Exception as exc:  # noqa: BLE001 - record and move on
                         record = {"error": f"{type(exc).__name__}: {exc}"}
                     record.update(

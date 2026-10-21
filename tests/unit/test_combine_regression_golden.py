@@ -22,7 +22,11 @@ import pytest
 
 from _helpers.combine_cases import REGRESSION_SCENARIO_IDS, build_regression_case
 
-from lazyqsar.ensemble import REGRESSION_OUTPUT_NAMES, combine
+from lazyqsar.ensemble import combine
+
+# The frozen arithmetic is the point estimate; interval bounds need an interval model,
+# which these hand-built specs do not carry, and have their own tests.
+REGRESSION_OUTPUT_NAMES = ("value",)
 
 GOLDEN = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),

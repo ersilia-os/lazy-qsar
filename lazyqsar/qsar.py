@@ -42,6 +42,7 @@ from .qsar_base import (  # noqa: F401  (re-exported: callers have always looked
     _smiles_md5,
     _stack_channels,
     _unpacked,
+    as_smiles_list,
     invalid_smiles_indices,
     validate_smiles,
 )
@@ -483,6 +484,7 @@ class LazyClassifierQSAR(_ClassifierPredictMixin, _QSARBase):
             Parse-check the SMILES. Callers that have already validated a superset can
             skip the repeat work.
         """
+        smiles_list = as_smiles_list(smiles_list)
         # Clear any cached state from a previous fit.
         self._feature_cache.clear()
         self._ensemble_cache.clear()

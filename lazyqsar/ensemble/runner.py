@@ -246,6 +246,7 @@ def predict_tasks(
     scratch_dir: str | None = None,
     show_progress: bool = False,
     scan: dict | None = None,
+    interval_level: float | None = None,
 ):
     """Score every source over *smiles_list*, sharing one featurization pass.
 
@@ -407,6 +408,7 @@ def predict_tasks(
                 _stack(channels, "a"),
                 spec=plan.spec,
                 outputs=outputs,
+                level=interval_level,
             )
         )
     return results

@@ -88,6 +88,12 @@ def _linear_pipeline_onnx(model, last_step: str) -> bytes:
     from skl2onnx.common.data_types import FloatTensorType
     from sklearn.pipeline import Pipeline
 
+    from lazyqsar.base.preprocessing.reducer import (
+        _register_correlation_filter_onnx_converter,
+    )
+
+    # The Gather converter for VarianceThreshold (skl2onnx's own breaks on one column).
+    _register_correlation_filter_onnx_converter()
     steps = [("vt", model._vt)]
     if model._sfm is not None:
         steps.append(("sfm", model._sfm))

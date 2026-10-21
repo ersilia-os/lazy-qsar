@@ -78,7 +78,10 @@ def test_regression_outputs_are_validated_per_task():
 
 def test_default_outputs_follow_the_task():
     res = combine(_values(), spec=_spec())
-    assert set(res.values) == set(REGRESSION_OUTPUT_NAMES)
+    # Without an interval model the regression default is `value` alone; `lower` and
+    # `upper` join it when the spec carries one.
+    assert set(res.values) == {"value"}
+    assert {"value", "lower", "upper"} == set(REGRESSION_OUTPUT_NAMES)
     # A classification spec without a reference refuses `rank`, so asking for every
     # output by default must fail on exactly that -- proving the default is the full
     # classification set, not the regression one.

@@ -25,7 +25,9 @@ import os
 import numpy as np
 
 from .ensemble import EnsembleSpec, combine
+from .ensemble.intervals import DEFAULT_LEVEL, fit_intervals, interval_half_width
 from .qsar_base import (
+    as_smiles_list,
     _ArtifactWrapperBase,
     _EnsemblePredictMixin,
     _QSARBase,
@@ -85,7 +87,9 @@ def _rank_error_curve(rank, value, y):
     return rs[ki].tolist(), e_knots.tolist()
 
 
-def _regression_spec(names, active_indices, skill, proxy, curves, cutoffs):
+def _regression_spec(
+    names, active_indices, skill, proxy, curves, cutoffs, intervals=None
+):
     def sliced(seq):
         return tuple(seq[i] for i in active_indices) if seq else None
 
@@ -96,6 +100,7 @@ def _regression_spec(names, active_indices, skill, proxy, curves, cutoffs):
         rank_error_curves=sliced(curves),
         ad_hard_cutoffs=sliced(cutoffs),
         task="regression",
+        intervals=intervals,
     )
 
 
@@ -103,11 +108,33 @@ class _RegressionPredictMixin(_EnsemblePredictMixin):
     """``predict`` over :func:`combine`, cached per SMILES list, NaN for unparseable rows."""
 
     def _wanted_outputs(self, spec) -> tuple:
-        return ("value",)
+        # `lower`/`upper` at the default level ride along when the checkpoint can make
+        # them; other levels are read off the cached result by `predict_interval`.
+        return ("value", "lower", "upper") if spec.intervals else ("value",)
 
     def predict(self, smiles_list):
         """Predicted target values, shape (n_samples,), NaN for unparseable SMILES."""
         return self._combined(smiles_list).values["value"]
+
+    def predict_interval(self, smiles_list, level=DEFAULT_LEVEL):
+        """Prediction interval ``(lower, upper)``, each ``(n_samples,)``, at coverage *level*.
+
+        Split-conformal on the ensemble's out-of-fold residuals, binned by the
+        molecule's applicability-domain score (:mod:`lazyqsar.ensemble.intervals`):
+        about a fraction *level* of molecules like the training set fall inside it, and
+        molecules far from the training set get the wider intervals of the least typical
+        training molecules. NaN rows stay NaN.
+        """
+        result = self._combined(smiles_list)
+        spec = self._interval_spec()
+        if not spec:
+            raise ValueError(
+                "This model carries no prediction-interval model (fitted before "
+                "intervals existed); refit it to get intervals."
+            )
+        value = result.values["value"]
+        half = interval_half_width(spec, len(value), result.ad_summary, level)
+        return value - half, value + half
 
     def predict_value(self, smiles_list):
         """Alias of :meth:`predict`, named after the ``value`` output."""
@@ -122,6 +149,9 @@ class RegressorArtifactWrapper(_RegressionPredictMixin, _ArtifactWrapperBase):
     """
 
     task = "regression"
+
+    def _interval_spec(self):
+        return self.spec.intervals
 
 
 class LazyRegressorQSAR(_RegressionPredictMixin, _QSARBase):
@@ -188,6 +218,7 @@ class LazyRegressorQSAR(_RegressionPredictMixin, _QSARBase):
         validate : bool
             Parse-check the SMILES first.
         """
+        smiles_list = as_smiles_list(smiles_list)
         self._feature_cache.clear()
         self._ensemble_cache.clear()
 
@@ -232,10 +263,19 @@ class LazyRegressorQSAR(_RegressionPredictMixin, _QSARBase):
             self.proxy_rhos_,
             self._rank_error_curves_,
             self.ad_hard_cutoffs_,
+            getattr(self, "intervals_", None),
         )
 
+    def _interval_spec(self):
+        return getattr(self, "intervals_", None)
+
     def _build_oof_metrics(self, oof_channels, train_ad, y):
-        """Pool every active descriptor's OOF predictions exactly as a query is pooled."""
+        """Pool every active descriptor's OOF predictions exactly as a query is pooled.
+
+        Sets ``intervals_``, the conformal interval model, from the pooled out-of-fold
+        residuals binned by the training rows' AD score, and returns the OOF metrics.
+        """
+        self.intervals_ = None
         active = self._active_indices()
         cols = [oof_channels[i] for i in active]
         if any(c is None for c in cols):
@@ -243,9 +283,9 @@ class LazyRegressorQSAR(_RegressionPredictMixin, _QSARBase):
         Y = np.column_stack([c[0] for c in cols])
         R = np.column_stack([c[1] for c in cols])
         A = np.column_stack([train_ad[i] for i in active])
-        pooled = combine(
-            Y, R, None, A, spec=self._spec(active), outputs=("value",)
-        ).values["value"]
+        result = combine(Y, R, None, A, spec=self._spec(active), outputs=("value",))
+        pooled = result.values["value"]
+        self.intervals_ = fit_intervals(y, pooled, result.ad_summary)
         return regression_metrics(y, pooled)
 
     # ------------------------------------------------------------------
@@ -308,6 +348,7 @@ class LazyRegressorQSAR(_RegressionPredictMixin, _QSARBase):
                 if curve is not None
             },
             "oof_metrics": getattr(self, "oof_metrics_", None),
+            "intervals": getattr(self, "intervals_", None),
         }
 
     def save_raw(self, model_dir: str):
