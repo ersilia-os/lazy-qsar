@@ -9,7 +9,7 @@ then a four-way portfolio comparison — no grid search, no manual tuning.
 |-------|-------------|
 | `BaseSVCClassifier` | Binary classifier with auto-selected SVC parameters |
 | `BaseSVCArtifact` | Inference-only loader (ONNX) |
-| `BaseSVR` | Regressor (SVR / LinearSVR); see [Regressor](#regressor) |
+| `BaseSVR` | Regressor (RBF SVR, one preset); see [Regressor](#regressor) |
 | `BaseSVRArtifact` | Inference-only loader for `BaseSVR` (ONNX) |
 
 ## Training procedure
@@ -85,19 +85,18 @@ optional `cutoff`; without one it uses the head's learned decision cutoff.
 
 ## Regressor
 
-`BaseSVR` (`regressor.py`) standardises y before fitting, so `C` and `epsilon` (0.1, in
-standard-deviation units) mean the same on every target scale; predictions and the
-artifact map back to the original units with the stored `y_mean` / `y_std`.
+`BaseSVR` (`regressor.py`) standardises y before fitting, so `C` and `epsilon` mean the
+same on every target scale; predictions and the artifact map back to the original units
+with the stored `y_mean` / `y_std`.
 
-- **Presets**: `heuristic` (the SVC kernel and `C` rules above, without class weights),
-  `default` (sklearn `SVR`: RBF, `C=1`, `gamma="scale"`), and `linear` (`LinearSVR`,
-  `C` by n). `balanced_rbf` has no regression meaning and is not used.
-- **Portfolio**: a 90/10 holdout stratified on quantile bins of y, scored by Spearman ρ,
-  with the same `max(0.005, coef/√n)` gain threshold.
+- **One preset**, chosen on LazyQSAR's regression benchmark (see
+  [docs/regression.md](../../../docs/regression.md)): RBF kernel, `C=10`,
+  `epsilon=0.05`, `gamma="scale"`. Within 0.3% of the per-task best RMSE on average;
+  sklearn's defaults (`C=1`) were 3.8% worse and a `LinearSVR` 44% worse. No preset race.
 - **Size guard**: as for the SVC -- halve `C` up to three times, then fall back to
-  `LinearSVR`.
-- **Out of fold**: quantile-stratified k-fold with the winning preset gives `oof_preds_`,
-  `oof_rho_`, `train_rho_` and the ECDF behind `predict_rank`.
+  `LinearSVR` (the only place a linear SVR is used).
+- **Out of fold**: quantile-stratified k-fold with the preset (folds fitted concurrently)
+  gives `oof_preds_`, `oof_rho_`, `train_rho_` and the ECDF behind `predict_rank`.
 
 `save` writes `svr.onnx` (standardised output) and `svr.json` (task, preset, params,
 `y_mean`, `y_std`, ranker knots).

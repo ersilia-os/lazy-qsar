@@ -7,7 +7,7 @@ Automatic XGBoost hyperparameter selection based on dataset profiling and portfo
 | Class | Description |
 |-------|-------------|
 | `BaseXGBClassifier` | Binary classifier with auto-selected XGBoost parameters |
-| `BaseXGBRegressor` | Regressor with auto-selected XGBoost parameters |
+| `BaseXGBRegressor` | Regressor with one benchmark-selected preset |
 
 ## Training procedure
 
@@ -22,7 +22,6 @@ The following statistics are computed from X and y:
 | `binary_feature_fraction` | Adjust max_depth for one-hot style inputs |
 | `feature_signal_strength`, `feature_signal_p90` | Modulate regularization strength (±15%) |
 | `imbalance_ratio` | Set `scale_pos_weight`, `max_delta_step`, eval metric |
-| `y_skewness`, `y_all_positive` | Select regression objective (squarederror / tweedie / pseudohubererror) |
 
 ### Phase 1 — heuristic parameter selection
 
@@ -69,12 +68,16 @@ A non-default preset wins only if its Stage-1 score exceeds the default by a noi
 
 The winning preset is retrained on 100% of the data for `max(best_iteration, early_stopping_rounds, 100)` rounds (no early stopping).
 
-### Regressor: out-of-fold predictions
+### Regressor
 
-`BaseXGBRegressor(oof=True)` (default) runs the portfolio once, then refits the winning
-preset on quantile-stratified folds for the same round count, giving `oof_preds_`,
-`oof_rho_` / `train_rho_` (Spearman ρ) and the ECDF ranker behind `predict_rank`. There is no
-calibration or decision cutoff for regression.
+`BaseXGBRegressor` does not race presets. It fits Probst, Boulesteix & Bischl's (2019)
+tuned defaults (η 0.052, depth 11, min_child_weight 2, subsample 0.87, colsample_bytree
+0.71, colsample_bylevel 0.64; η 0.08 and depth 8 above 2,000 rows) with squared error,
+the round count set by early stopping on a quantile-stratified held-out split (fixed
+rounds below 50 rows). Chosen on LazyQSAR's regression benchmark; see
+[docs/regression.md](../../../docs/regression.md). Out-of-fold predictions come from
+quantile-stratified folds trained concurrently at the same round count, giving
+`oof_preds_`, `oof_rho_` / `train_rho_` and the ECDF behind `predict_rank`.
 
 ## Outputs
 

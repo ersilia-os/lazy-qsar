@@ -7,7 +7,7 @@ Automatic linear model selection based on dataset shape — solver, regularizati
 | Class | Description |
 |-------|-------------|
 | `BaseLinearClassifier` | Binary logistic regression with embedded L1/ElasticNet feature selection |
-| `BaseLinearRegressor` | Linear regression with embedded feature selection and sample weighting |
+| `BaseLinearRegressor` | Ridge / ElasticNet regression with embedded feature selection |
 | `BaseLinearArtifact` | Inference-only loader (ONNX or joblib) |
 
 ## Regime detection
@@ -61,16 +61,15 @@ that matrix size.
 
 | Regime | Solver | Feature selection |
 |--------|--------|------------------|
-| `standard` | `RidgeCV` (L2) | None beyond VarianceThreshold |
-| `high_dim` | `ElasticNetCV` | `SelectFromModel(Lasso)` pre-filter, max_features = min(p, 2n) |
+| `standard` | `RidgeCV` (L2), leave-one-out over α = n·logspace(−4, 2, 13) | None beyond VarianceThreshold |
+| `high_dim` | `ElasticNetCV` over its own alpha path | `SelectKBest(f_regression)` pre-filter, k = min(p, 2n), refit identically in every fold |
 | `large` | `SGDRegressor` (ElasticNet, alpha tuned on subsample) | None beyond VarianceThreshold |
 
 ### Hyperparameter heuristics
 
 | Parameter | Rule |
 |-----------|------|
-| CV scoring | `neg_mean_absolute_error` when \|skewness(y)\| > 1; else `r2` |
-| Sample weights | Inverse-frequency over quantile bins of y (analogous to `class_weight="balanced"`) |
+| Selection metric | squared error throughout (RMSE), every sample weighted equally |
 | l1_ratio | Same p/n heuristic as classifier |
 | CV folds | n < 200 → min(n//10, 10); n < 1K → 5; else 3 |
 
