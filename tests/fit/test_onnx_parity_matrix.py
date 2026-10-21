@@ -153,7 +153,12 @@ def test_isotonic_calibration_round_trips(head, monkeypatch, tmp_path):
         "svc": "lazyqsar.base.svc.model",
     }[head]
     mod = importlib.import_module(module)
-    monkeypatch.setattr(mod, "_CALIBRATION_ISOTONIC_MIN_MINORITY", 10)
+    # One threshold for every head now, in the shared head base.
+    monkeypatch.setattr(
+        importlib.import_module("lazyqsar.base._head"),
+        "CALIBRATION_ISOTONIC_MIN_MINORITY",
+        10,
+    )
     cls = {
         "xgb": mod.__dict__.get("BaseXGBClassifier"),
         "linear": mod.__dict__.get("BaseLinearClassifier"),

@@ -58,9 +58,7 @@ import numpy as np
 # ---------------------------------------------------------------------------
 try:
     from sklearn.base import BaseEstimator, ClassifierMixin
-    from sklearn.isotonic import IsotonicRegression
-    from sklearn.linear_model import LogisticRegression
-    from sklearn.metrics import balanced_accuracy_score, roc_auc_score
+    from sklearn.metrics import roc_auc_score
     from sklearn.model_selection import train_test_split
     from sklearn.utils.validation import check_array, check_is_fitted
 
@@ -73,8 +71,7 @@ except ImportError:
     class ClassifierMixin:  # type: ignore[no-redef]
         pass
 
-    IsotonicRegression = LogisticRegression = None  # type: ignore[assignment,misc]
-    balanced_accuracy_score = roc_auc_score = None  # type: ignore[assignment]
+    roc_auc_score = None  # type: ignore[assignment]
     train_test_split = check_array = check_is_fitted = None  # type: ignore[assignment]
     _FIT_DEPS_AVAILABLE = False
 
@@ -85,9 +82,23 @@ from .presets import (
     svc_linear_params,
     svc_balanced_rbf_params,
 )
-from lazyqsar.base._onnx_binding import OnnxBoundHead
+from ._common import (
+    _MAX_COST_MULTIPLIER,
+    _ONNX_MAX_BYTES,
+    _RANDOM_STATE,
+    _VAL_FRACTION,
+    _VAL_MIN_ROWS,
+    _SVMHead,
+    svm_cost as _svc_cost,
+)
+from lazyqsar.base._head import (
+    DEFAULT_DECISION_CUTOFF as _DEFAULT_DECISION_CUTOFF,
+    ClassifierHead,
+    require_fit_deps,
+)
+from lazyqsar.base._race import min_gain_threshold
 from lazyqsar.utils.logging import logger
-from lazyqsar.utils.onnx_check import check_decision, probe_rows
+from lazyqsar.utils.onnx_check import probe_rows
 from lazyqsar.utils.ranking import binarize, prepare_knots, rank_from_knots
 from lazyqsar.utils.splits import make_stratified_oof_splits
 
@@ -96,30 +107,13 @@ from lazyqsar.utils.splits import make_stratified_oof_splits
 # Constants
 # ---------------------------------------------------------------------------
 
-_VAL_FRACTION = 0.1
-_VAL_MIN_ROWS = 200
 _VAL_MIN_MINORITY = 15
 
-# Minimum AUC gain over default for a non-default preset to win portfolio
-_PORTFOLIO_MIN_GAIN = 0.005
-
-# Skip preset if cost > this multiple of the default preset cost
-_MAX_COST_MULTIPLIER = 20
-
-# ONNX size budget in bytes (5 MB).  Only applies to kernel SVC; LinearSVC
-# is always negligibly small (O(n_features) weights only).
-_ONNX_MAX_BYTES = 5_000_000
-_ONNX_MAX_RETRIES = 3
-
-_CALIBRATION_ISOTONIC_MIN_MINORITY = 500
-_DEFAULT_DECISION_CUTOFF = 0.5
 # Deterministic probe used to record the true sign of decision_function at save time,
 # so the artifact can identify which ONNX score column to read. See
 # BaseSVCArtifact._resolve_score_column.
 _SCORE_CANARY_SEED = 20240917
 _SCORE_CANARY_ROWS = 8
-_RANKER_MAX_KNOTS = 10_000
-_RANDOM_STATE = 42
 
 
 # ---------------------------------------------------------------------------
@@ -179,28 +173,10 @@ def _decision_scores(svc, X: np.ndarray) -> np.ndarray:
     return np.asarray(scores, dtype=np.float64).ravel()
 
 
-def _svc_cost(params: dict, n_tr: int, n_features: int) -> float:
-    """
-    Estimate relative training cost for cost-budget filtering.
-
-    LinearSVC:  O(n * p)   → n_tr * n_features
-    Kernel SVC: O(n^2 * p) → n_tr^2 * n_features (approximation)
-    """
-    if params.get("use_linear", False):
-        return float(n_tr * n_features)
-    return float(n_tr**2 * n_features)
-
-
 def _min_gain_threshold(profile: DatasetProfile, y_train: np.ndarray) -> float:
-    """
-    Adaptive minimum-gain threshold for portfolio selection (same formula as XGB).
-
-    Formula: max(_PORTFOLIO_MIN_GAIN, coef / sqrt(n_effective))
-      classification: n_effective = minority count in training set
-    """
+    """AUC margin a challenger preset must win by; noise scales with the minority count."""
     n_eff = int(min(np.sum(y_train == 0), np.sum(y_train == 1)))
-    coef = 0.3 if len(y_train) < 2_000 else 0.1
-    return max(_PORTFOLIO_MIN_GAIN, coef / max(1, n_eff) ** 0.5)
+    return min_gain_threshold(n_eff, len(y_train))
 
 
 def _validation_split(
@@ -230,46 +206,6 @@ def _validation_split(
         return X_tr, X_val, y_tr, y_val, True
     except ValueError:
         return X, X, y, y, False
-
-
-def _learn_balanced_accuracy_cutoff(
-    y_true: np.ndarray, p1: np.ndarray
-) -> tuple[float, str]:
-    """Learn a decision threshold that maximises balanced accuracy on OOF scores."""
-    y_arr = np.asarray(y_true, dtype=int)
-    p_arr = np.asarray(p1, dtype=float)
-    mask = np.isfinite(p_arr)
-    if mask.sum() == 0 or len(np.unique(y_arr[mask])) < 2:
-        return _DEFAULT_DECISION_CUTOFF, "default_0.5"
-    probs = p_arr[mask]
-    labels = y_arr[mask]
-    unique = np.unique(probs)
-    if unique.size == 0:
-        return _DEFAULT_DECISION_CUTOFF, "default_0.5"
-    candidates = np.unique(
-        np.concatenate(
-            [
-                unique,
-                np.array(
-                    [
-                        np.nextafter(unique[0], -np.inf),
-                        _DEFAULT_DECISION_CUTOFF,
-                        np.nextafter(unique[-1], np.inf),
-                    ],
-                    dtype=float,
-                ),
-            ]
-        )
-    )
-    best_threshold = _DEFAULT_DECISION_CUTOFF
-    best_key = None
-    for thr in candidates:
-        score = balanced_accuracy_score(labels, (probs >= thr).astype(int))
-        key = (-float(score), abs(float(thr) - _DEFAULT_DECISION_CUTOFF), float(thr))
-        if best_key is None or key < best_key:
-            best_key = key
-            best_threshold = float(thr)
-    return best_threshold, "oof_balanced_accuracy"
 
 
 from lazyqsar.artifacts._common import (  # noqa: E402
@@ -407,20 +343,6 @@ def _portfolio_select_svc(
     return best_name, best_params, scores
 
 
-def _onnx_size_bytes(svc, n_features: int) -> int:
-    """Estimate ONNX size for kernel SVC (support vectors × float32)."""
-    if not hasattr(svc, "support_vectors_"):
-        return 0  # LinearSVC: negligible size
-    n_sv = svc.support_vectors_.shape[0]
-    return n_sv * n_features * 4
-
-
-def _to_onnx(svc, path: str, n_features: int) -> None:
-    """Export SVC or LinearSVC to ONNX at *path*; see :func:`_svc_onnx_bytes`."""
-    with open(path, "wb") as f:
-        f.write(_svc_onnx_bytes(svc, n_features))
-
-
 def _svc_onnx_bytes(svc, n_features: int) -> bytes:
     """
     Export SVC or LinearSVC to ONNX via skl2onnx.
@@ -477,7 +399,7 @@ def _svc_onnx_bytes(svc, n_features: int) -> bytes:
 # ---------------------------------------------------------------------------
 
 
-class BaseSVCClassifier(OnnxBoundHead, BaseEstimator, ClassifierMixin):
+class BaseSVCClassifier(_SVMHead, ClassifierHead, BaseEstimator, ClassifierMixin):
     """
     Binary classifier with automatically selected SVC hyperparameters.
 
@@ -511,6 +433,9 @@ class BaseSVCClassifier(OnnxBoundHead, BaseEstimator, ClassifierMixin):
     timing_ : dict
     """
 
+    _onnx_kind = "decision"
+    _fitted_attr = "svc_"
+
     def __init__(
         self,
         *,
@@ -528,31 +453,36 @@ class BaseSVCClassifier(OnnxBoundHead, BaseEstimator, ClassifierMixin):
 
     def fit(self, X, y):
         """Fit the classifier (full calibration workflow when calibrated=True)."""
-        if not _FIT_DEPS_AVAILABLE:
-            raise ImportError(
-                "Training requires scikit-learn. Install with: pip install 'lazyqsar[fit]'"
-            )
-        if self.calibrated:
-            y_arr = np.asarray(y, dtype=int)
-            if np.bincount(y_arr).min() >= 2:
-                return self.calibrate(X, y)
+        require_fit_deps(_FIT_DEPS_AVAILABLE)
+        if self._wants_calibration(y):
+            return self.calibrate(X, y)
         return self._fit_raw(X, y)
 
     # ------------------------------------------------------------------
     # Internal raw training
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _make(params: dict):
+        return _make_svc(params)
+
+    def _linear_fallback_params(self, profile) -> dict:
+        return {
+            "use_linear": True,
+            "C": min(self.params_["C"], 10.0),
+            "class_weight": self.params_.get("class_weight", "balanced"),
+            "max_iter": self.params_.get("max_iter", 5_000),
+            "tol": self.params_.get("tol", 1e-3),
+            "random_state": self.random_state,
+        }
+
     def _fit_raw(self, X, y) -> "BaseSVCClassifier":
-        if not _FIT_DEPS_AVAILABLE:
-            raise ImportError(
-                "Training requires scikit-learn. Install with: pip install 'lazyqsar[fit]'"
-            )
+        require_fit_deps(_FIT_DEPS_AVAILABLE)
         X = check_array(X, dtype="numeric", accept_sparse=False)
         y = np.asarray(y, dtype=int).ravel()
         self._onnx_probe_ = probe_rows(X)
         profile = _inspect(X, y, task="classification")
         self.profile_ = profile
-        n_features = profile.n_features
         self.timing_ = {}
 
         logger.rule("BaseSVCClassifier")
@@ -576,64 +506,17 @@ class BaseSVCClassifier(OnnxBoundHead, BaseEstimator, ClassifierMixin):
         self.params_ = dict(best_params)
         self._use_linear_ = bool(best_params.get("use_linear", False))
 
-        # Phase 2: retrain on full data
+        # Phase 2: retrain on full data (with the ONNX size guard for kernel SVC).
         _t_p2 = _time.perf_counter()
         logger.rule("Phase 2 — full retraining")
         logger.info(
             f"preset={best_name} | n={profile.n_samples} | "
             f"{'linear' if self._use_linear_ else 'kernel'} | C={best_params['C']}"
         )
-        svc = _make_svc(self.params_)
-        svc.fit(X, y)
-        self.svc_ = svc
+        self._fit_final(X, y, profile)
         self.timing_["phase2_refit"] = _time.perf_counter() - _t_p2
 
-        # ONNX size guard (kernel SVC only).
-        # Halve C up to _ONNX_MAX_RETRIES times; if still over budget, switch to
-        # LinearSVC which is O(n_features) and always fits within any budget.
-        if not self._use_linear_:
-            for _retry in range(_ONNX_MAX_RETRIES):
-                size = _onnx_size_bytes(self.svc_, n_features)
-                if size <= _ONNX_MAX_BYTES:
-                    break
-                new_C = self.params_["C"] / 2.0
-                logger.warning(
-                    f"ONNX size guard: {size / 1e6:.1f} MB > "
-                    f"{_ONNX_MAX_BYTES / 1e6:.0f} MB — "
-                    f"halving C: {self.params_['C']:.4g} → {new_C:.4g}"
-                )
-                self.params_["C"] = new_C
-                new_svc = _make_svc(self.params_)
-                new_svc.fit(X, y)
-                self.svc_ = new_svc
-            else:
-                size = _onnx_size_bytes(self.svc_, n_features)
-                if size > _ONNX_MAX_BYTES:
-                    logger.warning(
-                        f"ONNX size guard exhausted after {_ONNX_MAX_RETRIES} retries "
-                        f"({size / 1e6:.1f} MB > {_ONNX_MAX_BYTES / 1e6:.0f} MB). "
-                        f"Switching to LinearSVC."
-                    )
-                    linear_params = {
-                        "use_linear": True,
-                        "C": min(self.params_["C"], 10.0),
-                        "class_weight": self.params_.get("class_weight", "balanced"),
-                        "max_iter": self.params_.get("max_iter", 5_000),
-                        "tol": self.params_.get("tol", 1e-3),
-                        "random_state": self.random_state,
-                    }
-                    linear_svc = _make_svc(linear_params)
-                    linear_svc.fit(X, y)
-                    self.svc_ = linear_svc
-                    self.params_ = linear_params
-                    self._use_linear_ = True
-                    self.preset_name_ = self.preset_name_ + "+linear_guard"
-
-        self.decision_cutoff_raw_ = _DEFAULT_DECISION_CUTOFF
-        self.decision_cutoff_raw_source_ = "default_0.5"
-        self.decision_cutoff_proba_ = _DEFAULT_DECISION_CUTOFF
-        self.decision_cutoff_rank_ = _DEFAULT_DECISION_CUTOFF
-        self.decision_cutoff_logit_ = 0.0
+        self._set_default_cutoffs()
         self.classes_ = np.array([0, 1])
         self._bind_onnx()
         logger.rule("Done")
@@ -661,108 +544,34 @@ class BaseSVCClassifier(OnnxBoundHead, BaseEstimator, ClassifierMixin):
         the winning params without re-running portfolio comparison per fold.
         The calibrator is fitted on sigmoid(decision_function) OOF scores.
         """
-        if not _FIT_DEPS_AVAILABLE:
-            raise ImportError(
-                "Training requires scikit-learn. Install with: pip install 'lazyqsar[fit]'"
-            )
+        require_fit_deps(_FIT_DEPS_AVAILABLE)
         X = check_array(X, dtype="numeric", accept_sparse=False)
         y = np.asarray(y, dtype=int).ravel()
-        n = len(y)
         k, fold_splits = make_stratified_oof_splits(
             y, n_splits=n_splits, random_state=random_state
         )
-
         logger.info(
-            f"BaseSVCClassifier.calibrate: full fit on n={n} (portfolio runs once)"
+            f"BaseSVCClassifier.calibrate: full fit on n={len(y)} (portfolio runs once)"
         )
         self._fit_raw(X, y)  # sets self.params_, self.svc_, self.preset_name_
-
-        # k-fold OOF: collect raw decision function scores
-        oof_raw = np.full(n, np.nan, dtype=float)
         logger.info(
             f"calibrate: {k}-fold OOF  preset={self.preset_name_}  "
             f"{'linear' if self._use_linear_ else 'kernel'}"
         )
-        fold_times = []
-        for fold_idx, (train_idx, val_idx) in enumerate(fold_splits):
-            logger.debug(
-                f"  Fold {fold_idx + 1}/{k}: train={len(train_idx)}  val={len(val_idx)}"
-            )
-            _t_fold = _time.perf_counter()
+
+        def fit_predict(train_idx, val_idx):
             fold_svc = _make_svc(self.params_)
             fold_svc.fit(X[train_idx], y[train_idx])
-            oof_raw[val_idx] = _decision_scores(fold_svc, X[val_idx])
-            fold_times.append(_time.perf_counter() - _t_fold)
+            return _decision_scores(fold_svc, X[val_idx])
 
-        self.timing_["calibration_folds"] = fold_times
-        self.timing_["calibration_total"] = sum(fold_times)
-
-        # Convert decision function scores to [0,1] for calibrator fitting
-        oof_sigmoid = _sigmoid(oof_raw)
-
-        # Fit calibrator
-        minority_count = int(np.bincount(y).min())
-        if minority_count >= _CALIBRATION_ISOTONIC_MIN_MINORITY:
-            cal = IsotonicRegression(out_of_bounds="clip")
-            self.oof_probas_ = cal.fit_transform(oof_sigmoid, y)
-            self.calibrator_method_ = "isotonic"
-        else:
-            cal = LogisticRegression(C=1.0, solver="lbfgs")
-            cal.fit(oof_sigmoid.reshape(-1, 1), y)
-            self.oof_probas_ = cal.predict_proba(oof_sigmoid.reshape(-1, 1))[:, 1]
-            self.calibrator_method_ = "platt"
-        self.calibrator_ = cal
-        self.decision_cutoff_raw_, self.decision_cutoff_raw_source_ = (
-            _learn_balanced_accuracy_cutoff(y, oof_sigmoid)
-        )
-        if self.calibrator_method_ == "isotonic":
-            self.decision_cutoff_proba_ = float(
-                np.clip(
-                    self.calibrator_.predict(np.array([self.decision_cutoff_raw_]))[0],
-                    0.0,
-                    1.0,
-                )
-            )
-        else:
-            self.decision_cutoff_proba_ = float(
-                self.calibrator_.predict_proba(np.array([[self.decision_cutoff_raw_]]))[
-                    :, 1
-                ][0]
-            )
-        self.oof_y_ = y.copy()
-        # Uncalibrated [0,1] out-of-fold scores (sigmoid of the SVC decision score = the calibrator's
-        # input), kept alongside the calibrated oof_probas_ so downstream can report the raw score too.
-        self.oof_raw_ = oof_sigmoid.copy()
-
-        # Ranker knots (ECDF for predict_rank)
-        sorted_scores = np.sort(oof_sigmoid)
-        n_r = len(sorted_scores)
-        if n_r > _RANKER_MAX_KNOTS:
-            idx = np.round(np.linspace(0, n_r - 1, _RANKER_MAX_KNOTS)).astype(int)
-            self._ranker_knots = sorted_scores[idx]
-        else:
-            self._ranker_knots = sorted_scores
-        self._ranker_prepared_ = prepare_knots(self._ranker_knots)
-        self.decision_cutoff_rank_ = float(
-            rank_from_knots(self.decision_cutoff_raw_, prepared=self._ranker_prepared_)
-        )
-        _p = np.clip(self.decision_cutoff_proba_, 1e-7, 1.0 - 1e-7)
-        self.decision_cutoff_logit_ = float(np.log(_p / (1.0 - _p)))
-        logger.success(
-            f"Calibrator fitted ({self.calibrator_method_}, "
-            f"minority={minority_count}) on {k}-fold OOF."
-        )
-        logger.info(
-            f"cutoff: {self.decision_cutoff_raw_:.4f} | "
-            f"source={self.decision_cutoff_raw_source_}"
-        )
+        # The calibrator, cutoffs and ranks live on sigmoid(decision_function).
+        oof_raw = self._oof_loop(fold_splits, fit_predict)
+        self._finish_calibration(y, _sigmoid(oof_raw))
         return self
 
     # ------------------------------------------------------------------
     # Prediction
     # ------------------------------------------------------------------
-
-    _onnx_kind = "decision"
 
     def _raw_native(self, X) -> np.ndarray:
         """``decision_function`` from the scikit-learn estimator itself."""
@@ -771,75 +580,16 @@ class BaseSVCClassifier(OnnxBoundHead, BaseEstimator, ClassifierMixin):
     def _onnx_bytes(self) -> bytes:
         return _svc_onnx_bytes(self.svc_, self.profile_.n_features)
 
-    def _raw_sigmoid(self, X: np.ndarray) -> np.ndarray:
-        """Return shape-(n,) sigmoid(decision_function) — pre-calibration [0,1]."""
-        check_is_fitted(self, "svc_")
+    def _check_X(self, X):
+        return check_array(X, dtype="numeric", accept_sparse=False)
+
+    def _score1(self, X) -> np.ndarray:
+        """sigmoid(decision_function): the pre-calibration [0, 1] score."""
         return _sigmoid(self._raw(X))
-
-    def predict_proba(self, X) -> np.ndarray:
-        """Return calibrated class probabilities, shape (n_samples, 2)."""
-        check_is_fitted(self, "svc_")
-        X = check_array(X, dtype="numeric", accept_sparse=False)
-        p_raw = self._raw_sigmoid(X)
-        if hasattr(self, "calibrator_"):
-            if self.calibrator_method_ == "isotonic":
-                p1 = np.clip(self.calibrator_.predict(p_raw), 0, 1)
-            else:
-                p1 = self.calibrator_.predict_proba(p_raw.reshape(-1, 1))[:, 1]
-        else:
-            p1 = p_raw
-        return np.column_stack([1 - p1, p1])
-
-    def predict_score(self, X) -> np.ndarray:
-        """Return raw (pre-calibration) sigmoid scores, shape (n_samples, 2)."""
-        check_is_fitted(self, "svc_")
-        X = check_array(X, dtype="numeric", accept_sparse=False)
-        p1 = self._raw_sigmoid(X)
-        return np.column_stack([1 - p1, p1])
-
-    def predict_logit(self, X) -> np.ndarray:
-        """Return logit of calibrated probabilities, shape (n_samples, 2)."""
-        p = np.clip(self.predict_proba(X)[:, 1], 1e-7, 1.0 - 1e-7)
-        logit_1 = np.log(p / (1.0 - p))
-        return np.column_stack([-logit_1, logit_1])
-
-    def predict_rank(self, X) -> np.ndarray:
-        """Map sigmoid scores to [0,1] ranks via OOF ECDF, shape (n_samples, 2)."""
-        check_is_fitted(self, "_ranker_knots")
-        scores = self.predict_score(X)[:, 1]
-        prepared = getattr(self, "_ranker_prepared_", None)
-        if prepared is None:
-            prepared = self._ranker_prepared_ = prepare_knots(self._ranker_knots)
-        rank_1 = rank_from_knots(scores, prepared=prepared)
-        return np.column_stack([1 - rank_1, rank_1])
-
-    def predict(self, X, cutoff: float | None = None) -> np.ndarray:
-        """Return binary 0/1 predictions."""
-        threshold = self.decision_cutoff_raw_ if cutoff is None else float(cutoff)
-        return binarize(self.predict_score(X)[:, 1], threshold)
 
     # ------------------------------------------------------------------
     # Export
     # ------------------------------------------------------------------
-
-    def to_onnx(self, path: str) -> None:
-        """
-        Export the trained model to ONNX.
-
-        Output layout (binary classification):
-          output[0]: int64 labels, shape (n,)
-          output[1]: float32 scores, shape (n, 2) — [decision, -decision], in an
-                     order that depends on the estimator type (see _to_onnx)
-
-        At inference, BaseSVCArtifact resolves which column is the decision
-        function, applies sigmoid to it to obtain [0,1] pre-calibration scores,
-        then applies the stored calibrator.
-        """
-        check_is_fitted(self, "svc_")
-        self._write_onnx(path)
-        probe = getattr(self, "_onnx_probe_", None)
-        if probe is not None:
-            check_decision(path, probe, self._raw_native(probe), "BaseSVCClassifier")
 
     def save(self, directory: str) -> None:
         """
@@ -854,7 +604,6 @@ class BaseSVCClassifier(OnnxBoundHead, BaseEstimator, ClassifierMixin):
         check_is_fitted(self, "svc_")
         os.makedirs(directory, exist_ok=True)
         self.to_onnx(os.path.join(directory, "svc.onnx"))
-        fmt = "onnx"
 
         profile_dict = (
             dataclasses.asdict(self.profile_)
@@ -863,7 +612,7 @@ class BaseSVCClassifier(OnnxBoundHead, BaseEstimator, ClassifierMixin):
         )
         metadata = {
             "task": "classification",
-            "format": fmt,
+            "format": "onnx",
             "preset_name": self.preset_name_,
             "use_linear": self._use_linear_,
             "n_features_in": self.profile_.n_features,
@@ -871,37 +620,8 @@ class BaseSVCClassifier(OnnxBoundHead, BaseEstimator, ClassifierMixin):
             "params": self.params_,
             "profile": profile_dict,
             "portfolio_scores": self.portfolio_scores_,
-            "decision_cutoff_raw": float(
-                getattr(self, "decision_cutoff_raw_", _DEFAULT_DECISION_CUTOFF)
-            ),
-            "decision_cutoff_raw_source": getattr(
-                self, "decision_cutoff_raw_source_", "default_0.5"
-            ),
-            "decision_cutoff_proba": float(
-                getattr(self, "decision_cutoff_proba_", _DEFAULT_DECISION_CUTOFF)
-            ),
-            "decision_cutoff_rank": float(
-                getattr(self, "decision_cutoff_rank_", _DEFAULT_DECISION_CUTOFF)
-            ),
-            "decision_cutoff_logit": float(
-                getattr(self, "decision_cutoff_logit_", 0.0)
-            ),
         }
-        if hasattr(self, "calibrator_"):
-            if self.calibrator_method_ == "isotonic":
-                metadata["calibrator"] = {
-                    "method": "isotonic",
-                    "X_thresholds": self.calibrator_.X_thresholds_.tolist(),
-                    "y_thresholds": self.calibrator_.y_thresholds_.tolist(),
-                }
-            else:  # platt
-                metadata["calibrator"] = {
-                    "method": "platt",
-                    "coef": float(self.calibrator_.coef_[0][0]),
-                    "intercept": float(self.calibrator_.intercept_[0]),
-                }
-        if hasattr(self, "_ranker_knots"):
-            metadata["ranker"] = {"knots": self._ranker_knots.tolist()}
+        metadata.update(self._task_metadata())
 
         # skl2onnx emits the binary-SVC score output as two mutually-negated columns and
         # their order is not contractual across versions. Reading the wrong one silently

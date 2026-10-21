@@ -45,7 +45,6 @@ import numpy as np
 try:
     from joblib import Parallel, delayed
     from sklearn.base import BaseEstimator, ClassifierMixin, RegressorMixin
-    from sklearn.metrics import balanced_accuracy_score
     from sklearn.model_selection import train_test_split
     from sklearn.utils.validation import check_is_fitted
     import xgboost as xgb
@@ -63,7 +62,7 @@ except ImportError:
     class RegressorMixin:  # type: ignore[no-redef]
         pass
 
-    balanced_accuracy_score = train_test_split = check_is_fitted = None  # type: ignore[assignment]
+    train_test_split = check_is_fitted = None  # type: ignore[assignment]
     xgb = None  # type: ignore[assignment]
     _FIT_DEPS_AVAILABLE = False
 
@@ -75,18 +74,12 @@ from .presets import (
     autogluon_params,
     MAXIMIZE_METRICS,
 )
-from lazyqsar.base._onnx_binding import OnnxBoundHead
+from lazyqsar.base._head import ClassifierHead, RegressorHead, require_fit_deps
+from lazyqsar.base._race import min_gain_threshold
 from lazyqsar.utils.logging import logger
-from lazyqsar.utils.onnx_check import check_probability, check_values, probe_rows
+from lazyqsar.utils.onnx_check import probe_rows
 from lazyqsar.utils.metrics import spearman_score
-from lazyqsar.utils.ranking import (
-    binarize,
-    prepare_knots,
-    rank_from_knots,
-    subsample_knots,
-)
 from lazyqsar.utils.splits import (
-    auto_stratified_oof_n_splits,
     make_quantile_oof_splits,
     make_stratified_oof_splits,
     quantile_bins,
@@ -97,29 +90,15 @@ _VAL_FRACTION = 0.1
 _VAL_MIN_ROWS = 200
 
 
-def _auto_n_splits(y: np.ndarray) -> int:
-    """Backward-compatible wrapper around the shared stratified OOF helper."""
-    return auto_stratified_oof_n_splits(y)
-
-
 _VAL_MIN_MINORITY = 15  # minimum minority-class samples in the validation split
 _RANDOM_STATE = 42
 
 # Keys that guide training but are not native XGBoost parameters
 _META_KEYS = frozenset({"n_estimators", "early_stopping_rounds"})
 
-# Base minimum gain; the effective threshold is adaptive (see _min_gain_threshold).
-_PORTFOLIO_MIN_GAIN = 0.005
-
 # Minimum boosting rounds for phase 2 regardless of early-stopping result.
 _PHASE2_MIN_ROUNDS = 100
 
-# Minimum minority-class OOF samples required to use isotonic calibration.
-# Below this threshold, Platt scaling (2-parameter sigmoid) is used instead —
-# isotonic regression overfits on small or highly imbalanced datasets.
-_CALIBRATION_ISOTONIC_MIN_MINORITY = 500
-_DEFAULT_DECISION_CUTOFF = 0.5
-_RANKER_MAX_KNOTS = 10_000
 
 # Maximum allowed cost for a non-default preset, expressed as a multiple of
 # the default preset's cost on the same data.  This scales automatically with
@@ -171,49 +150,6 @@ _STAGE1_MULTI_SPLITS = 3
 _GPU_AVAILABLE: bool | None = None
 
 
-def _learn_balanced_accuracy_cutoff(
-    y_true: np.ndarray, p1: np.ndarray
-) -> tuple[float, str]:
-    """Learn a deterministic balanced-accuracy cutoff from OOF class-1 probabilities."""
-    y_arr = np.asarray(y_true, dtype=int)
-    p_arr = np.asarray(p1, dtype=float)
-    mask = np.isfinite(p_arr)
-    if mask.sum() == 0 or len(np.unique(y_arr[mask])) < 2:
-        return _DEFAULT_DECISION_CUTOFF, "default_0.5"
-
-    probs = p_arr[mask]
-    labels = y_arr[mask]
-    unique = np.unique(probs)
-    if unique.size == 0:
-        return _DEFAULT_DECISION_CUTOFF, "default_0.5"
-
-    candidates = np.unique(
-        np.concatenate(
-            [
-                unique,
-                np.array(
-                    [
-                        np.nextafter(unique[0], -np.inf),
-                        _DEFAULT_DECISION_CUTOFF,
-                        np.nextafter(unique[-1], np.inf),
-                    ],
-                    dtype=float,
-                ),
-            ]
-        )
-    )
-
-    best_threshold = _DEFAULT_DECISION_CUTOFF
-    best_key = None
-    for thr in candidates:
-        score = balanced_accuracy_score(labels, (probs >= thr).astype(int))
-        key = (-float(score), abs(float(thr) - _DEFAULT_DECISION_CUTOFF), float(thr))
-        if best_key is None or key < best_key:
-            best_key = key
-            best_threshold = float(thr)
-    return best_threshold, "oof_balanced_accuracy"
-
-
 def _resolve_device(device: str) -> str:
     """
     Resolve 'auto' to 'gpu' or 'cpu' based on CUDA availability.
@@ -244,93 +180,20 @@ def _resolve_device(device: str) -> str:
     return "gpu" if _GPU_AVAILABLE else "cpu"
 
 
-class BaseXGBClassifier(OnnxBoundHead, BaseEstimator, ClassifierMixin):
-    """
-    Binary classifier with automatically selected XGBoost hyperparameters.
+class _XGBHead(BaseEstimator):
+    """The booster-specific half of both XGBoost heads: race, refit, folds, export, save."""
 
-    Parameters
-    ----------
-    device : str
-        "cpu", "gpu", or "auto".  "auto" detects CUDA availability at the
-        first .fit() call and uses GPU when available, CPU otherwise.
-    verbose : bool
-        If True, log chosen parameters and winning preset name.
-    portfolio : bool
-        If True (default), train all five preset configurations on a validation
-        split and select the best.  If False, use the XGBoost default preset
-        only (faster; useful as a no-tuning baseline).
-    nthread : int
-        Number of parallel threads for XGBoost.  -1 (default) lets XGBoost
-        use all available CPU cores.
+    _task = ""
+    _fitted_attr = "booster_"
 
-    Attributes (after .fit())
-    --------------------------
-    profile_ : DatasetProfile
-    params_ : dict        — hyperparameters of the winning preset
-    preset_name_ : str    — which of the 4 presets won ("heuristic", "default",
-                            "flaml", or "autogluon")
-    portfolio_scores_ : dict — val scores for every preset (empty when
-                               portfolio=False or dataset too small to split)
-    booster_ : xgb.Booster
-    best_iteration_ : int
-    classes_ : ndarray
-    """
-
-    def __init__(
-        self,
-        device: str = "cpu",
-        portfolio: bool = True,
-        nthread: int = -1,
-        calibrated: bool = True,
-        max_rounds: int | None = None,
-    ):
-        self.device = device
-        self.portfolio = portfolio
-        self.nthread = nthread
-        self.calibrated = calibrated
-        self.max_rounds = max_rounds
-
-    # ------------------------------------------------------------------
-    # Public fit — dispatches to calibrate() or _fit_raw()
-    # ------------------------------------------------------------------
-
-    def fit(self, X, y):
-        """Fit the classifier.
-
-        When ``calibrated=True`` (default), runs the full calibration
-        workflow: portfolio selection once, stratified k-fold OOF to collect
-        held-out probabilities, isotonic calibrator.
-
-        When ``calibrated=False``, runs the raw training only (no OOF pass).
-        """
-        if not _FIT_DEPS_AVAILABLE:
-            raise ImportError(
-                "Training requires xgboost and scikit-learn. "
-                "Install with: pip install 'lazyqsar[fit]'"
-            )
-        if self.calibrated:
-            y_arr = np.asarray(y, dtype=int)
-            if np.bincount(y_arr).min() >= 2:
-                return self.calibrate(X, y)
-        return self._fit_raw(X, y)
-
-    # ------------------------------------------------------------------
-    # Internal raw training (portfolio selection + phase-2 refit)
-    # ------------------------------------------------------------------
-
-    def _fit_raw(self, X, y):
-        if not _FIT_DEPS_AVAILABLE:
-            raise ImportError(
-                "Training requires xgboost and scikit-learn. "
-                "Install with: pip install 'lazyqsar[fit]'"
-            )
-        y = np.asarray(y).ravel()
-        profile = _inspect(X, y, task="classification")
+    def _fit_booster(self, X, y) -> DatasetProfile:
+        """Preset race (or the heuristic below the split minimum), then the full refit."""
+        profile = _inspect(X, y, task=self._task)
         self.profile_ = profile
         self._onnx_probe_ = probe_rows(X)
         device = _resolve_device(self.device)
 
-        logger.rule("BaseXGBClassifier")
+        logger.rule(type(self).__name__)
         logger.profile_summary(profile)
         logger.info(f"device={device} | portfolio={self.portfolio}")
 
@@ -348,7 +211,7 @@ class BaseXGBClassifier(OnnxBoundHead, BaseEstimator, ClassifierMixin):
                 self.portfolio_scores_ = scores
             else:
                 X_train, X_val, y_train, y_val, _ = _validation_split(
-                    X, y, profile, stratify=True
+                    X, y, profile, stratify=self._task == "classification"
                 )
                 logger.debug(
                     f"Train split: {len(y_train)} rows | Val split: {len(y_val)} rows"
@@ -388,232 +251,40 @@ class BaseXGBClassifier(OnnxBoundHead, BaseEstimator, ClassifierMixin):
         self.booster_ = final_booster
         self.best_iteration_ = best_iter
         self._bind_onnx()
-        self.decision_cutoff_raw_ = _DEFAULT_DECISION_CUTOFF
-        self.decision_cutoff_raw_source_ = "default_0.5"
-        self.decision_cutoff_proba_ = _DEFAULT_DECISION_CUTOFF
-        self.decision_cutoff_rank_ = _DEFAULT_DECISION_CUTOFF
-        self.decision_cutoff_logit_ = 0.0
-        logger.rule("Done")
-        logger.success(
-            f"preset={self.preset_name_} | best_iteration={self.best_iteration_}"
-        )
-        logger.info(
-            "decision cutoff: "
-            f"{self.decision_cutoff_raw_:.4f} | metric=balanced_accuracy | source={self.decision_cutoff_raw_source_}"
-        )
-        self.classes_ = np.array([0, 1])
-        return self
+        return profile
 
-    _onnx_kind = "probability"
+    def _oof(self, X, y, fold_splits) -> np.ndarray:
+        """Each fold trains the chosen preset for the full fit's round count."""
+
+        def fit_predict(train_idx, val_idx):
+            fold_booster, fold_best_iter = _train_phase2(
+                X[train_idx],
+                y[train_idx],
+                self.params_,
+                self.best_iteration_,
+                max_rounds=self.max_rounds,
+                label=None,  # suppress banner; fold context logged by the caller
+            )
+            return fold_booster.predict(
+                xgb.DMatrix(X[val_idx]), iteration_range=(0, fold_best_iter + 1)
+            )
+
+        logger.info(
+            f"{len(fold_splits)}-fold OOF  preset={self.preset_name_}  "
+            f"rounds={self.best_iteration_}"
+        )
+        return self._oof_loop(fold_splits, fit_predict)
 
     def _raw_native(self, X) -> np.ndarray:
-        """Raw P(y=1) from the booster itself, over the rounds ``predict`` uses."""
+        """Output of the booster itself, over the rounds ``predict`` uses."""
         return self.booster_.predict(
             xgb.DMatrix(X), iteration_range=(0, self.best_iteration_ + 1)
         )
 
     def _onnx_bytes(self) -> bytes:
         booster = _rounds_used(self.booster_, self.best_iteration_)
-        wrapper = _booster_to_sklearn_wrapper(booster, task="classification")
+        wrapper = _booster_to_sklearn_wrapper(booster, task=self._task)
         return _onnx_model_bytes(wrapper, self.profile_.n_features)
-
-    def predict_proba(self, X):
-        """Return class probabilities, shape (n_samples, 2)."""
-        check_is_fitted(self, "booster_")
-        prob_pos = self._raw(X)
-        proba = np.column_stack([1 - prob_pos, prob_pos])
-        if hasattr(self, "calibrator_"):
-            if self.calibrator_method_ == "isotonic":
-                p1 = np.clip(self.calibrator_.predict(proba[:, 1]), 0, 1)
-            else:  # platt
-                p1 = self.calibrator_.predict_proba(proba[:, 1].reshape(-1, 1))[:, 1]
-            proba = np.column_stack([1 - p1, p1])
-        return proba
-
-    def predict_logit(self, X) -> np.ndarray:
-        """Return logit of calibrated probabilities, shape (n_samples, 2)."""
-        p = np.clip(self.predict_proba(X)[:, 1], 1e-7, 1.0 - 1e-7)
-        logit_1 = np.log(p / (1.0 - p))
-        return np.column_stack([-logit_1, logit_1])
-
-    def predict_score(self, X) -> np.ndarray:
-        """Return raw (pre-calibration) probabilities, shape (n_samples, 2)."""
-        check_is_fitted(self, "booster_")
-        prob_pos = self._raw(X)
-        return np.column_stack([1 - prob_pos, prob_pos])
-
-    def predict(self, X, cutoff: float | None = None):
-        """Return binary predictions (0 or 1)."""
-        threshold = self.decision_cutoff_raw_ if cutoff is None else float(cutoff)
-        return binarize(self.predict_score(X)[:, 1], threshold)
-
-    def predict_rank(self, X) -> np.ndarray:
-        """Map raw scores to [0, 1] ranks via OOF ECDF, shape (n_samples, 2)."""
-        check_is_fitted(self, "_ranker_knots")
-        scores = self.predict_score(X)[:, 1]
-        prepared = getattr(self, "_ranker_prepared_", None)
-        if prepared is None:
-            prepared = self._ranker_prepared_ = prepare_knots(self._ranker_knots)
-        rank_1 = rank_from_knots(scores, prepared=prepared)
-        return np.column_stack([1 - rank_1, rank_1])
-
-    def calibrate(
-        self, X, y, n_splits=None, random_state: int = 42
-    ) -> "BaseXGBClassifier":
-        """
-        Collect out-of-fold predicted probabilities via stratified k-fold CV,
-        then fit an isotonic calibrator on them.
-
-        Hyperparameter selection (portfolio) runs ONCE on the full data via
-        _fit_raw().  Each fold then trains for exactly self.best_iteration_
-        rounds using the pre-selected preset — no per-fold portfolio search.
-
-        Parameters
-        ----------
-        n_splits : int or None
-            Number of CV folds. None = auto from minority class size
-            (min 2, max 5, roughly minority_count // 10).
-
-        After this call
-        ---------------
-        self.oof_probas_ : ndarray, shape (n,)
-            Calibrated out-of-fold probabilities for class 1, same row order as X.
-        self.oof_y_ : ndarray, shape (n,)
-            Original y labels (0/1), same order as X.
-        self.calibrator_ : IsotonicRegression
-            Fitted isotonic calibrator. predict_proba() will apply this layer.
-        """
-        if not _FIT_DEPS_AVAILABLE:
-            raise ImportError(
-                "Training requires xgboost and scikit-learn. "
-                "Install with: pip install 'lazyqsar[fit]'"
-            )
-        from sklearn.isotonic import IsotonicRegression
-        import scipy.sparse as sp
-
-        if sp.issparse(X):
-            X = X.toarray()
-        X = np.asarray(X, dtype=np.float32)
-        y = np.asarray(y, dtype=int)
-        n = len(y)
-        k, fold_splits = make_stratified_oof_splits(
-            y, n_splits=n_splits, random_state=random_state
-        )
-
-        # Step 1: full fit — portfolio selection runs ONCE here
-        logger.info(
-            f"BaseXGBClassifier.calibrate: full fit on n={n} (portfolio runs once)"
-        )
-        self._fit_raw(
-            X, y
-        )  # sets self.params_, self.best_iteration_, self.preset_name_
-
-        # Step 2: k-fold OOF with pre-selected params + fixed rounds (no search per fold)
-        oof_raw = np.full(n, np.nan, dtype=float)
-        logger.info(
-            f"calibrate: {k}-fold OOF  preset={self.preset_name_}  "
-            f"rounds={self.best_iteration_}"
-        )
-        fold_times = []
-        for fold_idx, (train_idx, val_idx) in enumerate(fold_splits):
-            logger.debug(
-                f"  Fold {fold_idx + 1}/{k}: train={len(train_idx)}  val={len(val_idx)}"
-            )
-            _t_fold = _time.perf_counter()
-            fold_booster, fold_best_iter = _train_phase2(
-                X[train_idx],
-                y[train_idx].astype(float),
-                self.params_,
-                self.best_iteration_,
-                max_rounds=self.max_rounds,
-                label=None,  # suppress banner; fold context logged by calibrate()
-            )
-            dval = xgb.DMatrix(X[val_idx])
-            oof_raw[val_idx] = fold_booster.predict(
-                dval, iteration_range=(0, fold_best_iter + 1)
-            )
-            fold_times.append(_time.perf_counter() - _t_fold)
-
-        self.timing_["calibration_folds"] = fold_times
-        self.timing_["calibration_total"] = sum(fold_times)
-
-        # Step 3: fit calibrator — method chosen by minority class size
-        minority_count = int(np.bincount(y).min())
-        if minority_count >= _CALIBRATION_ISOTONIC_MIN_MINORITY:
-            cal = IsotonicRegression(out_of_bounds="clip")
-            self.oof_probas_ = cal.fit_transform(oof_raw, y)
-            self.calibrator_method_ = "isotonic"
-        else:
-            from sklearn.linear_model import LogisticRegression
-
-            cal = LogisticRegression(C=1.0, solver="lbfgs")
-            cal.fit(oof_raw.reshape(-1, 1), y)
-            self.oof_probas_ = cal.predict_proba(oof_raw.reshape(-1, 1))[:, 1]
-            self.calibrator_method_ = "platt"
-        self.calibrator_ = cal
-        self.decision_cutoff_raw_, self.decision_cutoff_raw_source_ = (
-            _learn_balanced_accuracy_cutoff(y, oof_raw)
-        )
-        if self.calibrator_method_ == "isotonic":
-            self.decision_cutoff_proba_ = float(
-                np.clip(
-                    self.calibrator_.predict(np.array([self.decision_cutoff_raw_]))[0],
-                    0.0,
-                    1.0,
-                )
-            )
-        else:
-            self.decision_cutoff_proba_ = float(
-                self.calibrator_.predict_proba(np.array([[self.decision_cutoff_raw_]]))[
-                    :, 1
-                ][0]
-            )
-        self.oof_y_ = y.copy()
-        # Uncalibrated [0,1] out-of-fold probabilities (the calibrator's input), kept alongside the
-        # calibrated oof_probas_ so downstream can report the raw score too.
-        self.oof_raw_ = oof_raw.copy()
-        sorted_scores = np.sort(oof_raw)
-        n_r = len(sorted_scores)
-        if n_r > _RANKER_MAX_KNOTS:
-            idx = np.round(np.linspace(0, n_r - 1, _RANKER_MAX_KNOTS)).astype(int)
-            self._ranker_knots = sorted_scores[idx]
-        else:
-            self._ranker_knots = sorted_scores
-        self._ranker_prepared_ = prepare_knots(self._ranker_knots)
-        self.decision_cutoff_rank_ = float(
-            rank_from_knots(self.decision_cutoff_raw_, prepared=self._ranker_prepared_)
-        )
-        _p = np.clip(self.decision_cutoff_proba_, 1e-7, 1.0 - 1e-7)
-        self.decision_cutoff_logit_ = float(np.log(_p / (1.0 - _p)))
-        logger.success(
-            f"Calibrator fitted ({self.calibrator_method_}, minority={minority_count}) "
-            f"on {k}-fold OOF predictions."
-        )
-        logger.info(
-            "calibration cutoff learned from OOF scores: "
-            f"{self.decision_cutoff_raw_:.4f} | metric=balanced_accuracy | source={self.decision_cutoff_raw_source_}"
-        )
-        return self
-
-    def to_onnx(self, path: str) -> None:
-        """
-        Export the trained model to an ONNX file.
-
-        The exported model accepts a float32 input named ``"float_input"``
-        with shape ``(n_samples, n_features)`` and produces two outputs:
-          - ``"label"``         int64  (n_samples,)   — predicted class
-          - ``"probabilities"`` float32 (n_samples, 2) — [P(0), P(1)]
-
-        Parameters
-        ----------
-        path : str
-            Destination file path, e.g. ``"model.onnx"``.
-        """
-        check_is_fitted(self, "booster_")
-        self._write_onnx(path)
-        probe = getattr(self, "_onnx_probe_", None)
-        if probe is not None:
-            check_probability(path, probe, self._raw_native(probe), "BaseXGBClassifier")
 
     def save(self, directory: str) -> None:
         """
@@ -626,59 +297,142 @@ class BaseXGBClassifier(OnnxBoundHead, BaseEstimator, ClassifierMixin):
         directory : str
             Path to the output directory (created if it does not exist).
         """
-        check_is_fitted(self, "booster_")
+        check_is_fitted(self, self._fitted_attr)
         os.makedirs(directory, exist_ok=True)
         self.to_onnx(os.path.join(directory, "xgboost.onnx"))
         metadata = {
-            "task": "classification",
+            "task": self._task,
             "format": "onnx",
             "preset_name": self.preset_name_,
             "best_iteration": self.best_iteration_,
             "params": self.params_,
             "profile": dataclasses.asdict(self.profile_),
             "portfolio_scores": self.portfolio_scores_,
-            "decision_cutoff_raw": float(
-                getattr(self, "decision_cutoff_raw_", _DEFAULT_DECISION_CUTOFF)
-            ),
-            "decision_cutoff_raw_source": getattr(
-                self, "decision_cutoff_raw_source_", "default_0.5"
-            ),
-            "decision_cutoff_proba": float(
-                getattr(self, "decision_cutoff_proba_", _DEFAULT_DECISION_CUTOFF)
-            ),
-            "decision_cutoff_rank": float(
-                getattr(self, "decision_cutoff_rank_", _DEFAULT_DECISION_CUTOFF)
-            ),
-            "decision_cutoff_logit": float(
-                getattr(self, "decision_cutoff_logit_", 0.0)
-            ),
         }
-        if hasattr(self, "calibrator_"):
-            if self.calibrator_method_ == "isotonic":
-                metadata["calibrator"] = {
-                    "method": "isotonic",
-                    "X_thresholds": self.calibrator_.X_thresholds_.tolist(),
-                    "y_thresholds": self.calibrator_.y_thresholds_.tolist(),
-                }
-            else:  # platt
-                metadata["calibrator"] = {
-                    "method": "platt",
-                    "coef": float(self.calibrator_.coef_[0][0]),
-                    "intercept": float(self.calibrator_.intercept_[0]),
-                }
-        if hasattr(self, "_ranker_knots"):
-            metadata["ranker"] = {"knots": self._ranker_knots.tolist()}
+        metadata.update(self._task_metadata())
         with open(os.path.join(directory, "xgboost.json"), "w") as f:
             json.dump(metadata, f, indent=2, cls=_NumpyEncoder)
 
 
-class BaseXGBRegressor(OnnxBoundHead, BaseEstimator, RegressorMixin):
+class BaseXGBClassifier(_XGBHead, ClassifierHead, ClassifierMixin):
+    """
+    Binary classifier with automatically selected XGBoost hyperparameters.
+
+    Parameters
+    ----------
+    device : str
+        "cpu", "gpu", or "auto".  "auto" detects CUDA availability at the
+        first .fit() call and uses GPU when available, CPU otherwise.
+    portfolio : bool
+        If True (default), train all five preset configurations on a validation
+        split and select the best.  If False, use the XGBoost default preset
+        only (faster; useful as a no-tuning baseline).
+    nthread : int
+        Number of parallel threads for XGBoost.  -1 (default) lets XGBoost
+        use all available CPU cores.
+
+    Attributes (after .fit())
+    --------------------------
+    profile_ : DatasetProfile
+    params_ : dict        — hyperparameters of the winning preset
+    preset_name_ : str    — which of the 4 presets won ("heuristic", "default",
+                            "flaml", or "autogluon")
+    portfolio_scores_ : dict — val scores for every preset (empty when
+                               portfolio=False or dataset too small to split)
+    booster_ : xgb.Booster
+    best_iteration_ : int
+    classes_ : ndarray
+    """
+
+    _task = "classification"
+
+    def __init__(
+        self,
+        device: str = "cpu",
+        portfolio: bool = True,
+        nthread: int = -1,
+        calibrated: bool = True,
+        max_rounds: int | None = None,
+    ):
+        self.device = device
+        self.portfolio = portfolio
+        self.nthread = nthread
+        self.calibrated = calibrated
+        self.max_rounds = max_rounds
+
+    def fit(self, X, y):
+        """Fit the classifier.
+
+        When ``calibrated=True`` (default), runs the full calibration
+        workflow: portfolio selection once, stratified k-fold OOF to collect
+        held-out probabilities, isotonic calibrator.
+
+        When ``calibrated=False``, runs the raw training only (no OOF pass).
+        """
+        require_fit_deps(_FIT_DEPS_AVAILABLE, "xgboost and scikit-learn")
+        if self._wants_calibration(y):
+            return self.calibrate(X, y)
+        return self._fit_raw(X, y)
+
+    def _fit_raw(self, X, y):
+        require_fit_deps(_FIT_DEPS_AVAILABLE, "xgboost and scikit-learn")
+        y = np.asarray(y).ravel()
+        self._fit_booster(X, y)
+        self._set_default_cutoffs()
+        logger.rule("Done")
+        logger.success(
+            f"preset={self.preset_name_} | best_iteration={self.best_iteration_}"
+        )
+        logger.info(
+            "decision cutoff: "
+            f"{self.decision_cutoff_raw_:.4f} | metric=balanced_accuracy | source={self.decision_cutoff_raw_source_}"
+        )
+        self.classes_ = np.array([0, 1])
+        return self
+
+    def calibrate(
+        self, X, y, n_splits=None, random_state: int = 42
+    ) -> "BaseXGBClassifier":
+        """
+        Collect out-of-fold predicted probabilities via stratified k-fold CV,
+        then fit the calibrator on them.
+
+        Hyperparameter selection (portfolio) runs ONCE on the full data via
+        _fit_raw().  Each fold then trains for exactly self.best_iteration_
+        rounds using the pre-selected preset — no per-fold portfolio search.
+
+        Parameters
+        ----------
+        n_splits : int or None
+            Number of CV folds. None = auto from minority class size
+            (min 2, max 5, roughly minority_count // 10).
+        """
+        require_fit_deps(_FIT_DEPS_AVAILABLE, "xgboost and scikit-learn")
+        import scipy.sparse as sp
+
+        if sp.issparse(X):
+            X = X.toarray()
+        X = np.asarray(X, dtype=np.float32)
+        y = np.asarray(y, dtype=int)
+        k, fold_splits = make_stratified_oof_splits(
+            y, n_splits=n_splits, random_state=random_state
+        )
+        logger.info(
+            f"BaseXGBClassifier.calibrate: full fit on n={len(y)} (portfolio runs once)"
+        )
+        self._fit_raw(X, y)
+        oof_raw = self._oof(X, y.astype(float), fold_splits)
+        self._finish_calibration(y, oof_raw)
+        return self
+
+
+class BaseXGBRegressor(_XGBHead, RegressorHead, RegressorMixin):
     """
     Regressor with automatically selected XGBoost hyperparameters.
 
-    Handles skewed and non-negative targets by selecting an appropriate
-    objective function (squarederror, tweedie, or pseudohubererror) for the
-    heuristic preset.  External presets use squarederror for simplicity.
+    Every preset trains with squared error (the objective the RMSE race scores);
+    a different objective can be passed explicitly through the parameters and is
+    exported faithfully.
 
     Parameters
     ----------
@@ -714,6 +468,8 @@ class BaseXGBRegressor(OnnxBoundHead, BaseEstimator, RegressorMixin):
     train_rho_ : float or None  — Spearman ρ of in-sample predictions
     """
 
+    _task = "regression"
+
     def __init__(
         self,
         device: str = "cpu",
@@ -730,80 +486,14 @@ class BaseXGBRegressor(OnnxBoundHead, BaseEstimator, RegressorMixin):
 
     def fit(self, X, y):
         """Fit the regressor, then collect OOF predictions when ``oof=True``."""
-        if not _FIT_DEPS_AVAILABLE:
-            raise ImportError(
-                "Training requires xgboost and scikit-learn. "
-                "Install with: pip install 'lazyqsar[fit]'"
-            )
+        require_fit_deps(_FIT_DEPS_AVAILABLE, "xgboost and scikit-learn")
         if self.oof:
             return self.collect_oof(X, y)
         return self._fit_raw(X, y)
 
     def _fit_raw(self, X, y):
         y = np.asarray(y, dtype=float).ravel()
-        profile = _inspect(X, y, task="regression")
-        self.profile_ = profile
-        self._onnx_probe_ = probe_rows(X)
-        device = _resolve_device(self.device)
-
-        logger.rule("BaseXGBRegressor")
-        logger.profile_summary(profile)
-        logger.info(f"device={device} | portfolio={self.portfolio}")
-
-        self.timing_ = {}
-
-        if profile.n_samples >= _VAL_MIN_ROWS:
-            if self.portfolio:
-                _t_ps = _time.perf_counter()
-                best_name, best_params, best_iter, scores = _portfolio_select(
-                    X, y, profile, device, self.nthread
-                )
-                self.timing_["portfolio_select"] = _time.perf_counter() - _t_ps
-                self.preset_name_ = best_name
-                self.params_ = best_params
-                self.portfolio_scores_ = scores
-            else:
-                X_train, X_val, y_train, y_val, _ = _validation_split(
-                    X, y, profile, stratify=False
-                )
-                logger.debug(
-                    f"Train split: {len(y_train)} rows | Val split: {len(y_val)} rows"
-                )
-                best_params = xgb_default_params(
-                    profile, device=device, nthread=self.nthread
-                )
-                _, best_iter, _ = _train_phase1(
-                    X_train, y_train, X_val, y_val, best_params, verbose=False
-                )
-                self.preset_name_ = "default"
-                self.params_ = best_params
-                self.portfolio_scores_ = {}
-            logger.debug(
-                f"objective={best_params['objective']} | "
-                f"eval_metric={best_params['eval_metric']} | "
-                f"lr={best_params['learning_rate']} | "
-                f"colsample_bytree={best_params['colsample_bytree']}"
-            )
-            _t_p2 = _time.perf_counter()
-            final_booster, best_iter = _train_phase2(
-                X, y, best_params, best_iter, max_rounds=self.max_rounds
-            )
-            self.timing_["phase2_refit"] = _time.perf_counter() - _t_p2
-        else:
-            # Dataset too small to split: use heuristic preset directly.
-            params = _get_params(profile, device=device, nthread=self.nthread)
-            self.params_ = params
-            self.preset_name_ = "heuristic"
-            self.portfolio_scores_ = {}
-            _t_p2 = _time.perf_counter()
-            final_booster, best_iter, _ = _train_phase1(
-                X, y, X, y, params, verbose=False
-            )
-            self.timing_["phase2_refit"] = _time.perf_counter() - _t_p2
-
-        self.booster_ = final_booster
-        self.best_iteration_ = best_iter
-        self._bind_onnx()
+        self._fit_booster(X, y)
         self.train_rho_ = spearman_score(y, self.predict(X))
         logger.rule("Done")
         logger.success(
@@ -817,13 +507,6 @@ class BaseXGBRegressor(OnnxBoundHead, BaseEstimator, RegressorMixin):
         """
         Full fit (portfolio runs once), then quantile-stratified k-fold OOF
         predictions with the pre-selected preset and fixed round count.
-
-        After this call
-        ---------------
-        self.oof_preds_ : ndarray, shape (n,)
-        self.oof_y_ : ndarray, shape (n,)
-        self.oof_rho_ : float or None
-        self._ranker_knots : ndarray — ECDF knots over OOF predictions
         """
         import scipy.sparse as sp
 
@@ -831,125 +514,15 @@ class BaseXGBRegressor(OnnxBoundHead, BaseEstimator, RegressorMixin):
             X = X.toarray()
         X = np.asarray(X, dtype=np.float32)
         y = np.asarray(y, dtype=float).ravel()
-        n = len(y)
         k, fold_splits = make_quantile_oof_splits(
             y, n_splits=n_splits, random_state=random_state
         )
-
         logger.info(
-            f"BaseXGBRegressor.collect_oof: full fit on n={n} (portfolio runs once)"
+            f"BaseXGBRegressor.collect_oof: full fit on n={len(y)} (portfolio runs once)"
         )
         self._fit_raw(X, y)
-
-        oof = np.full(n, np.nan, dtype=float)
-        logger.info(
-            f"collect_oof: {k}-fold OOF  preset={self.preset_name_}  "
-            f"rounds={self.best_iteration_}"
-        )
-        fold_times = []
-        for fold_idx, (train_idx, val_idx) in enumerate(fold_splits):
-            logger.debug(
-                f"  Fold {fold_idx + 1}/{k}: train={len(train_idx)}  val={len(val_idx)}"
-            )
-            _t_fold = _time.perf_counter()
-            fold_booster, fold_best_iter = _train_phase2(
-                X[train_idx],
-                y[train_idx],
-                self.params_,
-                self.best_iteration_,
-                max_rounds=self.max_rounds,
-                label=None,
-            )
-            oof[val_idx] = fold_booster.predict(
-                xgb.DMatrix(X[val_idx]), iteration_range=(0, fold_best_iter + 1)
-            )
-            fold_times.append(_time.perf_counter() - _t_fold)
-
-        self.timing_["oof_folds"] = fold_times
-        self.timing_["oof_total"] = sum(fold_times)
-        self.oof_preds_ = oof
-        self.oof_y_ = y.copy()
-        self.oof_rho_ = spearman_score(y, oof)
-        self._ranker_knots = subsample_knots(np.sort(oof), _RANKER_MAX_KNOTS)
-        self._ranker_prepared_ = prepare_knots(self._ranker_knots)
-        logger.success(
-            f"OOF collected ({k} folds) | rho_oof={self.oof_rho_} | "
-            f"rho_train={self.train_rho_}"
-        )
+        self._finish_oof(y, self._oof(X, y, fold_splits))
         return self
-
-    def _raw_native(self, X) -> np.ndarray:
-        """Predictions from the booster itself, over the rounds ``predict`` uses."""
-        return self.booster_.predict(
-            xgb.DMatrix(X), iteration_range=(0, self.best_iteration_ + 1)
-        )
-
-    def _onnx_bytes(self) -> bytes:
-        booster = _rounds_used(self.booster_, self.best_iteration_)
-        wrapper = _booster_to_sklearn_wrapper(booster, task="regression")
-        return _onnx_model_bytes(wrapper, self.profile_.n_features)
-
-    def predict(self, X):
-        """Return continuous predictions, shape (n_samples,)."""
-        check_is_fitted(self, "booster_")
-        return self._raw(X)
-
-    def predict_rank(self, X) -> np.ndarray:
-        """Map predictions to [0, 1] via the OOF ECDF, shape (n_samples,)."""
-        check_is_fitted(self, "_ranker_knots")
-        prepared = getattr(self, "_ranker_prepared_", None)
-        if prepared is None:
-            prepared = self._ranker_prepared_ = prepare_knots(self._ranker_knots)
-        return rank_from_knots(self.predict(X), prepared=prepared)
-
-    def to_onnx(self, path: str) -> None:
-        """
-        Export the trained model to an ONNX file.
-
-        The exported model accepts a float32 input named ``"float_input"``
-        with shape ``(n_samples, n_features)`` and produces one output:
-          - ``"variable"`` float32 (n_samples, 1) — predicted values
-
-        Parameters
-        ----------
-        path : str
-            Destination file path, e.g. ``"model.onnx"``.
-        """
-        check_is_fitted(self, "booster_")
-        self._write_onnx(path)
-        probe = getattr(self, "_onnx_probe_", None)
-        if probe is not None:
-            check_values(path, probe, self._raw_native(probe), "BaseXGBRegressor")
-
-    def save(self, directory: str) -> None:
-        """
-        Save the trained model to a directory.
-
-        Always writes ``xgboost.json`` (fit metadata) and ``xgboost.onnx``.
-
-        Parameters
-        ----------
-        directory : str
-            Path to the output directory (created if it does not exist).
-        """
-        check_is_fitted(self, "booster_")
-        os.makedirs(directory, exist_ok=True)
-        self.to_onnx(os.path.join(directory, "xgboost.onnx"))
-        metadata = {
-            "task": "regression",
-            "format": "onnx",
-            "preset_name": self.preset_name_,
-            "best_iteration": self.best_iteration_,
-            "params": self.params_,
-            "profile": dataclasses.asdict(self.profile_),
-            "portfolio_scores": self.portfolio_scores_,
-            "oof_rho": getattr(self, "oof_rho_", None),
-            "train_rho": getattr(self, "train_rho_", None),
-        }
-        if hasattr(self, "_ranker_knots"):
-            metadata["ranker"] = {"knots": self._ranker_knots.tolist()}
-        with open(os.path.join(directory, "xgboost.json"), "w") as f:
-            json.dump(metadata, f, indent=2, cls=_NumpyEncoder)
 
 
 # ---------------------------------------------------------------------------
@@ -1057,40 +630,16 @@ def _train_phase2(
 
 
 def _min_gain_threshold(profile: DatasetProfile, y_train: np.ndarray) -> float:
-    """
-    Adaptive minimum-gain threshold for portfolio selection.
+    """Noise-adaptive margin a challenger preset must win by (see ``min_gain_threshold``).
 
-    With _CV_FOLDS-fold CV the averaged score has variance proportional to
-    1 / (n_minority_total), so the threshold is based on the full training
-    minority count rather than a single fold's val minority count.  This gives
-    a more accurate and stable noise estimate than a single hold-out split.
-
-    Formula: max(_PORTFOLIO_MIN_GAIN, coef / sqrt(n_effective))
-      - binary classification: n_effective = minority-class count in full train
-      - regression: n_effective = total train size
-
-    The coefficient is higher for small datasets (n_train < _STAGE1_MULTI_SPLIT_THRESHOLD)
-    because even with multi-split averaging the validation AUC is noisier at
-    small n: spurious gains of ~0.02 can appear on a 38-sample val fold and
-    fail to generalise.  Using coef=0.3 instead of 0.1 for n<2000 sets the
-    threshold at ~0.02-0.03 for minority counts of 100-200, requiring a
-    stronger signal before accepting a non-default preset.
-
-    Example thresholds (coef=0.3, small n):
-      n_eff=100  → 0.030  (small, requires clear signal)
-      n_eff=200  → 0.021  (moderate-small)
-      n_eff=500  → 0.013  (but only applies when n_train<2000)
-    Example thresholds (coef=0.1, large n):
-      n_eff=200  → 0.007  (moderate)
-      n_eff=500  → 0.005  (base threshold dominates)
+    The effective size is the minority-class count for classification (AUC noise) and
+    the training size for regression (relative RMSE noise).
     """
     if profile.task == "classification":
         n_eff = int(min(np.sum(y_train == 0), np.sum(y_train == 1)))
     else:
         n_eff = len(y_train)
-    coef = 0.3 if len(y_train) < _STAGE1_MULTI_SPLIT_THRESHOLD else 0.1
-    noise_based = coef / max(1, n_eff) ** 0.5
-    return max(_PORTFOLIO_MIN_GAIN, noise_based)
+    return min_gain_threshold(n_eff, len(y_train))
 
 
 def _training_cost(params: dict, n_train: int) -> float:
