@@ -187,5 +187,16 @@ Slow mode (all five descriptors), measured with 3.8, reached 0.535 MAE on lipoph
 
 ## Results against 3.8
 
-*To be filled from `run.py --label v2` (3 random + 1 structural split per task, with
-classification fit time).*
+`run.py --label v2 --n-random 3 --clf-time` against the 3.8 run, both in fast mode (Morgan). There are 45 tasks, each with 3 random splits and 1 structural split. "Better" counts the splits where test RMSE fell.
+
+| Source | Split | Fits | RMSE vs 3.8 | Better | ρ 3.8 → now | R² 3.8 → now |
+|---|---|---|---|---|---|---|
+| Biogen ADME | random | 18 | −8.74% | 16/18 | 0.569 → 0.631 | 0.265 → 0.390 |
+| Biogen ADME | structural | 6 | −7.63% | 4/6 | 0.544 → 0.603 | 0.115 → 0.236 |
+| MoleculeACE | random | 90 | −5.66% | 85/90 | 0.801 → 0.820 | 0.647 → 0.685 |
+| MoleculeACE | structural | 30 | −5.36% | 28/30 | 0.793 → 0.814 | 0.638 → 0.676 |
+| TDC ADMET | random | 27 | −3.64% | 25/27 | 0.670 → 0.694 | 0.464 → 0.503 |
+| TDC ADMET | structural | 9 | −4.42% | 8/9 | 0.529 → 0.581 | 0.278 → 0.341 |
+| **All** | | **180** | **−5.62%** | **166/180** | **0.735 → 0.762** | **0.544 → 0.595** |
+
+**Fit time** is measured as the ratio to a `LazyClassifier` fitted on the same rows. In this run the median ratio fell from 1.62 to 1.05. That run shared the machine with other studies, so its tail (p90 1.85) is not a reliable measurement; a timing pass run alone is reported below.
