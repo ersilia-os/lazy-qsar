@@ -325,9 +325,7 @@ class EnsembleSpec:
         return (
             cls(
                 descriptor_names=tuple(active_names),
-                oof_aucs=tuple(
-                    classification_skill(metadata, d) for d in active_names
-                ),
+                oof_aucs=tuple(classification_skill(metadata, d) for d in active_names),
                 proxy_aucs=tuple(proxy_map.get(d) for d in active_names),
                 rank_error_curves=curves,
                 ad_hard_cutoffs=(

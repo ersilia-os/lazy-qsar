@@ -1235,7 +1235,9 @@ class LazyClassifierQSAR(_ClassifierPredictMixin, _QSARBase):
             obj.oof_aucs_ = [classification_skill(meta, d) for d in descriptor_types]
             obj.proxy_aucs_ = [proxy_map.get(d) for d in descriptor_types]
             obj.train_aucs_ = [train_map.get(d, 0.0) for d in descriptor_types]
-            obj.quality_aucs_ = [classification_skill(meta, d) for d in descriptor_types]
+            obj.quality_aucs_ = [
+                classification_skill(meta, d) for d in descriptor_types
+            ]
             obj.active_descriptors_ = [
                 active_map.get(d, True) for d in descriptor_types
             ]

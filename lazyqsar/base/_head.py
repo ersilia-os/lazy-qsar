@@ -108,23 +108,39 @@ class _HeadBase(OnnxBoundHead):
     # Prefix of the OOF timing keys: "calibration" (classifiers) or "oof" (regressors).
     _timing_prefix: str = "oof"
 
-    def _oof_loop(self, fold_splits, fit_predict_fold) -> np.ndarray:
+    def _oof_loop(self, fold_splits, fit_predict_fold, n_jobs: int = 1) -> np.ndarray:
         """Run ``fit_predict_fold(train_idx, val_idx) -> predictions`` over the folds.
 
         Returns the out-of-fold vector (NaN where a row was never held out) and records
-        per-fold wall time in ``timing_``.
+        per-fold wall time in ``timing_``. ``n_jobs > 1`` runs the folds in threads -- for
+        fold models that release the GIL and whose result does not depend on thread
+        count (XGBoost's ``hist``: checked bit-identical across thread counts).
         """
+        from concurrent.futures import ThreadPoolExecutor
+
         n = int(sum(len(val) for _, val in fold_splits))
         oof = np.full(n, np.nan, dtype=float)
         k = len(fold_splits)
-        fold_times = []
-        for fold_idx, (train_idx, val_idx) in enumerate(fold_splits):
+
+        def timed(fold):
+            fold_idx, (train_idx, val_idx) = fold
             logger.debug(
                 f"  Fold {fold_idx + 1}/{k}: train={len(train_idx)}  val={len(val_idx)}"
             )
             t0 = _time.perf_counter()
-            oof[val_idx] = fit_predict_fold(train_idx, val_idx)
-            fold_times.append(_time.perf_counter() - t0)
+            pred = fit_predict_fold(train_idx, val_idx)
+            return val_idx, pred, _time.perf_counter() - t0
+
+        folds = list(enumerate(fold_splits))
+        if n_jobs > 1 and k > 1:
+            with ThreadPoolExecutor(max_workers=min(n_jobs, k)) as pool:
+                results = list(pool.map(timed, folds))
+        else:
+            results = [timed(fold) for fold in folds]
+        fold_times = []
+        for val_idx, pred, seconds in results:
+            oof[val_idx] = pred
+            fold_times.append(seconds)
         self.timing_[f"{self._timing_prefix}_folds"] = fold_times
         self.timing_[f"{self._timing_prefix}_total"] = sum(fold_times)
         return oof

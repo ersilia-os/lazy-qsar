@@ -302,13 +302,23 @@ class _XGBHead(BaseEstimator):
         return booster, best_iter
 
     def _oof(self, X, y, fold_splits) -> np.ndarray:
-        """Each fold trains the chosen preset for the full fit's round count."""
+        """Each fold trains the chosen preset for the full fit's round count.
+
+        The folds train concurrently, each with an equal share of the threads: XGBoost
+        on a few thousand rows scales poorly across all cores, and its result does not
+        depend on the thread count, so this changes only the wall time.
+        """
+        k = len(fold_splits)
+        total = int(self.params_.get("nthread", 0) or (os.cpu_count() or 1))
+        fold_params = dict(self.params_)
+        if "nthread" in fold_params:
+            fold_params["nthread"] = max(1, total // k)
 
         def fit_predict(train_idx, val_idx):
             fold_booster, fold_best_iter = _train_phase2(
                 X[train_idx],
                 y[train_idx],
-                self.params_,
+                fold_params,
                 self.best_iteration_,
                 max_rounds=self.max_rounds,
                 label=None,  # suppress banner; fold context logged by the caller
@@ -318,10 +328,9 @@ class _XGBHead(BaseEstimator):
             )
 
         logger.info(
-            f"{len(fold_splits)}-fold OOF  preset={self.preset_name_}  "
-            f"rounds={self.best_iteration_}"
+            f"{k}-fold OOF  preset={self.preset_name_}  rounds={self.best_iteration_}"
         )
-        return self._oof_loop(fold_splits, fit_predict)
+        return self._oof_loop(fold_splits, fit_predict, n_jobs=k if total >= k else 1)
 
     def _raw_native(self, X) -> np.ndarray:
         """Output of the booster itself, over the rounds ``predict`` uses."""
@@ -593,6 +602,16 @@ class _NumpyEncoder(json.JSONEncoder):
         return super().default(obj)
 
 
+def _dmatrix_threads(params: dict) -> int:
+    """Threads for building a DMatrix: the training thread count.
+
+    The default (-1) resolves to OpenMP's maximum, which is 1 under the
+    ``OMP_NUM_THREADS=1`` set on macOS, so the quantile sketch ran single-threaded.
+    The cuts and the trained booster are the same at any thread count.
+    """
+    return int(params.get("nthread", -1) or -1)
+
+
 def _train_phase1(X_train, y_train, X_val, y_val, params: dict, verbose: bool):
     """
     Phase 1: train on X_train/y_train with early stopping against X_val/y_val.
@@ -607,8 +626,13 @@ def _train_phase1(X_train, y_train, X_val, y_val, params: dict, verbose: bool):
 
     xgb_params = {k: v for k, v in params.items() if k not in _META_KEYS}
 
-    dtrain = xgb.QuantileDMatrix(X_train, label=y_train, max_bin=max_bin)
-    dval = xgb.QuantileDMatrix(X_val, label=y_val, ref=dtrain, max_bin=max_bin)
+    nthread = _dmatrix_threads(params)
+    dtrain = xgb.QuantileDMatrix(
+        X_train, label=y_train, max_bin=max_bin, nthread=nthread
+    )
+    dval = xgb.QuantileDMatrix(
+        X_val, label=y_val, ref=dtrain, max_bin=max_bin, nthread=nthread
+    )
 
     booster = xgb.train(
         xgb_params,
@@ -665,7 +689,9 @@ def _train_phase2(
         f"lr={params.get('learning_rate')} | max_bin={max_bin}"
     )
     _t0 = _time.perf_counter()
-    dfull = xgb.QuantileDMatrix(X_full, label=y_full, max_bin=max_bin)
+    dfull = xgb.QuantileDMatrix(
+        X_full, label=y_full, max_bin=max_bin, nthread=_dmatrix_threads(params)
+    )
     booster = xgb.train(
         xgb_params,
         dfull,
@@ -732,8 +758,10 @@ def _eval_preset_rep(X_tr, y_tr, X_val, y_val, params: dict, nthread: int) -> in
     p["nthread"] = nthread
     max_bin = p.get("max_bin", 256)
     xgb_params = {k: v for k, v in p.items() if k not in _META_KEYS}
-    dtrain = xgb.QuantileDMatrix(X_tr, label=y_tr, max_bin=max_bin)
-    dval = xgb.QuantileDMatrix(X_val, label=y_val, ref=dtrain, max_bin=max_bin)
+    dtrain = xgb.QuantileDMatrix(X_tr, label=y_tr, max_bin=max_bin, nthread=nthread)
+    dval = xgb.QuantileDMatrix(
+        X_val, label=y_val, ref=dtrain, max_bin=max_bin, nthread=nthread
+    )
     booster = xgb.train(
         xgb_params,
         dtrain,
@@ -762,8 +790,10 @@ def _eval_preset_fast(X_tr, y_tr, X_val, y_val, params: dict, nthread: int) -> t
     p["nthread"] = nthread  # reduce threads so N parallel jobs ≈ 1 full core set
     max_bin = p.get("max_bin", 256)
     xgb_params = {k: v for k, v in p.items() if k not in _META_KEYS}
-    dtrain = xgb.QuantileDMatrix(X_tr, label=y_tr, max_bin=max_bin)
-    dval = xgb.QuantileDMatrix(X_val, label=y_val, ref=dtrain, max_bin=max_bin)
+    dtrain = xgb.QuantileDMatrix(X_tr, label=y_tr, max_bin=max_bin, nthread=nthread)
+    dval = xgb.QuantileDMatrix(
+        X_val, label=y_val, ref=dtrain, max_bin=max_bin, nthread=nthread
+    )
     booster = xgb.train(
         xgb_params,
         dtrain,
