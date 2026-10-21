@@ -1,9 +1,211 @@
-"""Task-neutral name for the CLI fit entry point (classification and regression).
+"""Fit one LazyQSAR model per task from a directory of labelled CSVs.
 
-``lazyqsar.api.classifier_fit`` keeps working; it predates regression and is where the
-implementation lives.
+The CLI training entry point. Each task becomes a :class:`~lazyqsar.qsar.LazyClassifierQSAR`
+or, with ``task="regression"``, a :class:`~lazyqsar.qsar.LazyRegressorQSAR` -- the same
+objects the Python API fits -- so a checkpoint means the same thing whichever way it was
+produced. One modelling task per run: every CSV is fitted as the same task.
+
+Descriptors are computed once over the union of every task's compounds and sliced per
+task. That is the reason this module exists rather than simply looping over
+``LazyClassifierQSAR.fit``: for a fifty-task run in slow mode it is the difference
+between one featurization pass and fifty, and featurization is roughly 93% of the work.
 """
 
-from .classifier_fit import fit, get_task_data, get_task_names  # noqa: F401
+import csv
+import os
+import shutil
+import tempfile
 
-__all__ = ["fit", "get_task_data", "get_task_names"]
+import numpy as np
+
+from ..ensemble.runner import get_chunk_size, persist_descriptors
+from ..qsar import LazyQSAR, validate_smiles
+from ..registry import DESCRIPTOR_TYPES, DESCRIPTORS_MODE, get_descriptor_type
+from ..utils.logging import logger
+
+
+def prepare_files(models: list = None, path: str = None):
+    if path is None:
+        path = tempfile.mkdtemp()
+    models_txt = os.path.join(path, "_models.txt")
+    if models is not None:
+        with open(models_txt, "w") as f:
+            for m in models:
+                f.write(m + "\n")
+    data = {
+        "models_txt": os.path.abspath(models_txt) if models is not None else None,
+    }
+    return data
+
+
+def read_all_smiles(data_dir):
+    """Every compound across every task CSV, deduplicated, in a reproducible order.
+
+    Both halves of that order used to be accidental: the files were read in
+    ``os.listdir`` order, which the filesystem chooses, and duplicates were dropped with
+    ``list(set(...))``, which depends on ``PYTHONHASHSEED``. Row order here is the row
+    order of the staged descriptor matrices, so two runs of the same command over the
+    same data featurized the same compounds in different positions. Nothing downstream
+    read the wrong row — ``row_of`` is built from this same list — but it did mean a fit
+    could not be reproduced exactly from one process to the next.
+
+    Sorting the filenames also lines this up with ``get_task_names``, which already sorts.
+    """
+    smiles_list = []
+    for fn in sorted(os.listdir(data_dir)):
+        if not fn.endswith(".csv"):
+            continue
+        with open(os.path.join(data_dir, fn), "r") as f:
+            reader = csv.reader(f)
+            next(reader)
+            for r in reader:
+                smiles_list += [r[0]]
+    return list(dict.fromkeys(smiles_list))
+
+
+def get_task_names(data_dir):
+    task_names = []
+    for fn in os.listdir(data_dir):
+        if not fn.endswith(".csv"):
+            continue
+        task_names += [os.path.splitext(fn)[0]]
+    task_names = sorted(task_names)
+    return task_names
+
+
+def get_task_data(data_dir, task_name, task="classification"):
+    """``(smiles_list, y)`` for one task CSV: int labels, or float targets for regression."""
+    regression = task == "regression"
+    path = os.path.join(data_dir, task_name + ".csv")
+    smiles_list = []
+    y = []
+    with open(path, "r") as f:
+        reader = csv.reader(f)
+        next(reader)
+        for line, r in enumerate(reader, start=2):
+            smiles_list += [r[0]]
+            try:
+                y += [float(r[1]) if regression else int(r[1])]
+            except (ValueError, IndexError):
+                kind = "numeric target" if regression else "binary 0/1 label"
+                raise ValueError(
+                    f"{path}, line {line}: expected a {kind} in the second column, "
+                    f"got {r[1:2]!r}."
+                ) from None
+    return smiles_list, np.array(y, dtype=float if regression else int)
+
+
+def fit(
+    data_dir: str,
+    model_dir: str,
+    models_txt: str = None,
+    mode: str = "slow",
+    task: str = "classification",
+):
+    """Fit and save one model per CSV in *data_dir*.
+
+    Parameters
+    ----------
+    data_dir : str
+        One CSV per task: SMILES in the first column, a binary label (classification) or
+        a numeric target (regression) in the second, with a header row. The file stem
+        becomes the task name.
+    model_dir : str
+        Output directory, one subdirectory per task. Must not already exist.
+    models_txt : str, optional
+        One task name per line, to fit a subset.
+    mode : str
+        ``"fast"`` (Morgan only) or ``"slow"`` (all five descriptors, pruned by the
+        portfolio).
+    task : str
+        ``"classification"`` (default) or ``"regression"``; applies to every CSV.
+    """
+    data_dir = os.path.abspath(data_dir)
+    model_dir = os.path.abspath(model_dir)
+
+    if task not in ("classification", "regression"):
+        raise ValueError(
+            f"Unknown task {task!r}. Choose 'classification' or 'regression'."
+        )
+
+    if mode not in DESCRIPTORS_MODE:
+        raise ValueError(
+            f"Unknown mode {mode!r}. Choose from: {sorted(DESCRIPTORS_MODE)}"
+        )
+
+    logger.info(
+        f"Fitting {task} models in mode '{mode}' | data: {data_dir} | "
+        f"output: {model_dir}"
+    )
+
+    if os.path.exists(model_dir):
+        raise FileExistsError(
+            f"Model directory {model_dir} already exists. Please remove it before running this command."
+        )
+
+    task_names = get_task_names(data_dir)
+    if models_txt is not None:
+        with open(models_txt, "r") as f:
+            models = [line.strip() for line in f]
+        task_names = [t for t in models if t in task_names]
+    if len(task_names) == 0:
+        raise ValueError("No valid tasks found in the data directory.")
+    logger.info(f"Tasks to fit: {task_names}")
+
+    descriptor_types = DESCRIPTORS_MODE[mode]
+    for descriptor_type in descriptor_types:
+        if descriptor_type not in DESCRIPTOR_TYPES:
+            raise Exception(f"Descriptor type {descriptor_type} is not supported.")
+
+    all_smiles = read_all_smiles(data_dir)
+    validate_smiles(all_smiles)
+    row_of = {s: i for i, s in enumerate(all_smiles)}
+    logger.info(f"Found {len(all_smiles)} unique SMILES across all tasks")
+
+    data = {t: get_task_data(data_dir, t, task) for t in task_names}
+
+    # Scratch lives outside model_dir: a crash must not strew .npy files among the
+    # checkpoints, which is what the previous in-place staging did.
+    #
+    # Always a fresh subdirectory this fit creates, so the cleanup below can only remove
+    # what the fit made. LAZYQSAR_FIT_SCRATCH names the *parent*: it used to be used as
+    # the scratch directory itself and then removed wholesale, so pointing it at a
+    # shared scratch disk -- as the README suggests -- deleted everything in it.
+    scratch_parent = os.environ.get("LAZYQSAR_FIT_SCRATCH") or None
+    if scratch_parent is not None:
+        os.makedirs(scratch_parent, exist_ok=True)
+    scratch = tempfile.mkdtemp(prefix="lazyqsar-fit-", dir=scratch_parent)
+    chunk_size = get_chunk_size()
+    try:
+        # Phase 1 -- featurize the union once per descriptor.
+        for descriptor_type in descriptor_types:
+            logger.info(f"Computing descriptors: {descriptor_type}")
+            descriptor = get_descriptor_type(descriptor_type)()
+            persist_descriptors(
+                descriptor,
+                all_smiles,
+                os.path.join(scratch, f"{descriptor_type}.npy"),
+                chunk_size,
+            )
+            del descriptor
+
+        # Phase 2 -- one model per task, reading its rows out of the staged matrices.
+        # The loop is per task rather than per descriptor because the portfolio and the
+        # active-descriptor mask are joint decisions across all descriptors of one task.
+        for task_name in task_names:
+            smiles_list, y = data[task_name]
+            rows = [row_of[s] for s in smiles_list]
+            precomputed = {
+                d: np.load(os.path.join(scratch, f"{d}.npy"), mmap_mode="r")[rows]
+                for d in descriptor_types
+            }
+            model = LazyQSAR(task=task, mode=mode)
+            model.fit(smiles_list, y, precomputed=precomputed, validate=False)
+            # Both tasks write the same layout: metadata.json plus one directory per
+            # descriptor, every graph already ONNX.
+            model.save_raw(os.path.join(model_dir, task_name))
+            del precomputed, model
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+
+    logger.success(f"All models saved to {model_dir}")

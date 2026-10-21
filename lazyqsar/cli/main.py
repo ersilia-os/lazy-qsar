@@ -222,7 +222,7 @@ def _cmd_fit(args):
     if task not in ("classification", "regression"):
         print(f"Unknown task {args.task!r}.", file=sys.stderr)
         sys.exit(1)
-    from ..api.classifier_fit import fit
+    from ..api.fit import fit
 
     fit(
         data_dir=args.input,
@@ -239,7 +239,7 @@ def _cmd_fit(args):
 
 
 def _cmd_predict(args):
-    from ..api.classifier_predict import predict
+    from ..api.predict import predict
 
     try:
         predict(

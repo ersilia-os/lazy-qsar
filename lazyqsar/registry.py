@@ -4,7 +4,7 @@ Kept separate from :mod:`lazyqsar.qsar` so the inference stack can learn *which*
 descriptors a checkpoint uses without importing any of them. ``qsar.py`` pulls in
 ``descriptors._validate``, which imports RDKit at module scope, so anything importing
 the registry from there inherits a hard RDKit dependency — including
-``api/classifier_predict.py``, which needs the names long before it needs a featurizer.
+``api/predict.py``, which needs the names long before it needs a featurizer.
 
 This module must stay importable on the base install: standard library only, no RDKit,
 no scikit-learn, no NumPy. ``get_descriptor_type`` imports the concrete class on demand,

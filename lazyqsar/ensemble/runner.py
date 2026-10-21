@@ -87,7 +87,7 @@ def persist_descriptors(
     ndarray of bool, shape (n_smiles,)
         True where the descriptor produced an all-NaN row. Computed here because the chunk
         is already in cache; the alternative is another pass over the whole matrix later.
-        Callers that do not want it can ignore the return value -- ``api.classifier_fit``
+        Callers that do not want it can ignore the return value -- ``api.fit``
         does.
     """
     n_total = len(smiles_list)
