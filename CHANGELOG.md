@@ -80,6 +80,14 @@ against is versioned separately and its id is recorded in every checkpoint's
   than -1.0, which the ensemble read as real skill.
 - A loaded XGBoost or linear head's `predict()` thresholds the raw score at the raw
   cutoff, as the fitted head does.
+- Kernel SVC/SVR graphs on wide-range descriptors (RDKit) could fail the bind check:
+  their float32 rounding reached 2.4e-4 against a 1e-4 tolerance. Measured on 15 real
+  datasets, the SVM tolerance is now 1e-3. Trees and linear heads stay at 1e-5 (their
+  largest gap was 1.1e-6).
+- An oversized kernel SVR no longer refits three times with a halved C before falling
+  back to the linear model; halving C does not shrink an SVR's support set. Outputs are
+  unchanged, and the fit is faster.
+- NNLS stacking ignores rows with a missing out-of-fold prediction instead of raising.
 
 ## 3.8.0
 
