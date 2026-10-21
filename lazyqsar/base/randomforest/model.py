@@ -68,8 +68,12 @@ def _forest_onnx(model) -> bytes:
     from skl2onnx.common.data_types import FloatTensorType
 
     initial_types = [("float_input", FloatTensorType([None, model.n_features_in_]))]
+    est = model._estimator
+    # Probabilities as a plain tensor, not ZipMap's list of per-row dicts that every
+    # prediction then unpacked in Python; the float32 values are the same.
+    options = {id(est): {"zipmap": False}} if hasattr(est, "classes_") else None
     with _rf_onnx_bool_attr_compat():
-        onnx_model = convert_sklearn(model._estimator, initial_types=initial_types)
+        onnx_model = convert_sklearn(est, initial_types=initial_types, options=options)
     return onnx_model.SerializeToString()
 
 

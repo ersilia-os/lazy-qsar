@@ -99,8 +99,11 @@ def _linear_pipeline_onnx(model, last_step: str) -> bytes:
         steps.append(("sfm", model._sfm))
     steps.append((last_step, model._estimator))
     initial_types = [("float_input", FloatTensorType([None, model.n_features_in_]))]
+    est = model._estimator
+    # Probabilities as a plain tensor rather than ZipMap's per-row dicts (same values).
+    options = {id(est): {"zipmap": False}} if hasattr(est, "classes_") else None
     return convert_sklearn(
-        Pipeline(steps), initial_types=initial_types
+        Pipeline(steps), initial_types=initial_types, options=options
     ).SerializeToString()
 
 
