@@ -284,7 +284,10 @@ class _LinearHead(BaseEstimator):
             X_val_vt = vt.transform(X[val_idx])
             return self._fit_predict_fold(X_tr_vt, y[train_idx], X_val_vt)
 
-        return self._oof_loop(fold_splits, fit_predict)
+        # Independent single-threaded solver runs (saga, coordinate descent, ridge),
+        # so the folds run concurrently; each fit is unchanged.
+        jobs = max(1, min(len(fold_splits), os.cpu_count() or 1))
+        return self._oof_loop(fold_splits, fit_predict, n_jobs=jobs)
 
     def get_feature_names_out(self) -> np.ndarray:
         check_is_fitted(self, attributes=["feature_mask_"])
