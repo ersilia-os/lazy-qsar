@@ -60,6 +60,8 @@ def collect(label, task_names):
                 oof = np.column_stack([h.model.oof_preds_ for h in batch.heads])
                 test = np.column_stack([h.predict(X_te) for h in batch.heads])
                 gate = batch.pooler.predict(test, X_te)
+                rf = [h.model for h in batch.heads if h.name == "rf"]
+                oob = rf[0].oob_preds_ if rf else np.empty(0)
             np.savez_compressed(
                 path,
                 heads=np.asarray(batch.portfolio),
@@ -69,6 +71,7 @@ def collect(label, task_names):
                 y_train=(y[tr] - inner.y_mean_) / inner.y_std_,
                 y_test=(y[te] - inner.y_mean_) / inner.y_std_,
                 single_batch=np.asarray(len(inner.models) == 1),
+                rf_oob=oob,
             )
             print(f"{task:28s} {split:9s} heads={list(batch.portfolio)}", flush=True)
 
@@ -141,16 +144,72 @@ def score(label):
         )
 
 
+def _with_oob(d):
+    """The OOF matrix with the RF column replaced by the forest's out-of-bag output."""
+    heads = d["heads"].tolist()
+    oof = d["oof"].copy()
+    oob = d["rf_oob"]
+    if "rf" not in heads or oob.size != oof.shape[0] or not np.isfinite(oob).all():
+        return None
+    oof[:, heads.index("rf")] = oob
+    return oof
+
+
+def ablations(label, rule="nnls"):
+    """RF OOF from folds vs OOB, and which head subsets earn their place."""
+    from itertools import combinations
+
+    in_dir = os.path.join(CACHE, "pooling", label)
+    files = sorted(os.listdir(in_dir))
+    oob_rel, subset_rel = [], {}
+    for fn in files:
+        d = np.load(os.path.join(in_dir, fn))
+        heads = d["heads"].tolist()
+        ref = _rmse(
+            pool(rule, d["oof"], d["test"], d["y_train"], d["gate"]), d["y_test"]
+        )
+        oof_oob = _with_oob(d)
+        if oof_oob is not None:
+            alt = _rmse(
+                pool(rule, oof_oob, d["test"], d["y_train"], d["gate"]), d["y_test"]
+            )
+            oob_rel.append(alt / ref - 1)
+        for k in range(1, len(heads) + 1):
+            for sub in combinations(range(len(heads)), k):
+                name = "+".join(heads[i] for i in sub)
+                cols = list(sub)
+                pred = pool(
+                    rule, d["oof"][:, cols], d["test"][:, cols], d["y_train"], d["gate"]
+                )
+                subset_rel.setdefault(name, []).append(
+                    _rmse(pred, d["y_test"]) / ref - 1
+                )
+    if oob_rel:
+        v = np.array(oob_rel)
+        print(
+            f"RF OOF from OOB instead of folds ({rule}): mean {100 * v.mean():+.2f}%  "
+            f"median {100 * np.median(v):+.2f}%  worse on {(v > 1e-9).sum()}/{len(v)}"
+        )
+    print(f"head subsets ({rule}), RMSE vs all heads:")
+    for name, v in sorted(subset_rel.items(), key=lambda kv: np.mean(kv[1])):
+        v = np.array(v)
+        print(
+            f"  {name:18s} n={len(v):3d}  mean {100 * v.mean():+.2f}%  median {100 * np.median(v):+.2f}%"
+        )
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("action", choices=["collect", "score"])
+    ap.add_argument("action", choices=["collect", "score", "ablations"])
     ap.add_argument("--label", required=True)
     ap.add_argument("--tasks", nargs="*", default=None)
     args = ap.parse_args()
     if args.action == "collect":
         collect(args.label, args.tasks or task_registry.task_names())
-    else:
+    elif args.action == "score":
         score(args.label)
+    else:
+        ablations(args.label)
 
 
 if __name__ == "__main__":

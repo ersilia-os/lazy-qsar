@@ -69,6 +69,7 @@ except ImportError:
 from .inspector import inspect as _inspect, DatasetProfile
 from .params import get_params as _get_params
 from .presets import (
+    probst_regression_params,
     xgb_default_params,
     flaml_params,
     autogluon_params,
@@ -88,6 +89,8 @@ from lazyqsar.utils.splits import (
 
 _VAL_FRACTION = 0.1
 _VAL_MIN_ROWS = 200
+# Below this many rows a regression fit has no held-out split for early stopping.
+_REGRESSION_MIN_ES_ROWS = 50
 
 
 _VAL_MIN_MINORITY = 15  # minimum minority-class samples in the validation split
@@ -199,7 +202,11 @@ class _XGBHead(BaseEstimator):
 
         self.timing_ = {}
 
-        if profile.n_samples >= _VAL_MIN_ROWS:
+        if self._task == "regression":
+            final_booster, best_iter = self._fit_regression_preset(
+                X, y, profile, device
+            )
+        elif profile.n_samples >= _VAL_MIN_ROWS:
             if self.portfolio:
                 _t_ps = _time.perf_counter()
                 best_name, best_params, best_iter, scores = _portfolio_select(
@@ -252,6 +259,44 @@ class _XGBHead(BaseEstimator):
         self.best_iteration_ = best_iter
         self._bind_onnx()
         return profile
+
+    def _fit_regression_preset(self, X, y, profile, device):
+        """One preset, its round count set by early stopping on a held-out split.
+
+        Regression does not race presets: the benchmark behind
+        :func:`~lazyqsar.base.xgboost.presets.probst_regression_params` found one that
+        is within ~1% of the per-task best on average, and the race cost more fit time
+        than it won back. The held-out split is quantile-stratified on y (10%, or 20%
+        below 200 rows); under 50 rows there is nothing to hold out and a fixed round
+        count is used.
+        """
+        params = probst_regression_params(profile, device=device, nthread=self.nthread)
+        self.preset_name_ = "probst"
+        self.params_ = params
+        n = len(y)
+        t0 = _time.perf_counter()
+        if n >= _REGRESSION_MIN_ES_ROWS:
+            X_tr, X_val, y_tr, y_val = train_test_split(
+                X,
+                y,
+                test_size=_VAL_FRACTION if n >= _VAL_MIN_ROWS else 0.2,
+                random_state=_RANDOM_STATE,
+                stratify=quantile_bins(np.asarray(y, dtype=float), 5),
+            )
+            _, best_iter, score = _train_phase1(
+                X_tr, y_tr, X_val, y_val, params, verbose=False
+            )
+            self.portfolio_scores_ = {"probst": float(score)}
+        else:
+            best_iter = _PHASE2_MIN_ROUNDS
+            self.portfolio_scores_ = {}
+        self.timing_["portfolio_select"] = _time.perf_counter() - t0
+        t0 = _time.perf_counter()
+        booster, best_iter = _train_phase2(
+            X, y, params, best_iter, max_rounds=self.max_rounds
+        )
+        self.timing_["phase2_refit"] = _time.perf_counter() - t0
+        return booster, best_iter
 
     def _oof(self, X, y, fold_splits) -> np.ndarray:
         """Each fold trains the chosen preset for the full fit's round count."""

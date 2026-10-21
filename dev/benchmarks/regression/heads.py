@@ -286,7 +286,7 @@ def run(label, heads, task_names, max_n):
                     print(
                         f"{task:28s} {split:9s} {head:4s} {preset:24s} "
                         + (
-                            f"rmse={m['rmse']:.3f} rho={m['spearman']:.3f}"
+                            f"rmse={m['rmse']:.3f} rho={m['spearman'] or float('nan'):.3f}"
                             if m
                             else record["error"][:60]
                         )

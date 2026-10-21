@@ -99,11 +99,12 @@ def _rf_onnx_bool_attr_compat():
 
 
 class _RFHead(BaseEstimator):
-    """The forest-specific half of both RF heads: presets, OOB race, export, save.
+    """The forest-specific half of both RF heads: export, folds, save, and the OOB race.
 
-    A subclass names its task and provides ``_make_estimator(params, oob_score)``,
-    ``_oob_score(est, y)`` (higher is better), ``_gain(score, default_score)`` and
-    ``_min_gain(y)``.
+    The OOB preset race (:meth:`_candidate_presets`, :meth:`_fit_forest`) is the
+    classifier's; it needs ``_make_estimator(params, oob_score)``, ``_oob_score(est, y)``
+    (higher is better), ``_gain(score, default_score)`` and ``_min_gain(y)``. The
+    regressor fits one preset.
     """
 
     _task = ""
@@ -124,24 +125,15 @@ class _RFHead(BaseEstimator):
 
     def _candidate_presets(self, profile, n: int) -> tuple[dict, set]:
         """The presets the OOB race compares, with the leaf-count size cap applied."""
-        task = self._task
         skip: set[str] = set()
         if profile.n_features > _EXTERNAL_PRESETS_MAX_P:
             skip = {"flaml", "autogluon"}
-        if task == "regression":
-            candidates = [
-                ("heuristic", heuristic_rf_params(profile, task=task)),
-                ("default", default_rf_params(task=task)),
-                ("flaml", flaml_rf_params(profile, task=task)),
-                ("autogluon", autogluon_rf_params(profile)),
-            ]
-        else:
-            candidates = [
-                ("heuristic", heuristic_rf_params(profile)),
-                ("default", default_rf_params()),
-                ("flaml", flaml_rf_params(profile)),
-                ("autogluon", autogluon_rf_params(profile)),
-            ]
+        candidates = [
+            ("heuristic", heuristic_rf_params(profile)),
+            ("default", default_rf_params()),
+            ("flaml", flaml_rf_params(profile)),
+            ("autogluon", autogluon_rf_params(profile)),
+        ]
         presets = {}
         for name, params in candidates:
             if name in skip:
@@ -432,32 +424,59 @@ class BaseRFClassifier(_RFHead, ClassifierHead):
         return self
 
 
+def regression_rf_params(n: int) -> dict:
+    """The regression forest: ``max_features=1/3``, ``min_samples_leaf=3``.
+
+    Breiman's regression rule for the split candidates (p/3, as in R's randomForest),
+    with a leaf floor of 3 rows. On LazyQSAR's regression benchmark (TDC ADMET, Biogen
+    ADME, 30 MoleculeACE sets; random and scaffold splits; preprocessed Morgan
+    fingerprints) it was within 1.6% of the per-task best RMSE on average, against 5.5%
+    for the classification-derived heuristic it replaces, and its trees are ~3.5x
+    smaller than unpruned ones -- which is what the ONNX graph and its load time scale
+    with. The tree count follows the classification heuristic (more trees on more data).
+    """
+    if n < 500:
+        n_estimators = 100
+    elif n < 5_000:
+        n_estimators = 200
+    else:
+        n_estimators = 300
+    return {
+        "n_estimators": n_estimators,
+        "max_depth": None,
+        "min_samples_leaf": 3,
+        "max_features": 1.0 / 3.0,
+    }
+
+
 class BaseRFRegressor(_RFHead, RegressorHead):
     """
-    Regressor with automatically selected Random Forest hyperparameters.
+    Random-forest regressor with the benchmark-selected preset.
 
-    Mirrors :class:`BaseRFClassifier`: an OOB portfolio (heuristic / default /
-    flaml / autogluon) picks the preset by out-of-bag RMSE, then
-    quantile-stratified k-fold OOF predictions feed the ensemble gate and the
-    OOF ECDF ranker. No calibration and no decision cutoff.
+    One preset (:func:`regression_rf_params`), fitted once; quantile-stratified k-fold
+    OOF predictions (or, with ``oof_source="oob"``, the forest's own out-of-bag
+    predictions) feed the ensemble gate and the OOF ECDF ranker.
 
     Parameters
     ----------
     n_estimators, max_depth, min_samples_leaf, max_features
-        As in :class:`BaseRFClassifier`; ``_HEURISTIC`` derives them from the
-        dataset profile.
+        Override the preset; ``_HEURISTIC`` keeps it.
     n_jobs : int
         Parallelism for tree fitting. -1 uses all available cores.
     random_state : int or None
         Reproducibility seed.
     oof : bool
         If True (default), collect OOF predictions after fitting.
+    oof_source : {"folds", "oob"}
+        Where the OOF predictions come from. ``"folds"`` refits the forest on k folds,
+        like every other head; ``"oob"`` reads the final forest's out-of-bag
+        predictions, which are also out-of-sample and cost no refit.
 
     Attributes (after fit)
     ----------------------
     selected_preset_ : str
     params_ : dict
-    oob_scores_ : dict      — negative OOB RMSE per preset (portfolio path only)
+    oob_preds_ : ndarray (n,)  — out-of-bag predictions of the final forest
     oof_preds_ : ndarray (n,)
     oof_rho_ : float or None
     train_rho_ : float or None
@@ -476,6 +495,7 @@ class BaseRFRegressor(_RFHead, RegressorHead):
         n_jobs: int = -1,
         random_state: int | None = 42,
         oof: bool = True,
+        oof_source: str = "folds",
     ):
         self.n_estimators = n_estimators
         self.max_depth = max_depth
@@ -484,6 +504,7 @@ class BaseRFRegressor(_RFHead, RegressorHead):
         self.n_jobs = n_jobs
         self.random_state = random_state
         self.oof = oof
+        self.oof_source = oof_source
 
     def fit(self, X, y) -> "BaseRFRegressor":
         require_fit_deps(_FIT_DEPS_AVAILABLE)
@@ -503,37 +524,6 @@ class BaseRFRegressor(_RFHead, RegressorHead):
             random_state=self.random_state,
         )
 
-    @staticmethod
-    def _oob_score(est, y) -> float:
-        # Higher is better: negative out-of-bag RMSE, the metric every regression
-        # head's preset race uses.
-        oob = np.asarray(est.oob_prediction_, dtype=float).ravel()
-        ok = np.isfinite(oob)
-        if not ok.any():
-            return float("nan")
-        return -float(np.sqrt(np.mean((y[ok] - oob[ok]) ** 2)))
-
-    @staticmethod
-    def _gain(score, default_score) -> float:
-        # Relative RMSE improvement, so the margin means the same at any target scale.
-        return (score - default_score) / max(abs(default_score), 1e-12)
-
-    @staticmethod
-    def _min_gain(y) -> float:
-        # The relative OOB RMSE's sampling noise shrinks as ~1/sqrt(n).
-        return min_gain_threshold(len(y), len(y))
-
-    def _candidate_presets(self, profile, n: int) -> tuple[dict, set]:
-        presets, skip = super()._candidate_presets(profile, n)
-        # The sklearn default grows unpruned bagged trees (max_features=1.0,
-        # min_samples_leaf=1); cap leaves so the ONNX export stays bounded.
-        d = presets["default"]
-        if d.get("max_leaf_nodes") is None and d.get("max_depth") is None:
-            presets["default"] = dict(
-                d, max_leaf_nodes=rf_leaf_cap(n, d["n_estimators"])
-            )
-        return presets, skip
-
     def _fit_raw(self, X, y) -> "BaseRFRegressor":
         require_fit_deps(_FIT_DEPS_AVAILABLE)
         logger.rule("BaseRFRegressor")
@@ -542,9 +532,17 @@ class BaseRFRegressor(_RFHead, RegressorHead):
         self.n_features_in_ = X.shape[1]
         self._onnx_probe_ = probe_rows(X)
 
-        profile = profile_rf_dataset(X, y, task="regression")
-        presets, skip = self._candidate_presets(profile, X.shape[0])
-        self._fit_forest(X, y, presets, skip)
+        t0 = _time.perf_counter()
+        self.params_ = self._resolve_params(regression_rf_params(X.shape[0]))
+        self.selected_preset_ = "p3_leaf3"
+        # Out-of-bag scoring is nearly free and gives an out-of-sample prediction for
+        # every row (rows in every bootstrap sample are rare; they stay NaN).
+        self._estimator = self._make_estimator(self.params_, oob_score=True)
+        self._estimator.fit(X, y)
+        self.oob_preds_ = np.asarray(
+            self._estimator.oob_prediction_, dtype=float
+        ).ravel()
+        self.timing_ = {"fit": _time.perf_counter() - t0}
         self._bind_onnx()
         self.train_rho_ = spearman_score(y, self.predict(X))
         self._log_fit(X)
@@ -554,7 +552,7 @@ class BaseRFRegressor(_RFHead, RegressorHead):
     def collect_oof(
         self, X, y, n_splits: int | None = None, random_state: int = 42
     ) -> "BaseRFRegressor":
-        """Full fit (portfolio runs once), then quantile-stratified k-fold OOF."""
+        """Full fit, then OOF predictions from k quantile-stratified folds or the OOB."""
         X = check_array(X, dtype="numeric", accept_sparse="csr")
         y = np.asarray(y, dtype=float).ravel()
         k, fold_splits = make_quantile_oof_splits(
@@ -564,8 +562,16 @@ class BaseRFRegressor(_RFHead, RegressorHead):
             f"BaseRFRegressor.collect_oof: full fit on n={len(y)} (forest fit runs once)"
         )
         self._fit_raw(X, y)
-        logger.info(f"collect_oof: {k}-fold OOF | fold_solver=RandomForestRegressor")
-        oof = self._oof(X, y, fold_splits, lambda est, Xv: est.predict(Xv))
+        if self.oof_source == "oob" and np.isfinite(self.oob_preds_).all():
+            logger.info("collect_oof: out-of-bag predictions of the final forest")
+            self.timing_["oof_folds"] = []
+            self.timing_["oof_total"] = 0.0
+            oof = self.oob_preds_.copy()
+        else:
+            logger.info(
+                f"collect_oof: {k}-fold OOF | fold_solver=RandomForestRegressor"
+            )
+            oof = self._oof(X, y, fold_splits, lambda est, Xv: est.predict(Xv))
         self._finish_oof(y, oof)
         return self
 

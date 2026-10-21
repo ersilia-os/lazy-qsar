@@ -140,7 +140,14 @@ class GatedPooler:
         )
 
     def get_weights(self, X_prep: np.ndarray) -> np.ndarray:
-        """Return per-sample weights (n_samples, n_heads)."""
+        """Return per-sample weights (n_samples, n_heads).
+
+        A pooler with fixed per-head weights (``_head_weights``, the regression
+        stacker) returns them for every row; otherwise the gate's softmax.
+        """
+        head_weights = getattr(self, "_head_weights", None)
+        if head_weights is not None:
+            return np.tile(np.asarray(head_weights, dtype=float), (len(X_prep), 1))
         return gate_weights(
             X_prep, self._gate_coef, self._gate_intercept, self._n_heads
         )
@@ -165,6 +172,9 @@ class GatedPooler:
         import os
 
         data = {"task": self.task, "portfolio": self.portfolio}
+        head_weights = getattr(self, "_head_weights", None)
+        if head_weights is not None:
+            data["head_weights"] = [float(w) for w in head_weights]
         if self._gate_coef is not None:
             data["gate_coef"] = self._gate_coef.tolist()
             data["gate_intercept"] = self._gate_intercept.tolist()
@@ -180,6 +190,7 @@ class GatedPooler:
         data = _read_pooler_json(directory)
         inst = cls(portfolio=data["portfolio"])
         inst._gate_coef, inst._gate_intercept = _gate_from_json(data)
+        inst._head_weights = data.get("head_weights")
         if "score" in data:
             inst._score = data["score"]
         return inst
@@ -205,6 +216,7 @@ class GatedPoolerArtifact:
     def __init__(self, data: dict):
         self._n_heads = len(data["portfolio"])
         self._gate_coef, self._gate_intercept = _gate_from_json(data)
+        self._head_weights = data.get("head_weights")
 
     get_weights = GatedPooler.get_weights
     _pool = GatedPooler._pool

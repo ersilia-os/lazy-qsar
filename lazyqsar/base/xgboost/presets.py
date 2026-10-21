@@ -321,3 +321,40 @@ def rf_params(
         params["nthread"] = (os.cpu_count() or 1) if nthread == -1 else nthread
     _add_task_params(params, profile)
     return params
+
+
+def probst_regression_params(
+    profile: DatasetProfile, device: str, nthread: int = -1
+) -> Dict[str, Any]:
+    """The regression preset: Probst, Boulesteix & Bischl (2019) tuned defaults.
+
+    "Tunability: importance of hyperparameters of machine learning algorithms" (JMLR
+    20:53) derives data-independent defaults for xgboost from tuning on OpenML tasks:
+    eta 0.052, max_depth 11, min_child_weight 2, subsample 0.87, colsample_bytree 0.71,
+    colsample_bylevel 0.64. On LazyQSAR's regression benchmark (TDC ADMET, Biogen ADME,
+    MoleculeACE; random and scaffold splits; fingerprints) it was the best of five
+    candidates -- within 1.1% of the per-task best on average, best on 41 of 90 task
+    splits -- against 6.8% for xgboost's own defaults and 4.4% for AutoGluon's. Early
+    stopping on a held-out split sets the number of rounds.
+    """
+    params: Dict[str, Any] = {
+        "tree_method": "hist",
+        "device": "cuda" if device == "gpu" else "cpu",
+        "learning_rate": 0.052,
+        "max_depth": 11,
+        "min_child_weight": 2,
+        "subsample": 0.87,
+        "colsample_bytree": 0.71,
+        "colsample_bylevel": 0.64,
+        "reg_alpha": 0.0,
+        "reg_lambda": 1.0,
+        "max_bin": 128 if profile.n_samples > 100_000 else 256,
+        "n_estimators": 3000,
+        "early_stopping_rounds": 50,
+    }
+    if device == "cpu":
+        import os
+
+        params["nthread"] = (os.cpu_count() or 1) if nthread == -1 else nthread
+    _add_task_params(params, profile)
+    return params

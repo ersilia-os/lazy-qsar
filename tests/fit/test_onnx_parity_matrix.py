@@ -294,9 +294,14 @@ def test_rf_regressor(data, n, tmp_path):
 
 
 @pytest.mark.parametrize("kind", ["kernel", "linear"])
-def test_svr_kernel_and_linear(kind, tmp_path):
+def test_svr_kernel_and_linear(kind, tmp_path, monkeypatch):
+    """The kernel preset, and the LinearSVR the ONNX size guard falls back to."""
     from lazyqsar.base.svc import BaseSVR
+    from lazyqsar.base.svc import _common
 
+    if kind == "linear":
+        # No kernel model fits a zero-byte budget, so the guard ends on LinearSVR.
+        monkeypatch.setattr(_common, "_ONNX_MAX_BYTES", 0)
     X = _fingerprint() if kind == "linear" else _dense()
     model = _quiet(BaseSVR(portfolio=False).fit, X, _target(X))
     assert model._use_linear_ == (kind == "linear")
