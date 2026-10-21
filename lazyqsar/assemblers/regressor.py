@@ -21,7 +21,7 @@ from lazyqsar.ensemble.intervals import (
     interval_half_width,
 )
 from lazyqsar.utils.logging import logger
-from lazyqsar.utils.metrics import spearman_score
+from lazyqsar.utils.metrics import regression_metrics, spearman_score
 from lazyqsar.utils.ranking import rank_from_knots
 from lazyqsar.utils.splits import check_trainable_regression
 
@@ -176,6 +176,7 @@ class LazyRegressor(_AssemblerBase):
     def _build_oof_percentile(self, X, y):
         """OOF ECDF knots (the reliability rank) and the out-of-fold ρ."""
         self.oof_rho_ = None
+        self.oof_metrics_ = None
         self.intervals_ = None
         pooled = self._oof_accumulate(X)
         self._set_oof_reference(pooled)
@@ -187,6 +188,7 @@ class LazyRegressor(_AssemblerBase):
             return
         self.oof_preds_ = pooled
         self.oof_rho_ = spearman_score(y, pooled)
+        self.oof_metrics_ = regression_metrics(y, pooled)
         self.intervals_ = fit_intervals(y, pooled)
 
     def oof_channels(self, X):
@@ -256,5 +258,6 @@ class LazyRegressor(_AssemblerBase):
             "y_std": self.y_std_,
             "oof_rho": self.oof_rho_,
             "train_rho": self.train_rho_,
+            "oof_metrics": getattr(self, "oof_metrics_", None),
             "intervals": getattr(self, "intervals_", None),
         }

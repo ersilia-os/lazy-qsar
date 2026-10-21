@@ -478,6 +478,11 @@ class LazyRegressor(_AgnosticBase):
     def train_rho_(self):
         return self._model.train_rho_
 
+    @property
+    def oof_metrics_(self):
+        """Spearman, R², RMSE and MAE of the pooled out-of-fold predictions."""
+        return self._model.oof_metrics_
+
     def predict(self, X=None, h5_file=None, h5_idxs=None) -> np.ndarray:
         """Return predicted values, shape (n,)."""
         X = _resolve_X(X, h5_file, h5_idxs)

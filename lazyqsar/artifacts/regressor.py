@@ -105,6 +105,10 @@ class LazyRegressorArtifact:
     def train_rho_(self):
         return self.metadata.get("train_rho")
 
+    @property
+    def oof_metrics_(self):
+        return self.metadata.get("oof_metrics")
+
     def predict(self, X) -> np.ndarray:
         """Predicted values in original target units, shape (n_samples,)."""
         Z = np.array([b.predict(X) for b in self._batches])
