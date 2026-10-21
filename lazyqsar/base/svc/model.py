@@ -92,14 +92,12 @@ from ._common import (
     svm_cost as _svc_cost,
 )
 from lazyqsar.base._head import (
-    DEFAULT_DECISION_CUTOFF as _DEFAULT_DECISION_CUTOFF,
     ClassifierHead,
     require_fit_deps,
 )
 from lazyqsar.base._race import min_gain_threshold
 from lazyqsar.utils.logging import logger
 from lazyqsar.utils.onnx_check import probe_rows
-from lazyqsar.utils.ranking import binarize, prepare_knots, rank_from_knots
 from lazyqsar.utils.splits import make_stratified_oof_splits
 
 
@@ -110,10 +108,9 @@ from lazyqsar.utils.splits import make_stratified_oof_splits
 _VAL_MIN_MINORITY = 15
 
 # Deterministic probe used to record the true sign of decision_function at save time,
-# so the artifact can identify which ONNX score column to read. See
-# BaseSVCArtifact._resolve_score_column.
-_SCORE_CANARY_SEED = 20240917
-_SCORE_CANARY_ROWS = 8
+# so the artifact can identify which ONNX score column to read; defined once, with the
+# artifact that reads it (SVCArtifact._resolve_score_column).
+from lazyqsar.artifacts.svc import _SCORE_CANARY_ROWS, _SCORE_CANARY_SEED  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -206,11 +203,6 @@ def _validation_split(
         return X_tr, X_val, y_tr, y_val, True
     except ValueError:
         return X, X, y, y, False
-
-
-from lazyqsar.artifacts._common import (  # noqa: E402
-    apply_calibrator as _apply_calibrator_artifact,
-)
 
 
 def _portfolio_select_svc(
@@ -640,202 +632,5 @@ class BaseSVCClassifier(_SVMHead, ClassifierHead, BaseEstimator, ClassifierMixin
             json.dump(metadata, f, indent=2)
 
 
-# ---------------------------------------------------------------------------
-# BaseSVCArtifact — inference only (numpy + onnxruntime, no sklearn)
-# ---------------------------------------------------------------------------
-
-
-class BaseSVCArtifact:
-    """
-    Inference-only loader for a model saved by BaseSVCClassifier.save().
-
-    Only requires numpy and onnxruntime — no sklearn at inference time.
-
-    The ONNX model outputs raw decision function scores.  This artifact applies:
-      1. sigmoid(score)          → pre-calibration [0,1] probability (predict_score)
-      2. calibrator(sigmoid)     → calibrated probability (run / predict_proba)
-    """
-
-    def __init__(self):
-        self._session = None
-        self._input_name = ""
-        self._score_col = 0
-        self.metadata: dict = {}
-        self._cal = None
-        self._ranker = None
-        self.decision_cutoff_raw = _DEFAULT_DECISION_CUTOFF
-        self.decision_cutoff_proba = _DEFAULT_DECISION_CUTOFF
-        self.decision_cutoff_rank = _DEFAULT_DECISION_CUTOFF
-        self.decision_cutoff_logit = 0.0
-
-    @classmethod
-    def load(cls, directory: str) -> "BaseSVCArtifact":
-        json_path = os.path.join(directory, "svc.json")
-        if not os.path.isfile(json_path):
-            raise FileNotFoundError(f"svc.json not found in {directory!r}")
-        self = cls.__new__(cls)
-        with open(json_path) as f:
-            self.metadata = json.load(f)
-        fmt = self.metadata.get("format", "onnx")
-        if fmt != "onnx":
-            raise ValueError(
-                f"Unsupported SVC artifact format {fmt!r} in {directory!r}. "
-                "Only 'onnx' is supported."
-            )
-        self._cal = self.metadata.get("calibrator", None)
-        self._ranker = self.metadata.get("ranker", None)
-        self.decision_cutoff_raw = float(
-            self.metadata.get("decision_cutoff_raw", _DEFAULT_DECISION_CUTOFF)
-        )
-        self.decision_cutoff_proba = float(
-            self.metadata.get("decision_cutoff_proba", _DEFAULT_DECISION_CUTOFF)
-        )
-        self.decision_cutoff_rank = float(
-            self.metadata.get("decision_cutoff_rank", _DEFAULT_DECISION_CUTOFF)
-        )
-        self.decision_cutoff_logit = float(
-            self.metadata.get("decision_cutoff_logit", 0.0)
-        )
-        import onnxruntime as rt
-
-        onnx_path = os.path.join(directory, "svc.onnx")
-        if not os.path.isfile(onnx_path):
-            raise FileNotFoundError(f"svc.onnx not found in {directory!r}")
-        self._session = rt.InferenceSession(
-            onnx_path, providers=["CPUExecutionProvider"]
-        )
-        self._input_name = self._session.get_inputs()[0].name
-        self._score_col = self._resolve_score_column()
-        return self
-
-    def _raw_outputs(self, X: np.ndarray) -> np.ndarray:
-        """Return the ONNX score output as a float64 array, shape unchanged."""
-        X_f32 = np.asarray(X, dtype=np.float32)
-        outputs = self._session.run(None, {self._input_name: X_f32})
-        return np.asarray(outputs[1], dtype=np.float64)
-
-    def _resolve_score_column(self) -> int:
-        """Return which ONNX score column carries sklearn's ``decision_function``.
-
-        ``_to_onnx`` exports the two SVC flavours through two different skl2onnx
-        converters -- ``raw_scores=True`` for LinearSVC, ``zipmap=False`` for kernel SVC --
-        and they do not order the two mutually-negated score columns the same way. A
-        hardcoded column is therefore correct for one flavour and inverts the other,
-        silently, for every prediction the head makes.
-
-        Resolution is primarily against the graph's OWN label output: sklearn's binary SVC
-        predicts class 1 exactly when ``decision_function > 0``, so the score column whose
-        sign reproduces ``output[0]`` is the decision function. That needs nothing from the
-        metadata, which is what makes it work for models saved before the canary existed.
-        The canary, when present, is used as a cross-check.
-        """
-        n_features = int(self.metadata["n_features_in"])
-        canary = self.metadata.get("score_canary")
-        seed = int(canary["seed"]) if canary else _SCORE_CANARY_SEED
-        n_rows = int(canary["n_rows"]) if canary else _SCORE_CANARY_ROWS
-        probe = np.random.default_rng(seed).standard_normal((n_rows, n_features))
-
-        outputs = self._session.run(
-            None, {self._input_name: np.asarray(probe, dtype=np.float32)}
-        )
-        raw = np.asarray(outputs[1], dtype=np.float64)
-        if raw.ndim != 2 or raw.shape[1] != 2:
-            return 0
-
-        # Primary: agreement between each column's sign and the exported labels.
-        labels = np.asarray(outputs[0]).ravel().astype(int)
-        agree = [float((labels == (raw[:, c] > 0).astype(int)).mean()) for c in (0, 1)]
-        by_label = int(np.argmax(agree))
-        # The columns are exact negations, so a usable probe separates them completely.
-        # Anything less means every probe row sat on the decision boundary.
-        label_decisive = abs(agree[0] - agree[1]) > 0.5
-
-        if canary is not None:
-            expected = np.asarray(canary["decision"], dtype=np.float64)
-            # Relative tolerance: decision values reach O(100) on LinearSVC heads, where a
-            # float32 round-trip costs far more than a fixed 1e-3 would allow.
-            scale = max(1.0, float(np.abs(expected).max()))
-            errors = [np.abs(raw[:, c] - expected).max() / scale for c in (0, 1)]
-            by_canary = int(np.argmin(errors))
-            if label_decisive and by_canary != by_label:
-                logger.warning(
-                    f"SVC score canary picks column {by_canary} but the exported labels "
-                    f"pick column {by_label}; trusting the labels."
-                )
-                return by_label
-            if errors[by_canary] > 1e-3:
-                logger.warning(
-                    f"SVC score canary did not match either ONNX column "
-                    f"(best relative residual {errors[by_canary]:.3g})."
-                )
-            return by_canary
-
-        if label_decisive:
-            return by_label
-
-        # Degenerate probe. Fall back to the estimator type, recorded in every svc.json.
-        use_linear = self.metadata.get("use_linear")
-        if use_linear is None:
-            logger.warning(
-                "SVC artifact: could not resolve the score column from the exported "
-                "labels and no use_linear flag is present; assuming column 0."
-            )
-            return 0
-        return 1 if use_linear else 0
-
-    def _raw_scores(self, X: np.ndarray) -> np.ndarray:
-        """Return shape-(n,) raw decision function scores from ONNX."""
-        raw = self._raw_outputs(X)
-        if raw.ndim == 1:
-            return raw
-        if raw.ndim == 2 and raw.shape[1] == 1:
-            return raw.ravel()
-        if raw.ndim == 2:
-            return raw[:, self._score_col]
-        return raw.ravel()
-
-    def run(self, X) -> np.ndarray:
-        """
-        Return calibrated class probabilities, shape (n_samples, 2).
-
-        Pipeline: raw_score → sigmoid → calibrator.
-        """
-        X = np.asarray(X, dtype=np.float32)
-        df = self._raw_scores(X)
-        p_raw = 1.0 / (1.0 + np.exp(-np.clip(df, -500.0, 500.0)))
-        proba = np.column_stack([1 - p_raw, p_raw])
-        if self._cal is not None:
-            proba = _apply_calibrator_artifact(proba, self._cal)
-        return proba
-
-    def predict_score(self, X) -> np.ndarray:
-        """Return sigmoid(decision_function) pre-calibration scores, shape (n_samples, 2)."""
-        X = np.asarray(X, dtype=np.float32)
-        df = self._raw_scores(X)
-        p_raw = 1.0 / (1.0 + np.exp(-np.clip(df, -500.0, 500.0)))
-        return np.column_stack([1 - p_raw, p_raw])
-
-    def predict_logit(self, X) -> np.ndarray:
-        """Return logit of calibrated probabilities, shape (n_samples, 2)."""
-        p = np.clip(self.run(X)[:, 1], 1e-7, 1.0 - 1e-7)
-        logit_1 = np.log(p / (1.0 - p))
-        return np.column_stack([-logit_1, logit_1])
-
-    def predict_rank(self, X) -> np.ndarray:
-        """Map pre-calibration scores to [0,1] ranks via ECDF, shape (n_samples, 2)."""
-        if self._ranker is None:
-            raise RuntimeError("No ranker stored in this artifact.")
-        if getattr(self, "_ranker_prepared", None) is None:
-            self._ranker_prepared = prepare_knots(self._ranker["knots"])
-        rank_1 = rank_from_knots(
-            self.predict_score(X)[:, 1], prepared=self._ranker_prepared
-        )
-        return np.column_stack([1 - rank_1, rank_1])
-
-    def predict(self, X, cutoff: float | None = None) -> np.ndarray:
-        """Return binary 0/1 predictions."""
-        threshold = self.decision_cutoff_raw if cutoff is None else float(cutoff)
-        # Threshold the same quantity the fit-time estimator does: raw score against
-        # the raw cutoff. Comparing run() (calibrated) against decision_cutoff_raw
-        # mixes two different scales.
-        return binarize(self.predict_score(X)[:, 1], threshold)
+# Inference: one implementation per head, in lazyqsar.artifacts.
+from lazyqsar.artifacts.svc import SVCArtifact as BaseSVCArtifact  # noqa: E402,F401

@@ -5,14 +5,10 @@ Loads an xgboost.onnx written by BaseXGBClassifier.save() or BaseXGBRegressor.sa
 Only requires numpy and onnxruntime — no xgboost or sklearn.
 """
 
-import json
-import os
-
 import numpy as np
 import onnxruntime as rt
 
-from lazyqsar.artifacts._common import DecisionCutoffMixin, apply_calibrator
-from lazyqsar.utils.ranking import prepare_knots, rank_from_knots
+from lazyqsar.artifacts._head import HeadArtifact
 
 
 def _build_xgb_session(onnx_path: str) -> rt.InferenceSession:
@@ -50,81 +46,22 @@ def _build_xgb_session(onnx_path: str) -> rt.InferenceSession:
     )
 
 
-class XGBoostArtifact(DecisionCutoffMixin):
+class XGBoostArtifact(HeadArtifact):
     """Load and run a saved XGBoost ONNX model."""
 
-    def __init__(self):
-        self._session = None
-        self._input_name: str = ""
-        self.task: str = ""
-        self.metadata: dict = {}
+    _stem = "xgboost"
+    _build_session = staticmethod(_build_xgb_session)
 
-    @classmethod
-    def load(cls, directory: str) -> "XGBoostArtifact":
-        json_path = os.path.join(directory, "xgboost.json")
-        onnx_path = os.path.join(directory, "xgboost.onnx")
-        if not os.path.isfile(json_path):
-            raise FileNotFoundError(f"xgboost.json not found in {directory!r}")
-        if not os.path.isfile(onnx_path):
-            raise FileNotFoundError(f"xgboost.onnx not found in {directory!r}")
-        self = cls.__new__(cls)
-        with open(json_path) as f:
-            self.metadata = json.load(f)
-        self.task = self.metadata["task"]
-        self._session = _build_xgb_session(onnx_path)
-        self._input_name = self._session.get_inputs()[0].name
-        self._cal = self.metadata.get("calibrator", None)
-        self._ranker = self.metadata.get("ranker", None)
-        self._load_cutoffs(self.metadata)
-        return self
+    def _score_from_outputs(self, outputs) -> np.ndarray:
+        """The ``probabilities`` output as (n, 2), whatever shape the graph emits.
 
-    def run(self, X) -> np.ndarray:
+        A legacy export -- onnxmltools annotating ``probabilities`` with dim_value=2
+        while ORT infers {N,1} from a missing n_targets, the case
+        :func:`_build_xgb_session` exists to repair -- emits one column. Normalising it
+        here, for ``run`` and ``predict_score`` alike, keeps ``predict_type="score"``
+        from silently falling back to the calibrated probabilities. Every head shipped
+        today emits ``(n, 2)``.
         """
-        Run inference on X.
-
-        Returns
-        -------
-        Classification : ndarray shape (n_samples, 2) — [P(0), P(1)]
-        Regression     : ndarray shape (n_samples,)
-        """
-        X_f32 = np.asarray(X, dtype=np.float32)
-        outputs = self._session.run(None, {self._input_name: X_f32})
-        if self.task == "classification":
-            # onnxmltools XGBoost classifier: output named "probabilities"
-            prob_output = next(
-                o
-                for o, meta in zip(outputs, self._session.get_outputs())
-                if meta.name == "probabilities"
-            )
-            proba = np.asarray(prob_output, dtype=np.float64)
-            if proba.ndim == 1 or proba.shape[1] == 1:
-                proba = np.column_stack([1 - proba.ravel(), proba.ravel()])
-            if self._cal is not None:
-                proba = apply_calibrator(proba, self._cal)
-            return proba
-        else:
-            return np.asarray(outputs[0], dtype=np.float64).ravel()
-
-    def predict_logit(self, X) -> np.ndarray:
-        """Return logit of calibrated probabilities, shape (n_samples, 2)."""
-        p = np.clip(self.run(X)[:, 1], 1e-7, 1.0 - 1e-7)
-        logit_1 = np.log(p / (1.0 - p))
-        return np.column_stack([-logit_1, logit_1])
-
-    def predict_score(self, X) -> np.ndarray:
-        """Return raw (pre-calibration) ONNX probabilities, shape (n_samples, 2).
-
-        The one-column normalisation matches :meth:`run`, and did not used to. On a graph
-        that emits a single probability column -- what ORT infers for a legacy export
-        whose ``probabilities`` output carries no ``n_targets``, the case
-        :func:`_build_xgb_session` exists to repair -- this returned ``(n, 1)`` while
-        ``run`` returned ``(n, 2)``. The caller's ``[:, 1]`` then raised, the scoring loop
-        swallowed it as "channel unavailable", and ``predict_type="score"`` silently fell
-        back to pooling the *calibrated* probabilities: a wrong number, no error. Every
-        head shipped today emits ``(n, 2)`` and is unaffected.
-        """
-        X_f32 = np.asarray(X, dtype=np.float32)
-        outputs = self._session.run(None, {self._input_name: X_f32})
         prob_output = next(
             o
             for o, meta in zip(outputs, self._session.get_outputs())
@@ -134,20 +71,3 @@ class XGBoostArtifact(DecisionCutoffMixin):
         if proba.ndim == 1 or proba.shape[1] == 1:
             proba = np.column_stack([1 - proba.ravel(), proba.ravel()])
         return proba
-
-    def predict_rank(self, X) -> np.ndarray:
-        """Map scores to [0, 1] ranks via OOF ECDF.
-
-        Classification: shape (n_samples, 2). Regression: shape (n_samples,),
-        the ECDF of the prediction over the OOF predictions.
-        """
-        if self._ranker is None:
-            raise RuntimeError("No ranker stored in this artifact.")
-        if getattr(self, "_ranker_prepared", None) is None:
-            self._ranker_prepared = prepare_knots(self._ranker["knots"])
-        if self.task == "regression":
-            return rank_from_knots(self.run(X), prepared=self._ranker_prepared)
-        rank_1 = rank_from_knots(
-            self.predict_score(X)[:, 1], prepared=self._ranker_prepared
-        )
-        return np.column_stack([1 - rank_1, rank_1])

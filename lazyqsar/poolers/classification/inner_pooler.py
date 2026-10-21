@@ -1,6 +1,3 @@
-import json
-import os
-
 import numpy as np
 
 from lazyqsar.poolers._gate import (  # noqa: F401 - re-exported for callers
@@ -9,188 +6,44 @@ from lazyqsar.poolers._gate import (  # noqa: F401 - re-exported for callers
     _softmax,
     fit_gate,
     gate_weights,
+    GatedPooler,
+    GatedPoolerArtifact,
 )
-from lazyqsar.utils.logging import logger
 from lazyqsar.utils.metrics import composite_score
 
 
-class InnerClassifierPooler(object):
+class InnerClassifierPooler(GatedPooler):
     """
-    Gating network that learns per-sample head weights from OOF predictions.
+    Gating network that learns per-sample head weights from OOF probabilities.
 
-    When multiple heads are present and OOF probabilities are available,
-    fits one Ridge regressor per head on the preprocessed features X_prep.
-    The Ridge target for head j on sample i is the softmax of log-likelihoods
-    across heads — i.e. how well each head explains each training sample.
-    At inference, weights are a linear projection of X through the Ridge
-    coefficients, softmax-normalized across heads.
-
-    Falls back to uniform weights when only one head is present or OOF data
-    is unavailable.
-
-    Parameters
-    ----------
-    portfolio : list of str
-        Head names in the ensemble, e.g. ``["xgb", "rf"]``.
+    The Ridge target for head j on sample i is the softmax of Bernoulli
+    log-likelihoods across heads -- how well each head explains each training sample.
+    At inference, weights are a linear projection of the preprocessed features through
+    the Ridge coefficients, softmax-normalized across heads.
     """
 
-    def __init__(self, portfolio: list):
-        self.portfolio = portfolio
-        self._n_heads = len(portfolio)
+    task = "classification"
+    _metric_label = "AUC"
 
-    def fit(self, S, y, X_prep=None):
-        """
-        Fit the gating network on OOF scores.
+    def _prepare_y(self, y) -> np.ndarray:
+        return np.asarray(y, dtype=int)
 
-        Parameters
-        ----------
-        S : ndarray, shape (n, n_heads)
-            OOF calibrated probabilities for class 1, one column per head.
-            Pass ``None`` to force equal-weight mode.
-        y : array-like, shape (n,)
-            Training labels (0/1).
-        X_prep : ndarray, shape (n, p) or None
-            Preprocessed feature matrix. If None, uniform weights are used.
-
-        Sets ``_gate_coef`` and ``_gate_intercept`` when gating is possible,
-        otherwise sets them to ``None`` (uniform weights at inference).
-        """
-        y = np.asarray(y, dtype=int)
-
-        # Scoring the heads needs `S`, so the equal-weight branch has to be taken before
-        # it is touched, not after. It used to sit below, which made the documented
-        # `S=None` route -- `LazyClassifier(calibrated=False)`, and any portfolio where a
-        # head has no `oof_probas_` -- raise TypeError instead of falling back.
-        if S is None or self._n_heads == 1 or X_prep is None:
-            self._gate_coef = None
-            self._gate_intercept = None
-            logger.inner_pooler_table(
-                portfolio=self.portfolio,
-                n_samples=len(y),
-                oof_aucs=(
-                    None
-                    if S is None
-                    else [composite_score(y, S[:, i]) for i in range(self._n_heads)]
-                ),
-            )
-            return
-
-        oof_scores = [composite_score(y, S[:, i]) for i in range(self._n_heads)]
-
+    def _log_likelihood(self, S, y) -> np.ndarray:
         eps = 1e-7
-        log_scores = np.where(
+        return np.where(
             y[:, None] == 1,
             np.log(np.clip(S, eps, 1 - eps)),
             np.log(np.clip(1.0 - S, eps, 1 - eps)),
         )
-        target_w = _softmax(log_scores)  # (n, n_heads)
-        self._gate_coef, self._gate_intercept = fit_gate(X_prep, target_w)
 
-        W_oof = self.get_weights(X_prep)
-        self._score = composite_score(y, (W_oof * S).sum(axis=1))
-        logger.inner_pooler_table(
-            portfolio=self.portfolio,
-            n_samples=len(y),
-            oof_aucs=oof_scores,
-            meta_auc=self._score,
-            mean_weights=W_oof.mean(axis=0).tolist(),
-            std_weights=W_oof.std(axis=0).tolist(),
-        )
-
-    def get_weights(self, X_prep: np.ndarray) -> np.ndarray:
-        """Return per-sample weights (n_samples, n_heads)."""
-        return gate_weights(
-            X_prep, self._gate_coef, self._gate_intercept, self._n_heads
-        )
+    def _skill(self, y, p):
+        return composite_score(y, p)
 
     def predict_proba(self, R, X_prep=None):
-        """
-        Return weighted ensemble probabilities.
-
-        Parameters
-        ----------
-        R : ndarray, shape (n, n_heads)
-            Per-head calibrated P(y=1).
-        X_prep : ndarray, shape (n, p) or None
-            Preprocessed features for computing per-sample weights.
-            If None, uniform weights are used.
-
-        Returns
-        -------
-        ndarray, shape (n, 2)
-            [P(y=0), P(y=1)] after gated averaging.
-        """
-        if self._n_heads == 1:
-            return np.column_stack([1 - R[:, 0], R[:, 0]])
-        W = (
-            self.get_weights(X_prep)
-            if X_prep is not None
-            else np.full(R.shape, 1.0 / self._n_heads)
-        )
-        p1 = (W * R).sum(axis=1)
+        """Gated ensemble probabilities, shape (n, 2), from per-head P(y=1) ``R``."""
+        p1 = self._pool(R, X_prep)
         return np.column_stack([1 - p1, p1])
 
-    def save(self, directory):
-        """Write ``pooler.json`` containing gate weights and portfolio list."""
-        data = {"portfolio": self.portfolio}
-        if self._gate_coef is not None:
-            data["gate_coef"] = self._gate_coef.tolist()
-            data["gate_intercept"] = self._gate_intercept.tolist()
-        if hasattr(self, "_score"):
-            data["score"] = self._score
-        with open(f"{directory}/pooler.json", "w") as f:
-            json.dump(data, f, indent=4)
 
-    @classmethod
-    def load(cls, directory):
-        """Load a saved pooler from *directory* (reads ``pooler.json``)."""
-        with open(f"{directory}/pooler.json") as f:
-            data = json.load(f)
-        inst = cls(portfolio=data["portfolio"])
-        if "gate_coef" in data:
-            inst._gate_coef = np.array(data["gate_coef"])
-            inst._gate_intercept = np.array(data["gate_intercept"])
-        else:
-            inst._gate_coef = None
-            inst._gate_intercept = None
-        if "score" in data:
-            inst._score = data["score"]
-        return inst
-
-
-class InnerPoolerArtifact(object):
-    """Inference-only pooler loaded from ``pooler.json``."""
-
-    def __init__(self, data: dict):
-        self._n_heads = len(data["portfolio"])
-        if "gate_coef" in data:
-            self._gate_coef = np.array(data["gate_coef"])
-            self._gate_intercept = np.array(data["gate_intercept"])
-        else:
-            self._gate_coef = None
-            self._gate_intercept = None
-
-    def get_weights(self, X_prep: np.ndarray) -> np.ndarray:
-        """Return per-sample weights (n_samples, n_heads)."""
-        return gate_weights(
-            X_prep, self._gate_coef, self._gate_intercept, self._n_heads
-        )
-
-    def predict_proba(self, R, X_prep=None):
-        """Return gated ensemble probabilities, shape (n_samples, 2)."""
-        if self._n_heads == 1:
-            return np.column_stack([1 - R[:, 0], R[:, 0]])
-        W = (
-            self.get_weights(X_prep)
-            if X_prep is not None
-            else np.full(R.shape, 1.0 / self._n_heads)
-        )
-        p1 = (W * R).sum(axis=1)
-        return np.column_stack([1 - p1, p1])
-
-    @classmethod
-    def load(cls, directory):
-        """Load pooler artifact from ``pooler.json`` in *directory*."""
-        with open(os.path.join(directory, "pooler.json")) as f:
-            data = json.load(f)
-        return cls(data)
+# Inference: one pooler artifact for both tasks.
+InnerPoolerArtifact = GatedPoolerArtifact

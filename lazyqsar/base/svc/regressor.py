@@ -68,7 +68,6 @@ from lazyqsar.base._race import min_gain_threshold
 from lazyqsar.utils.logging import logger
 from lazyqsar.utils.onnx_check import probe_rows
 from lazyqsar.utils.metrics import spearman_score
-from lazyqsar.utils.ranking import prepare_knots, rank_from_knots
 from lazyqsar.utils.splits import make_quantile_oof_splits, quantile_bins
 
 
@@ -448,55 +447,5 @@ class BaseSVR(_SVMHead, RegressorHead, BaseEstimator, RegressorMixin):
             json.dump(metadata, f, indent=2)
 
 
-class BaseSVRArtifact:
-    """
-    Inference-only loader for a model saved by BaseSVR.save().
-
-    Only requires numpy and onnxruntime. Applies the inverse target
-    standardisation to the ONNX output.
-    """
-
-    def __init__(self):
-        self._session = None
-        self._input_name = ""
-        self.metadata: dict = {}
-        self.task = "regression"
-        self._ranker = None
-        self._y_mean = 0.0
-        self._y_std = 1.0
-
-    @classmethod
-    def load(cls, directory: str) -> "BaseSVRArtifact":
-        json_path = os.path.join(directory, "svr.json")
-        onnx_path = os.path.join(directory, "svr.onnx")
-        if not os.path.isfile(json_path):
-            raise FileNotFoundError(f"svr.json not found in {directory!r}")
-        if not os.path.isfile(onnx_path):
-            raise FileNotFoundError(f"svr.onnx not found in {directory!r}")
-        self = cls()
-        with open(json_path) as f:
-            self.metadata = json.load(f)
-        self._ranker = self.metadata.get("ranker", None)
-        self._y_mean = float(self.metadata["y_mean"])
-        self._y_std = float(self.metadata["y_std"])
-        import onnxruntime as rt
-
-        self._session = rt.InferenceSession(
-            onnx_path, providers=["CPUExecutionProvider"]
-        )
-        self._input_name = self._session.get_inputs()[0].name
-        return self
-
-    def run(self, X) -> np.ndarray:
-        """Return predictions in original target units, shape (n_samples,)."""
-        X_f32 = np.asarray(X, dtype=np.float32)
-        out = self._session.run(None, {self._input_name: X_f32})[0]
-        return np.asarray(out, dtype=np.float64).ravel() * self._y_std + self._y_mean
-
-    def predict_rank(self, X) -> np.ndarray:
-        """Map predictions to [0, 1] via the OOF ECDF, shape (n_samples,)."""
-        if self._ranker is None:
-            raise RuntimeError("No ranker stored in this artifact.")
-        if getattr(self, "_ranker_prepared", None) is None:
-            self._ranker_prepared = prepare_knots(self._ranker["knots"])
-        return rank_from_knots(self.run(X), prepared=self._ranker_prepared)
+# Inference: one implementation per head, in lazyqsar.artifacts.
+from lazyqsar.artifacts.svc import SVRArtifact as BaseSVRArtifact  # noqa: E402,F401

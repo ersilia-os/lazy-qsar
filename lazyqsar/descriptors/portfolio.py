@@ -145,7 +145,7 @@ class DescriptorPortfolio:
         applicable: list,
         precomputed: dict = None,
     ) -> list:
-        from ..preprocessors.classification.prep import Preprocessor
+        from ..preprocessors import Preprocessor
         from sklearn.model_selection import cross_val_predict, StratifiedKFold
         from sklearn.metrics import roc_auc_score
         from sklearn.ensemble import RandomForestClassifier
@@ -209,7 +209,7 @@ class DescriptorPortfolio:
             )
 
             X_batch = X_full[batch_idx]
-            prep = Preprocessor()
+            prep = Preprocessor("classification")
             prep.fit(X_batch, y_batch)
             X_prep = prep.transform(X_batch)
             logger.info(
@@ -331,7 +331,7 @@ class DescriptorPortfolio:
         reference's (gate A) or adding it does not lower the averaged ensemble's ρ
         (gate B), up to the descriptor cap. No class-balance batching applies.
         """
-        from ..preprocessors.regression.prep import Preprocessor
+        from ..preprocessors import Preprocessor
         from ..utils.metrics import spearman_score
         from ..utils.splits import quantile_bins
         from sklearn.ensemble import RandomForestRegressor
@@ -362,7 +362,7 @@ class DescriptorPortfolio:
                 )
                 X_full = desc.transform(smiles_list)
             feature_map[name] = X_full
-            prep = Preprocessor()
+            prep = Preprocessor("regression")
             prep.fit(X_full, y)
             X_prep = prep.transform(X_full)
             pred = cross_val_predict(proxy_model, X_prep, y, cv=cv)

@@ -1,8 +1,19 @@
 """
-Inference-only artifact for BaseRFClassifier.
+Inference-only artifact for BaseRFClassifier / BaseRFRegressor.
 
-Loads a randomforest.onnx written by BaseRFClassifier.save().
-Only requires numpy and onnxruntime for ONNX inference.
+Loads a randomforest.onnx written by either head's save(). Only requires numpy and
+onnxruntime — no sklearn.
 """
 
-from lazyqsar.base.randomforest import BaseRFArtifact as RandomForestArtifact  # noqa: F401
+import numpy as np
+
+from lazyqsar.artifacts._head import HeadArtifact, proba_from_skl2onnx
+
+
+class RandomForestArtifact(HeadArtifact):
+    """Load and run a saved random forest ONNX model."""
+
+    _stem = "randomforest"
+
+    def _score_from_outputs(self, outputs) -> np.ndarray:
+        return proba_from_skl2onnx(outputs[1])

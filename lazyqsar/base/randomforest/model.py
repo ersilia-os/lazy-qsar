@@ -30,7 +30,6 @@ except ImportError:
     _FIT_DEPS_AVAILABLE = False
 
 from lazyqsar.base._head import (
-    DEFAULT_DECISION_CUTOFF as _DEFAULT_DECISION_CUTOFF,
     ClassifierHead,
     RegressorHead,
     require_fit_deps,
@@ -39,7 +38,6 @@ from lazyqsar.base._race import min_gain_threshold
 from lazyqsar.utils.logging import logger
 from lazyqsar.utils.onnx_check import probe_rows
 from lazyqsar.utils.metrics import spearman_score
-from lazyqsar.utils.ranking import binarize, prepare_knots, rank_from_knots
 from lazyqsar.utils.splits import make_quantile_oof_splits, make_stratified_oof_splits
 from .params import (
     _HEURISTIC,
@@ -98,11 +96,6 @@ def _rf_onnx_bool_attr_compat():
         yield
     finally:
         tree_ensemble.add_node = original_add_node
-
-
-from lazyqsar.artifacts._common import (  # noqa: E402
-    apply_calibrator as _apply_calibrator_artifact,
-)
 
 
 class _RFHead(BaseEstimator):
@@ -582,154 +575,5 @@ class BaseRFRegressor(_RFHead, RegressorHead):
         return self._estimator.predict(X)
 
 
-class BaseRFArtifact:
-    """
-    Load a saved Random Forest model for forward inference.
-
-    Reads the files written by ``BaseRFClassifier.save()``:
-      - ``randomforest.onnx``  — model binary
-      - ``randomforest.json``  — fit metadata (task, calibrator, ranker, …)
-
-    Usage
-    -----
-    artifact = BaseRFArtifact.load("path/to/directory")
-    proba = artifact.run(X)          # calibrated (N, 2)
-    labels = artifact.predict(X)     # binary using learned cutoff
-    """
-
-    def __init__(self):
-        self._session = None
-        self.metadata = {}
-        self.task = ""
-        self._cal = None
-        self.decision_cutoff_raw = _DEFAULT_DECISION_CUTOFF
-        self.decision_cutoff_raw_source = "default_0.5"
-        self.decision_cutoff_proba = _DEFAULT_DECISION_CUTOFF
-        self.decision_cutoff_rank = _DEFAULT_DECISION_CUTOFF
-        self.decision_cutoff_logit = 0.0
-
-    @classmethod
-    def load(cls, directory: str) -> "BaseRFArtifact":
-        """
-        Load the model from *directory*.
-
-        Parameters
-        ----------
-        directory : str
-            Directory previously passed to ``BaseRFClassifier.save()``.
-
-        Returns
-        -------
-        BaseRFArtifact
-        """
-        json_path = os.path.join(directory, "randomforest.json")
-        if not os.path.isfile(json_path):
-            raise FileNotFoundError(f"No metadata found at {json_path!r}")
-        artifact = cls()
-        with open(json_path) as f:
-            artifact.metadata = json.load(f)
-        artifact.task = artifact.metadata["task"]
-        artifact._cal = artifact.metadata.get("calibrator", None)
-        artifact.decision_cutoff_raw = float(
-            artifact.metadata.get("decision_cutoff_raw", _DEFAULT_DECISION_CUTOFF)
-        )
-        artifact.decision_cutoff_raw_source = artifact.metadata.get(
-            "decision_cutoff_raw_source", "default_0.5"
-        )
-        artifact.decision_cutoff_proba = float(
-            artifact.metadata.get("decision_cutoff_proba", _DEFAULT_DECISION_CUTOFF)
-        )
-        artifact.decision_cutoff_rank = float(
-            artifact.metadata.get("decision_cutoff_rank", _DEFAULT_DECISION_CUTOFF)
-        )
-        artifact.decision_cutoff_logit = float(
-            artifact.metadata.get("decision_cutoff_logit", 0.0)
-        )
-
-        import onnxruntime as rt
-
-        onnx_path = os.path.join(directory, "randomforest.onnx")
-        if not os.path.isfile(onnx_path):
-            raise FileNotFoundError(f"No ONNX model found at {onnx_path!r}")
-        artifact._session = rt.InferenceSession(
-            onnx_path, providers=["CPUExecutionProvider"]
-        )
-        return artifact
-
-    def run(self, X) -> np.ndarray:
-        """
-        Run inference on X.
-
-        Returns
-        -------
-        Classification : ndarray, shape (n_samples, 2)
-            Calibrated [P(class=0), P(class=1)].
-        Regression : ndarray, shape (n_samples,)
-            Predicted values.
-        """
-        X_f32 = np.asarray(X, dtype=np.float32)
-        input_name = self._session.get_inputs()[0].name
-        outputs = self._session.run(None, {input_name: X_f32})
-        if self.task == "regression":
-            return np.asarray(outputs[0], dtype=np.float64).ravel()
-        prob_raw = outputs[1]
-        if isinstance(prob_raw, list):
-            proba = np.array(
-                [[d[k] for k in sorted(d)] for d in prob_raw], dtype=np.float64
-            )
-        else:
-            proba = np.asarray(prob_raw, dtype=np.float64)
-            if proba.ndim == 1:
-                proba = np.column_stack([1 - proba, proba])
-        if self._cal is not None:
-            proba = _apply_calibrator_artifact(proba, self._cal)
-        return proba
-
-    def predict(self, X, cutoff: float | None = None) -> np.ndarray:
-        """Return binary labels using the stored decision cutoff by default."""
-        if self.task != "classification":
-            raise RuntimeError(
-                "predict() is only available for classification artifacts."
-            )
-        threshold = self.decision_cutoff_raw if cutoff is None else float(cutoff)
-        # Threshold the same quantity the fit-time estimator does: raw score against
-        # the raw cutoff. Comparing run() (calibrated) against decision_cutoff_raw
-        # mixes two different scales.
-        return binarize(self.predict_score(X)[:, 1], threshold)
-
-    def predict_score(self, X) -> np.ndarray:
-        """Return raw (pre-calibration) probabilities, shape (n_samples, 2)."""
-        X_f32 = np.asarray(X, dtype=np.float32)
-        input_name = self._session.get_inputs()[0].name
-        outputs = self._session.run(None, {input_name: X_f32})
-        prob_raw = outputs[1]
-        if isinstance(prob_raw, list):
-            return np.array(
-                [[d[k] for k in sorted(d)] for d in prob_raw], dtype=np.float64
-            )
-        proba = np.asarray(prob_raw, dtype=np.float64)
-        if proba.ndim == 1:
-            return np.column_stack([1 - proba, proba])
-        return proba
-
-    def predict_logit(self, X) -> np.ndarray:
-        """Return logit of calibrated probabilities, shape (n_samples, 2)."""
-        p = np.clip(self.run(X)[:, 1], 1e-7, 1.0 - 1e-7)
-        logit_1 = np.log(p / (1.0 - p))
-        return np.column_stack([-logit_1, logit_1])
-
-    def predict_rank(self, X) -> np.ndarray:
-        """Map scores to [0, 1] ranks via OOF ECDF.
-
-        Classification: shape (n_samples, 2). Regression: shape (n_samples,).
-        """
-        if "ranker" not in self.metadata:
-            raise RuntimeError("No ranker stored in this artifact.")
-        if getattr(self, "_ranker_prepared", None) is None:
-            self._ranker_prepared = prepare_knots(self.metadata["ranker"]["knots"])
-        if self.task == "regression":
-            return rank_from_knots(self.run(X), prepared=self._ranker_prepared)
-        rank_1 = rank_from_knots(
-            self.predict_score(X)[:, 1], prepared=self._ranker_prepared
-        )
-        return np.column_stack([1 - rank_1, rank_1])
+# Inference: one implementation per head, in lazyqsar.artifacts.
+from lazyqsar.artifacts.rf import RandomForestArtifact as BaseRFArtifact  # noqa: E402,F401
