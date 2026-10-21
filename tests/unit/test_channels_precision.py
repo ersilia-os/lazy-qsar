@@ -21,4 +21,4 @@ def test_regression_value_is_not_rounded_to_float32():
     ch = _score_chunks([X[:5], X[5:]], _RegressionArtifact(), None, {"y", "r"})
     assert ch.y.dtype == np.float64
     np.testing.assert_array_equal(ch.y, 123456.789 + X[:, 0].astype(np.float64))
-    assert ch.r.dtype == np.float32
+    assert ch.r.dtype == np.float64
