@@ -20,6 +20,18 @@ _ONNX_MAX_BYTES = 5_000_000
 _ONNX_MAX_RETRIES = 3
 
 
+def _fold_jobs(k: int) -> int:
+    """Threads for the k OOF fold fits.
+
+    libsvm and liblinear release the GIL and are single-threaded, so independent fold
+    fits run concurrently; each fit is unchanged (checked identical), only the wall
+    time drops.
+    """
+    import os
+
+    return max(1, min(k, os.cpu_count() or 1))
+
+
 def svm_cost(params: dict, n_tr: int, n_features: int) -> float:
     """Relative training cost: O(n p) for the linear solver, O(n^2 p) for a kernel."""
     if params.get("use_linear", False):

@@ -47,7 +47,7 @@ except ImportError:
     _FIT_DEPS_AVAILABLE = False
 
 from .inspector import inspect as _inspect, DatasetProfile
-from ._common import _SVMHead
+from ._common import _SVMHead, _fold_jobs
 from lazyqsar.base._head import RegressorHead, require_fit_deps
 from lazyqsar.utils.logging import logger
 from lazyqsar.utils.onnx_check import probe_rows
@@ -266,7 +266,12 @@ class BaseSVR(_SVMHead, RegressorHead, BaseEstimator, RegressorMixin):
             est = _make_svr(self.params_).fit(X[train_idx], (y_tr - mu) / sd)
             return est.predict(X[val_idx]) * sd + mu
 
-        self._finish_oof(y, self._oof_loop(fold_splits, fit_predict))
+        self._finish_oof(
+            y,
+            self._oof_loop(
+                fold_splits, fit_predict, n_jobs=_fold_jobs(len(fold_splits))
+            ),
+        )
         return self
 
     def _raw_native(self, X) -> np.ndarray:

@@ -89,6 +89,7 @@ from ._common import (
     _VAL_FRACTION,
     _VAL_MIN_ROWS,
     _SVMHead,
+    _fold_jobs,
     svm_cost as _svc_cost,
 )
 from lazyqsar.base._head import (
@@ -557,7 +558,9 @@ class BaseSVCClassifier(_SVMHead, ClassifierHead, BaseEstimator, ClassifierMixin
             return _decision_scores(fold_svc, X[val_idx])
 
         # The calibrator, cutoffs and ranks live on sigmoid(decision_function).
-        oof_raw = self._oof_loop(fold_splits, fit_predict)
+        oof_raw = self._oof_loop(
+            fold_splits, fit_predict, n_jobs=_fold_jobs(len(fold_splits))
+        )
         self._finish_calibration(y, _sigmoid(oof_raw))
         return self
 
