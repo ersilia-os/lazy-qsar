@@ -60,13 +60,15 @@ class _SVMHead:
     # descriptors (wide value ranges) that rounding reached 2.4e-4 of the output scale on
     # real data; every other head family stays below 1.1e-6 (dev/benchmarks measurement).
     _onnx_tolerance = 1e-3
+    # Halvings of C the size guard tries before the linear fallback.
+    _size_guard_retries = _ONNX_MAX_RETRIES
 
     def _fit_final(self, X, target, profile) -> None:
         """Fit ``self.params_`` on all rows; shrink the model if its graph is too big."""
         n_features = profile.n_features
         model = self._make(self.params_).fit(X, target)
         if not self._use_linear_:
-            for _retry in range(_ONNX_MAX_RETRIES):
+            for _retry in range(self._size_guard_retries):
                 size = onnx_size_bytes(model, n_features)
                 if size <= _ONNX_MAX_BYTES:
                     break
@@ -82,7 +84,7 @@ class _SVMHead:
                 size = onnx_size_bytes(model, n_features)
                 if size > _ONNX_MAX_BYTES:
                     logger.warning(
-                        f"ONNX size guard exhausted after {_ONNX_MAX_RETRIES} retries "
+                        f"ONNX size guard exhausted after {self._size_guard_retries} retries "
                         f"({size / 1e6:.1f} MB > {_ONNX_MAX_BYTES / 1e6:.0f} MB); "
                         "switching to the linear model."
                     )

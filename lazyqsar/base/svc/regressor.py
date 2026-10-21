@@ -182,6 +182,9 @@ class BaseSVR(_SVMHead, RegressorHead, BaseEstimator, RegressorMixin):
     """
 
     _fitted_attr = "svr_"
+    # The epsilon tube, not C, sets an SVR's support-vector count: halving C changed it by
+    # about 1% on the benchmark, so an oversized kernel goes straight to the linear model.
+    _size_guard_retries = 0
 
     def __init__(
         self,
@@ -207,7 +210,8 @@ class BaseSVR(_SVMHead, RegressorHead, BaseEstimator, RegressorMixin):
     def _linear_fallback_params(self, profile) -> dict:
         return dict(
             svr_linear_params(profile),
-            C=min(self.params_["C"], 10.0),
+            # The C three halvings of the kernel's C=10 used to reach.
+            C=min(self.params_["C"] / 8.0, 10.0),
             random_state=self.random_state,
         )
 
