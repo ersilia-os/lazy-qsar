@@ -148,13 +148,15 @@ applicability-domain binning of the SMILES-level model is there to soften exactl
 |---|---|---|
 | Caco2 (MAE) | 0.363 | **0.355** |
 | Lipophilicity (MAE) | 0.644 | **0.634** |
-| Solubility (MAE) | — (NaN score) | 0.970 |
+| Solubility (MAE)¹ | — | 0.970 |
 | PPBR (MAE) | 9.633 | **9.022** |
 | LD50 (MAE) | 0.642 | **0.640** |
 | VDss (ρ) | 0.616 | **0.642** |
 | Half-life (ρ) | **0.550** | 0.516 |
 | Hepatocyte clearance (ρ) | 0.412 | **0.419** |
 | Microsomal clearance (ρ) | **0.574** | 0.547 |
+
+¹ Two test SMILES do not parse in RDKit. LazyQSAR returns NaN for them, and the harness now scores them at the training mean; the 3.8 run predates that, so it has no score.
 
 Slow mode (all five descriptors), measured with 3.8, reached 0.535 MAE on lipophilicity (MapLight: 0.539) and 0.297 on Caco2. It has not yet been rerun with the new portfolio.
 
