@@ -88,6 +88,13 @@ against is versioned separately and its id is recorded in every checkpoint's
   back to the linear model; halving C does not shrink an SVR's support set. Outputs are
   unchanged, and the fit is faster.
 - NNLS stacking ignores rows with a missing out-of-fold prediction instead of raising.
+- Regression preprocessing: a robust-scaled column with zero interquartile range kept its
+  raw units. RDKit writes a 1e5 sentinel on most rows of some descriptors, so values of 1e5
+  reached the heads; the kernel SVR's `gamma` collapsed to ~1e-8, and its float32 graph
+  could fail the bind check, crashing the fit. Such columns are now divided by their
+  standard deviation where it exceeds one. On the 40 benchmark splits where RDKit features
+  are robust-scaled, SVR test RMSE fell by 28% (better on 38). Ridge was unchanged
+  (-0.2%), and trees are unaffected. Classification preprocessing is unchanged.
 
 ## 3.8.0
 

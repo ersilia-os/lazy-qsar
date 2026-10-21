@@ -384,6 +384,42 @@ def test_preprocessor_binds_and_round_trips(scaler, reducer, monkeypatch, tmp_pa
     )
 
 
+@pytest.mark.parametrize("task", ["regression", "classification"])
+def test_zero_iqr_column_is_scaled_for_regression(task, monkeypatch, tmp_path):
+    """A column constant on most rows (an RDKit sentinel) must not keep its raw units.
+
+    ``RobustScaler`` divides a zero-IQR column by one; the regression preprocessor
+    divides it by its standard deviation instead, in the bound graph and the checkpoint
+    too. Classification keeps scikit-learn's behaviour (its outputs are pinned).
+    """
+    from lazyqsar.artifacts.preprocessor import PreprocessorArtifact
+    from lazyqsar.base.preprocessing import (
+        BaseClassifierPreprocessor,
+        BaseRegressorPreprocessor,
+        pipeline,
+    )
+
+    monkeypatch.setattr(pipeline, "select_scaler", lambda profile: "robust")
+    monkeypatch.setattr(pipeline, "select_reducer", lambda profile: "correlation_filter")
+    X = _dense(p=12)
+    X[:, 3] = 1e5
+    X[::30, 3] = 0.0  # 1e5 on ~97% of rows, as RDKit writes it
+    if task == "regression":
+        prep = _quiet(BaseRegressorPreprocessor().fit, X, _target(X))
+    else:
+        prep = _quiet(BaseClassifierPreprocessor().fit, X, _labels(X))
+    out = prep.transform(X)
+    if task == "regression":
+        assert np.abs(out).max() < 100
+    else:
+        assert np.abs(out).max() > 9e4
+    prep.save(str(tmp_path))
+    Q = _queries(X)
+    np.testing.assert_array_equal(
+        PreprocessorArtifact.load(str(tmp_path)).run(Q), prep.transform(Q)
+    )
+
+
 # ------------------------------------------------------------------ fold models
 
 

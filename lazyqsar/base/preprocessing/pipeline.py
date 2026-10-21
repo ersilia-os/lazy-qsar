@@ -119,6 +119,9 @@ class BasePreprocessor(BaseEstimator, TransformerMixin):
             else:
                 raise
 
+        if self.task == "regression" and self.scaler_name_ == "robust":
+            self._rescale_zero_iqr_columns(X, y)
+
         self._n_features_out: int = self.pipeline_.transform(
             np.zeros((1, self.n_features_in_))
         ).shape[1]
@@ -131,6 +134,33 @@ class BasePreprocessor(BaseEstimator, TransformerMixin):
             f"{self.n_features_in_} → {self._n_features_out} features"
         )
         return self
+
+    def _rescale_zero_iqr_columns(self, X, y) -> None:
+        """Scale zero-IQR columns by their standard deviation where it exceeds one.
+
+        ``RobustScaler`` divides by the interquartile range and falls back to 1 where it
+        is zero, so a column that is constant on most rows keeps its raw units. RDKit
+        descriptors include such columns (a sentinel of 1e5 on 97% of rows), which then
+        reach the heads at magnitude 1e5: a kernel's ``gamma="scale"`` collapses to
+        ~1e-8 and its float32 graph loses precision to cancellation (a 3e-3 bind
+        failure). The reducer is refitted on the corrected scale. Regression only, to
+        keep classification outputs unchanged.
+        """
+        steps = self.pipeline_.named_steps
+        scaler = steps["scaler"]
+        Xs = self.pipeline_[:2].transform(X)
+        q25, q75 = np.percentile(Xs, [25, 75], axis=0)
+        zero_iqr = (q75 - q25) == 0
+        if not zero_iqr.any():
+            return
+        # Only shrink: a rare count column (std < 1) keeps scikit-learn's scale of one, so
+        # it is not amplified; a sentinel column (std ~1e4) comes down to unit spread.
+        scale = np.maximum(Xs[:, zero_iqr].std(axis=0), 1.0)
+        if np.all(scale == 1.0):
+            return
+        scaler.scale_[zero_iqr] = scale
+        logger.debug(f"robust scaler: {int((scale > 1).sum())} zero-IQR columns rescaled by std")
+        steps["reducer"].fit(scaler.transform(Xs), y)
 
     def _bind_onnx_runtime(self, X=None) -> None:
         """Make the fitted preprocessor compute the way the exported one will.
