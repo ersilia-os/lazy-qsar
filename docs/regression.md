@@ -115,6 +115,20 @@ training set.
   - With fewer than 90 training rows there is a single bin.
 - **Storage.** Quantiles are stored at 101 levels and interpolated, so any coverage
   level can be requested at prediction time.
+- **Feature level.** `LazyRegressor`, which has no applicability domain, uses a single
+  bin.
+
+Measured coverage of single-bin intervals on the 90 benchmark splits (stacked heads,
+held-out test rows):
+
+| Split | 0.80 | 0.90 | 0.95 |
+|---|---|---|---|
+| Random (45) | 0.806 | 0.903 | 0.952 |
+| Scaffold / provided (45) | 0.774 | 0.879 | 0.935 |
+
+On random splits coverage is nominal. On new scaffolds it falls 2–3 points short:
+conformal coverage assumes test molecules resemble the training ones, and the
+applicability-domain binning of the SMILES-level model is there to soften exactly that.
 
 ## Results against 3.8
 
