@@ -64,7 +64,7 @@ class InnerRegressorPooler(GatedPooler):
             self._head_weights = [1.0 / self._n_heads] * self._n_heads
         else:
             self._head_weights = stacking_weights(P, y).tolist()
-            self._score = self._skill(y, P @ np.asarray(self._head_weights))
+            self._score = self._skill(y, self._pool(P))
         logger.inner_pooler_table(
             portfolio=self.portfolio,
             n_samples=len(y),
@@ -76,8 +76,12 @@ class InnerRegressorPooler(GatedPooler):
         )
 
     def predict(self, P, X_prep=None) -> np.ndarray:
-        """Weighted mean of per-head predictions, shape (n,)."""
-        return np.asarray(P, dtype=float) @ np.asarray(self._head_weights, dtype=float)
+        """Weighted mean of per-head predictions, shape (n,).
+
+        The same arithmetic as the inference artifact (:meth:`GatedPooler._pool`), so a
+        fitted model and its checkpoint agree to the last bit.
+        """
+        return self._pool(np.asarray(P, dtype=float), X_prep)
 
 
 # Inference: one pooler artifact for both tasks.

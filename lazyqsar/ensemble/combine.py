@@ -281,8 +281,6 @@ class EnsembleSpec:
         metadata = metadata or {}
         if read_task(metadata) == "regression":
             return cls._regression_from_metadata(metadata, descriptor_names)
-        quality_map = metadata.get("quality_aucs", {}) or {}
-        oof_map = metadata.get("oof_aucs", {}) or {}
         proxy_map = metadata.get("proxy_aucs", {}) or {}
         active_map = metadata.get("active_descriptors", {}) or {}
         cutoff_map = metadata.get("ad_hard_cutoffs", {}) or {}
@@ -328,7 +326,7 @@ class EnsembleSpec:
             cls(
                 descriptor_names=tuple(active_names),
                 oof_aucs=tuple(
-                    quality_map.get(d, oof_map.get(d, 1.0)) for d in active_names
+                    classification_skill(metadata, d) for d in active_names
                 ),
                 proxy_aucs=tuple(proxy_map.get(d) for d in active_names),
                 rank_error_curves=curves,
@@ -395,6 +393,23 @@ class EnsembleSpec:
         )
 
 
+def classification_skill(metadata: dict, descriptor: str):
+    """The skill a classification checkpoint weights *descriptor* by: quality, else OOF AUC.
+
+    A descriptor whose AUCs could not be computed is saved without them. A checkpoint that
+    lists its descriptors (``descriptor_types``) records that as unknown, ``None`` -- which
+    is what the fitted model used, so loading must not invent a number. Older checkpoints
+    without the list keep the historical default of 1.0.
+    """
+    quality = (metadata.get("quality_aucs") or {}).get(descriptor)
+    if quality is not None:
+        return quality
+    oof = (metadata.get("oof_aucs") or {}).get(descriptor)
+    if oof is not None:
+        return oof
+    return None if metadata.get("descriptor_types") else 1.0
+
+
 def _active_names(metadata, descriptor_names, active_map):
     """The descriptors to score: on disk, written by this fit, and marked active.
 
@@ -406,7 +421,9 @@ def _active_names(metadata, descriptor_names, active_map):
     """
     listed = metadata.get("descriptor_types")
     candidates = (
-        [d for d in descriptor_names if d in listed] if listed else list(descriptor_names)
+        [d for d in descriptor_names if d in listed]
+        if listed
+        else list(descriptor_names)
     )
     active = [d for d in candidates if active_map.get(d, True)]
     return active or candidates or list(descriptor_names)

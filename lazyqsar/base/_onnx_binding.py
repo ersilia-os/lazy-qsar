@@ -36,7 +36,12 @@ from __future__ import annotations
 
 import numpy as np
 
-from lazyqsar.utils.onnx_check import OnnxExportMismatch, _assert_close, _atol
+from lazyqsar.utils.onnx_check import (
+    _ATOL_SCALE,
+    OnnxExportMismatch,
+    _assert_close,
+    _atol,
+)
 
 
 def _session_options(rt):
@@ -119,7 +124,7 @@ class OnnxBoundHead:
         if self._onnx_bind_atol is not None:
             atol = self._onnx_bind_atol
         elif self._onnx_kind == "probability":
-            atol = 1e-4
+            atol = _ATOL_SCALE
         else:
             atol = _atol(native)
         return self._raw_onnx(probe), native, atol
@@ -167,6 +172,23 @@ class OnnxBoundHead:
         if getattr(self, "_onnx_session_", None) is not None:
             return self._raw_onnx(X)
         return np.asarray(self._raw_native(X), dtype=np.float64)
+
+    def _written_is_bound(self, path: str) -> bool:
+        """True if the head is bound and *path* holds exactly its verified graph.
+
+        Raises :class:`OnnxExportMismatch` if the head is bound but the file differs.
+        ``False`` for an unbound head, which the caller then checks on the probe.
+        """
+        bound = getattr(self, "_onnx_bytes_", None)
+        if bound is None or getattr(self, "_onnx_session_", None) is None:
+            return False
+        with open(path, "rb") as fh:
+            if fh.read() != bound:
+                raise OnnxExportMismatch(
+                    f"{type(self).__name__}: the graph written to {path!r} is not the "
+                    "one the fitted model was verified and bound to."
+                )
+        return True
 
     def _write_onnx(self, path: str) -> None:
         """Write the graph the head is bound to, or a fresh conversion if unbound."""

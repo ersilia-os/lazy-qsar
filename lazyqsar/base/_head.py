@@ -145,12 +145,22 @@ class _HeadBase(OnnxBoundHead):
         return {}
 
     def _check_onnx_export(self, path: str) -> None:
-        """Compare the written graph with the native model on the fit-time probe."""
+        """Verify the written graph: byte-identical to the bound one, or probe-checked.
+
+        A bound head was converted once and its graph checked against the native model on
+        the fit-time probe (:meth:`OnnxBoundHead._bind_onnx`), and ``_write_onnx`` writes
+        exactly those bytes. So the file is verified by comparing it with them -- stricter
+        than re-running the probe, and without building a second onnxruntime session,
+        which for a large forest costs seconds. An unbound head is probe-checked.
+        """
         from lazyqsar.utils.onnx_check import (
             check_decision,
             check_probability,
             check_values,
         )
+
+        if self._written_is_bound(path):
+            return
 
         probe = getattr(self, "_onnx_probe_", None)
         if probe is None:

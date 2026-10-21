@@ -84,6 +84,7 @@ from lazyqsar.utils.splits import (
     make_quantile_oof_splits,
     make_stratified_oof_splits,
     quantile_bins,
+    quantile_strata,
 )
 
 
@@ -281,7 +282,9 @@ class _XGBHead(BaseEstimator):
                 y,
                 test_size=_VAL_FRACTION if n >= _VAL_MIN_ROWS else 0.2,
                 random_state=_RANDOM_STATE,
-                stratify=quantile_bins(np.asarray(y, dtype=float), 5),
+                # Two rows per stratum at least, or the split cannot place one on each
+                # side; tied targets merge strata rather than crash.
+                stratify=quantile_strata(y, 5, min_count=2),
             )
             _, best_iter, score = _train_phase1(
                 X_tr, y_tr, X_val, y_val, params, verbose=False

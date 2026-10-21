@@ -426,6 +426,23 @@ class BaseRFClassifier(_RFHead, ClassifierHead):
         return self
 
 
+def _oob_predictions(forest, n: int) -> np.ndarray:
+    """The forest's out-of-bag predictions, NaN for rows no tree left out.
+
+    scikit-learn fills a row that was in every bootstrap sample with 0 (and warns), which
+    would pass for a real prediction; those rows are marked NaN instead, so a caller can
+    tell the OOB predictions are incomplete.
+    """
+    oob = np.asarray(forest.oob_prediction_, dtype=float).ravel().copy()
+    left_out = np.zeros(n, dtype=bool)
+    for sampled in forest.estimators_samples_:
+        in_bag = np.zeros(n, dtype=bool)
+        in_bag[sampled] = True
+        left_out |= ~in_bag
+    oob[~left_out] = np.nan
+    return oob
+
+
 def regression_rf_params(n: int) -> dict:
     """The regression forest: ``max_features=1/3``, ``min_samples_leaf=3``.
 
@@ -541,12 +558,10 @@ class BaseRFRegressor(_RFHead, RegressorHead):
         self.params_ = self._resolve_params(regression_rf_params(X.shape[0]))
         self.selected_preset_ = "p3_leaf3"
         # Out-of-bag scoring is nearly free and gives an out-of-sample prediction for
-        # every row (rows in every bootstrap sample are rare; they stay NaN).
+        # every row a tree left out (rows in every bootstrap sample are NaN).
         self._estimator = self._make_estimator(self.params_, oob_score=True)
         self._estimator.fit(X, y)
-        self.oob_preds_ = np.asarray(
-            self._estimator.oob_prediction_, dtype=float
-        ).ravel()
+        self.oob_preds_ = _oob_predictions(self._estimator, X.shape[0])
         self.timing_ = {"fit": _time.perf_counter() - t0}
         self._bind_onnx()
         self.train_rho_ = spearman_score(y, self.predict(X))

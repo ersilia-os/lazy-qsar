@@ -156,8 +156,16 @@ class LazyRegressor(_AssemblerBase):
             P = np.column_stack([m.oof_preds_ for m in heads])
             if P.shape[0] != len(idx):
                 return None
-            W = batch.pooler.get_weights(batch.prep.transform(X[idx]))
-            out[idx] = (W * P).sum(axis=1) * self.y_std_ + self.y_mean_
+            # Fixed stacking weights need no features, so the training rows are not
+            # pushed through the preprocessor again just to be counted.
+            pooled = (
+                batch.pooler._pool(P)
+                if getattr(batch.pooler, "_head_weights", None) is not None
+                else (batch.pooler.get_weights(batch.prep.transform(X[idx])) * P).sum(
+                    axis=1
+                )
+            )
+            out[idx] = pooled * self.y_std_ + self.y_mean_
         if not np.isfinite(out).all():
             return None
         return out

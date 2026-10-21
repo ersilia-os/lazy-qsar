@@ -5,10 +5,10 @@ matrix -- through both the fitted model and the graph it just wrote, and raises
 :class:`OnnxExportMismatch` if they disagree. The comparison is on the *raw* model output
 (before calibration), because that is what the graph contains.
 
-The tolerance is chosen to catch structural conversion errors -- a dropped link
-function, missing trees, a lost imputation step, a swapped score column -- which move
-predictions by tenths or more, while never firing on the float32-versus-float64 rounding
-every export carries (measured at ~1e-6 relative). Precision itself is pinned separately
+The tolerance -- 1e-5 relative plus 1e-5 times the output's scale -- catches structural
+conversion errors, down to a single dropped tree of a slow-learning booster (~1e-3),
+while never firing on the float32-versus-float64 rounding every export carries (measured
+at ~1e-6 relative by the parity tests). Precision itself is pinned separately
 by the parity tests; this check exists so that a wrong graph can never be *saved*.
 
 Fit-time only: it needs onnxruntime (always installed) and the model's native predict.
@@ -19,8 +19,8 @@ from __future__ import annotations
 import numpy as np
 
 PROBE_ROWS = 64
-_RTOL = 1e-3
-_ATOL_SCALE = 1e-4
+_RTOL = 1e-5
+_ATOL_SCALE = 1e-5
 
 
 class OnnxExportMismatch(RuntimeError):

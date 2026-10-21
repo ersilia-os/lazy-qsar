@@ -118,6 +118,22 @@ def quantile_bins(y: np.ndarray, n_bins: int) -> np.ndarray:
     return np.searchsorted(edges, y_arr, side="right").astype(int)
 
 
+def quantile_strata(y: np.ndarray, n_bins: int, min_count: int) -> np.ndarray:
+    """Quantile bins of *y* with every bin holding at least *min_count* rows.
+
+    Tied targets (a censored value repeated many times, say) leave some quantile bins
+    nearly empty; bins are merged, from fewer bins down to one, until none is too small
+    to stratify on.
+    """
+    y_arr = np.asarray(y, dtype=float).ravel()
+    bins = quantile_bins(y_arr, n_bins)
+    while n_bins > 1 and np.bincount(bins).min() < min_count:
+        n_bins -= 1
+        bins = quantile_bins(y_arr, n_bins)
+    # quantile_bins can leave an empty label in the middle; relabel densely.
+    return np.unique(bins, return_inverse=True)[1]
+
+
 def make_quantile_oof_splits(
     y: np.ndarray,
     n_splits: int | None = None,

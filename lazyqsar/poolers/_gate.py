@@ -156,11 +156,13 @@ class GatedPooler:
         """Gate-weighted mean of the per-head columns, shape (n,)."""
         if self._n_heads == 1:
             return np.asarray(P[:, 0], dtype=float)
-        W = (
-            self.get_weights(X_prep)
-            if X_prep is not None
-            else np.full(P.shape, 1.0 / self._n_heads)
-        )
+        if getattr(self, "_head_weights", None) is not None:
+            # Fixed per-head weights (the regression stacker) need no features.
+            W = np.tile(np.asarray(self._head_weights, dtype=float), (len(P), 1))
+        elif X_prep is not None:
+            W = self.get_weights(X_prep)
+        else:
+            W = np.full(P.shape, 1.0 / self._n_heads)
         return (W * P).sum(axis=1)
 
     def _save_extra(self) -> dict:
