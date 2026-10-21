@@ -40,6 +40,16 @@ def test_stacking_weights_favour_the_better_head_and_sum_to_one():
     assert w[0] > 0.8
 
 
+def test_stacking_weights_skip_non_finite_rows():
+    rng = np.random.default_rng(0)
+    y = rng.normal(size=500)
+    P = np.column_stack([y + 0.2 * rng.normal(size=500), y + rng.normal(size=500)])
+    P_nan = P.copy()
+    P_nan[:7, 1] = np.nan
+    np.testing.assert_allclose(stacking_weights(P_nan, y), stacking_weights(P[7:], y[7:]))
+    assert stacking_weights(np.full((5, 2), np.nan), y[:5]).tolist() == [0.5, 0.5]
+
+
 def test_stack_beats_each_head_and_equal_weights():
     rng = np.random.default_rng(1)
     n = 3000

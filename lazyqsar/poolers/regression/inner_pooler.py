@@ -26,12 +26,18 @@ from lazyqsar.utils.metrics import spearman_score
 def stacking_weights(P: np.ndarray, y: np.ndarray) -> np.ndarray:
     """Non-negative least-squares weights of *y* on the columns of *P*, summing to one.
 
-    Falls back to equal weights when every coefficient is zero (no head predicts
-    anything useful).
+    Rows with a non-finite prediction or target are left out of the fit. Falls back to
+    equal weights when every coefficient is zero (no head predicts anything useful) or
+    no row is usable.
     """
     from scipy.optimize import nnls
 
-    w, _ = nnls(np.asarray(P, dtype=float), np.asarray(y, dtype=float))
+    P = np.asarray(P, dtype=float)
+    y = np.asarray(y, dtype=float)
+    ok = np.isfinite(P).all(axis=1) & np.isfinite(y)
+    if not ok.any():
+        return np.full(P.shape[1], 1.0 / P.shape[1])
+    w, _ = nnls(P[ok], y[ok])
     if not np.isfinite(w).all() or w.sum() <= 0:
         return np.full(P.shape[1], 1.0 / P.shape[1])
     return w / w.sum()
