@@ -37,7 +37,6 @@ from __future__ import annotations
 import numpy as np
 
 from lazyqsar.utils.onnx_check import (
-    _ATOL_SCALE,
     OnnxExportMismatch,
     _assert_close,
     _atol,
@@ -75,6 +74,9 @@ class OnnxBoundHead:
     _onnx_kind = "values"
     # Override for outputs that move in discrete steps (the applicability domain).
     _onnx_bind_atol: float | None = None
+    # Relative tolerance of the bind-time check (and the scale-relative absolute one).
+    # Trees and linear models round at ~1e-6; the SVMs override it (see onnx_check).
+    _onnx_tolerance: float = 1e-5
 
     # ------------------------------------------------------------------ to implement
 
@@ -111,7 +113,13 @@ class OnnxBoundHead:
             if self._onnx_kind == "decision":
                 self._onnx_column_ = self._resolve_decision_column(probe, native)
             got, expected, atol = self._bind_comparison(probe, native)
-            _assert_close(got, expected, type(self).__name__ + " (bound)", atol)
+            _assert_close(
+                got,
+                expected,
+                type(self).__name__ + " (bound)",
+                atol,
+                rtol=self._onnx_tolerance,
+            )
 
     def _bind_comparison(self, probe, native):
         """``(onnx, native, atol)``: what the bind-time check compares.
@@ -124,9 +132,9 @@ class OnnxBoundHead:
         if self._onnx_bind_atol is not None:
             atol = self._onnx_bind_atol
         elif self._onnx_kind == "probability":
-            atol = _ATOL_SCALE
+            atol = self._onnx_tolerance
         else:
-            atol = _atol(native)
+            atol = _atol(native, self._onnx_tolerance)
         return self._raw_onnx(probe), native, atol
 
     def _resolve_output(self, session) -> int:

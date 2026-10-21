@@ -427,6 +427,8 @@ class BaseSVCClassifier(_SVMHead, ClassifierHead, BaseEstimator, ClassifierMixin
     """
 
     _onnx_kind = "decision"
+    # A kernel sums over every support vector and feature in float32: ~1e-4 of rounding.
+    _onnx_tolerance = 1e-4
     _fitted_attr = "svc_"
 
     def __init__(

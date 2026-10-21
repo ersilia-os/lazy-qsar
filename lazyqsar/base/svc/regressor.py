@@ -181,6 +181,8 @@ class BaseSVR(_SVMHead, RegressorHead, BaseEstimator, RegressorMixin):
     timing_ : dict
     """
 
+    # A kernel sums over every support vector and feature in float32: ~1e-4 of rounding.
+    _onnx_tolerance = 1e-4
     _fitted_attr = "svr_"
 
     def __init__(
