@@ -65,6 +65,10 @@ from lazyqsar.utils.splits import make_quantile_oof_splits, quantile_bins
 
 _VAL_FRACTION = 0.1
 _VAL_MIN_ROWS = 200
+# Same as the XGBoost preset race: below this many training rows, average the holdout
+# score over several random splits.
+_STAGE1_MULTI_SPLIT_THRESHOLD = 2_000
+_STAGE1_MULTI_SPLITS = 3
 _PORTFOLIO_MIN_GAIN = 0.005
 _MAX_COST_MULTIPLIER = 20
 _ONNX_MAX_BYTES = 5_000_000
@@ -148,12 +152,14 @@ def _make_svr(params: dict):
         )
     from sklearn.svm import SVR
 
+    # No iteration cap for the kernel solver: libsvm converges on these problem sizes,
+    # and a cap (the SVC presets carry one) can stop it short of the optimum.
     return SVR(
         C=params["C"],
         epsilon=params.get("epsilon", _EPSILON),
         kernel=params.get("kernel", "rbf"),
         gamma=params.get("gamma", "scale"),
-        max_iter=params.get("max_iter", -1),
+        max_iter=-1,
         tol=params.get("tol", 1e-3),
     )
 
@@ -190,49 +196,61 @@ def _validation_split(X, z: np.ndarray, random_state: int = _RANDOM_STATE):
         return X, X, z, z, False
 
 
+def _rmse(a, b) -> float:
+    return float(np.sqrt(np.mean((np.asarray(a) - np.asarray(b)) ** 2)))
+
+
 def _portfolio_select_svr(
     X, z: np.ndarray, profile: DatasetProfile, random_state: int = _RANDOM_STATE
 ):
-    """Single-stage portfolio: fit each preset on 90%, score Spearman ρ on 10%."""
+    """Fit each preset on 90%, score RMSE on the standardised 10%, pick the best.
+
+    Scored by RMSE -- the metric every regression head's preset race uses -- on the
+    standardised target, so the scale is comparable across datasets. Below
+    ``_STAGE1_MULTI_SPLIT_THRESHOLD`` training rows the score is averaged over several
+    random splits: a 10% holdout of a few hundred molecules is too noisy to rank
+    presets on (the same reasoning, and threshold, as the XGBoost race).
+
+    A non-default preset must beat the default by a *relative* RMSE margin of
+    ``_min_gain_threshold(n)``. Kernel presets are no longer skipped up front on a
+    worst-case ONNX size: the post-fit support-vector guard in ``_fit_raw`` handles
+    size on the model that was actually fitted.
+    """
     n_features = profile.n_features
     candidates = [
         ("heuristic", svr_heuristic_params(profile)),
         ("default", svr_default_params(profile)),
         ("linear", svr_linear_params(profile)),
     ]
-    X_tr, X_val, z_tr, z_val, did_split = _validation_split(X, z, random_state)
-    if not did_split:
+    first = _validation_split(X, z, random_state)
+    if not first[-1]:
         return "heuristic", svr_heuristic_params(profile), {}
 
-    n_tr = len(z_tr)
+    n_tr = len(first[2])
     default_cost = _svr_cost(dict(candidates)["default"], n_tr, n_features)
     budget = _MAX_COST_MULTIPLIER * default_cost
+    n_splits = _STAGE1_MULTI_SPLITS if n_tr < _STAGE1_MULTI_SPLIT_THRESHOLD else 1
+    splits = [first] + [
+        _validation_split(X, z, random_state + 97 * k) for k in range(1, n_splits)
+    ]
 
     logger.rule("SVR Portfolio — Stage 1")
     scores: dict = {}
     for name, params in candidates:
-        if not params.get("use_linear", False):
-            worst_case = profile.n_samples * n_features * 4
-            if worst_case > _ONNX_MAX_BYTES:
-                logger.debug(
-                    f"[portfolio] {name:12s}: skipped (worst-case ONNX "
-                    f"{worst_case / 1e6:.1f} MB > {_ONNX_MAX_BYTES / 1e6:.0f} MB)"
-                )
-                scores[name] = float("nan")
-                continue
         cost = _svr_cost(params, n_tr, n_features)
         if name not in ("default", "heuristic") and cost > budget:
             scores[name] = float("nan")
             continue
         try:
             _t = _time.perf_counter()
-            est = _make_svr(params)
-            est.fit(X_tr, z_tr)
-            rho = spearman_score(z_val, est.predict(X_val))
-            scores[name] = float("nan") if rho is None else rho
+            rmses = []
+            for X_tr, X_val, z_tr, z_val, _ in splits:
+                est = _make_svr(params).fit(X_tr, z_tr)
+                rmses.append(_rmse(z_val, est.predict(X_val)))
+            scores[name] = -float(np.mean(rmses))
             logger.info(
-                f"[portfolio] {name:12s}: rho={scores[name]:.4f}  "
-                f"t={_time.perf_counter() - _t:.1f}s  "
+                f"[portfolio] {name:12s}: rmse={-scores[name]:.4f}  "
+                f"splits={len(splits)}  t={_time.perf_counter() - _t:.1f}s  "
                 f"{'linear' if params.get('use_linear') else 'kernel'}"
             )
         except Exception as exc:
@@ -248,7 +266,8 @@ def _portfolio_select_svr(
     if best_name is None:
         best_name = "default"
     elif best_name != "default" and default_score == default_score:
-        if best_score - default_score < _min_gain_threshold(n_tr):
+        relative_gain = (best_score - default_score) / max(abs(default_score), 1e-12)
+        if relative_gain < _min_gain_threshold(n_tr):
             best_name = "default"
     logger.info(f"Portfolio winner: {best_name}")
     return best_name, dict(candidates)[best_name], scores

@@ -960,37 +960,30 @@ def _cv_from_n(n: int) -> int:
     return 3
 
 
-def _regression_scoring(y: np.ndarray) -> str:
-    """Auto-select CV metric based on target skewness.
+def _ridge_alpha_grid(n: int) -> np.ndarray:
+    """Ridge penalties on the scale sklearn's ``Ridge`` uses.
 
-    Skewness > 1.0 (moderately skewed) → neg_mean_absolute_error, which is
-    more robust to outliers than R². Otherwise R².
+    ``Ridge`` minimises ``||y - Xw||^2 + alpha * ||w||^2`` with the loss *summed* over
+    samples, so for standardised features ``X^T X`` is ~``n`` on its diagonal and a
+    meaningful ``alpha`` scales with ``n``. The grid spans ``alpha / n`` from 1e-4
+    (barely regularised) to 1e2 (shrunk hard) in 13 log steps; the leave-one-out path
+    makes the full grid essentially free.
     """
-    from scipy.stats import skew as scipy_skew
-
-    sk = abs(float(scipy_skew(y)))
-    return "neg_mean_absolute_error" if sk > 1.0 else "r2"
+    return float(n) * np.logspace(-4, 2, 13)
 
 
-def _regression_sample_weight(y: np.ndarray, n_bins: int = 10) -> np.ndarray:
-    """Inverse-frequency sample weights for continuous targets.
+def _elasticnet_alpha_grid(X: np.ndarray, y: np.ndarray, l1_ratio: float) -> np.ndarray:
+    """ElasticNet's own regularisation path: 20 values down from ``alpha_max``.
 
-    Bins ``y`` into ``n_bins`` quantile bins and assigns each sample a weight
-    proportional to 1 / (bin_count / n_samples), so that rare target regions
-    are up-weighted — analogous to ``class_weight='balanced'`` for classifiers.
+    ``alpha_max`` is the smallest penalty at which every coefficient is zero (glmnet's
+    lambda_max); the path runs three decades below it.
     """
-    from sklearn.utils.class_weight import compute_sample_weight
-
-    # Quantile binning handles skewed distributions better than equal-width.
-    quantiles = np.linspace(0, 100, n_bins + 1)
-    bin_edges = np.percentile(y, quantiles)
-    bin_edges = np.unique(bin_edges)  # collapse duplicates (discrete-ish targets)
-    n_unique_bins = len(bin_edges) - 1
-    if n_unique_bins < 2:
-        # Target has essentially one value; all weights equal.
-        return np.ones(len(y), dtype=float)
-    bin_ids = np.digitize(y, bin_edges[1:-1])  # 0-based bin index
-    return compute_sample_weight("balanced", bin_ids)
+    n = X.shape[0]
+    y_c = np.asarray(y, dtype=float) - float(np.mean(y))
+    X_c = np.asarray(X, dtype=float) - np.asarray(X, dtype=float).mean(axis=0)
+    alpha_max = float(np.abs(X_c.T @ y_c).max()) / (n * max(l1_ratio, 1e-3))
+    alpha_max = max(alpha_max, 1e-6)
+    return np.logspace(np.log10(alpha_max) - 3.0, np.log10(alpha_max), 20)
 
 
 # ---------------------------------------------------------------------------
@@ -1003,16 +996,15 @@ class BaseLinearRegressor(OnnxBoundHead, BaseEstimator):
     Linear regression with embedded feature selection.
 
     Automatically selects solver and regularization regime based on (n, p):
-      - standard  (n<=50K, p<=n): RidgeCV (L2),               k-fold CV
-      - high_dim  (n<=50K, p>n):  ElasticNetCV,               SelectFromModel(Lasso) pre-filter
+      - standard  (n<=50K, p<=n): RidgeCV (L2), efficient leave-one-out over
+                                  ``alpha = n * logspace(-4, 2, 13)``
+      - high_dim  (n<=50K, p>n):  ElasticNetCV over its own alpha path, after a
+                                  univariate ``SelectKBest(f_regression)`` to <= 2n
       - large     (n>50K):        SGDRegressor + ElasticNet,  subsample alpha tuning
 
     Feature scaling is NOT applied internally. Standardize X before calling fit().
-    CV scoring is auto-selected based on target skewness (R² or neg_MAE).
-
-    Imbalanced target distributions are handled automatically: samples in rare
-    target regions are up-weighted via inverse-frequency quantile binning,
-    analogous to ``class_weight='balanced'`` for classifiers.
+    Model selection minimises squared error throughout (the regression metric
+    LazyQSAR selects presets by), and every sample is weighted equally.
 
     Parameters
     ----------
@@ -1106,14 +1098,17 @@ class BaseLinearRegressor(OnnxBoundHead, BaseEstimator):
             self.l1_ratio if self.l1_ratio is not None else _default_l1_ratio(n, p)
         )
         effective_cv = self.cv if self.cv is not None else _cv_from_n(n)
-        scoring = _regression_scoring(y)
+        scoring = "neg_mean_squared_error"
 
         kf = KFold(
             n_splits=max(2, effective_cv), shuffle=True, random_state=self.random_state
         )
 
-        # --- Imbalance weights: inverse-frequency over quantile bins ---
-        sample_weight = _regression_sample_weight(y)
+        # Every sample counts equally. (A former "inverse-frequency" weighting over
+        # quantile bins was ~1 for every sample by construction -- quantile bins hold
+        # equal counts -- and real inverse-density weighting trades bulk accuracy for
+        # the extremes, which is not what QSAR ranking needs.)
+        sample_weight = None
 
         # --- Preprocessing: VarianceThreshold only ---
         self._vt = VarianceThreshold(threshold=self.variance_threshold)
@@ -1222,14 +1217,13 @@ class BaseLinearRegressor(OnnxBoundHead, BaseEstimator):
             X_tr_t = vt.fit_transform(X_tr)
             X_val_t = vt.transform(X_val)
             if self._sfm is not None:
-                # Refit a fast univariate F-test selector on fold data, same size
-                # as the full-fit Lasso selection (no inner model per fold).
+                # The same univariate selector as the full fit, refit on fold data.
                 n_keep = int(self._sfm.get_support().sum())
                 fold_sfm = SelectKBest(f_regression, k=min(n_keep, X_tr_t.shape[1]))
                 X_tr_t = fold_sfm.fit_transform(X_tr_t, y_tr)
                 X_val_t = fold_sfm.transform(X_val_t)
             fold_est = self._fold_estimator()
-            fold_est.fit(X_tr_t, y_tr, sample_weight=_regression_sample_weight(y_tr))
+            fold_est.fit(X_tr_t, y_tr)
             oof[val_idx] = fold_est.predict(X_val_t)
             fold_times.append(_time.perf_counter() - _t_fold)
 
@@ -1335,39 +1329,24 @@ class BaseLinearRegressor(OnnxBoundHead, BaseEstimator):
         alpha_grid = (
             np.asarray(self.alpha_values)
             if self.alpha_values is not None
-            else _default_alpha_grid(n, p)
+            else _ridge_alpha_grid(n)
         )
-
-        self._estimator = RidgeCV(
-            alphas=alpha_grid,
-            cv=kf,
-            scoring=scoring,
-        )
-        self._estimator.fit(X, y, sample_weight=sample_weight)
+        # cv=None selects RidgeCV's closed-form leave-one-out path: exact, and far
+        # cheaper than refitting per fold.
+        self._estimator = RidgeCV(alphas=alpha_grid, cv=None)
+        self._estimator.fit(X, y)
 
     def _fit_high_dim(self, X, y, n, p, kf, scoring, l1_ratio, sample_weight):
-        # Pre-filter with Lasso to reduce dimensionality
-        max_feat = _sfm_max_features(n, p)
-        pre_lasso = Lasso(alpha=1.0, max_iter=self.max_iter)
-        self._sfm = SelectFromModel(
-            estimator=pre_lasso, max_features=max_feat, threshold=-np.inf
-        )
-        self._sfm.fit(X, y, sample_weight=sample_weight)
-        X_sfm = self._sfm.transform(X)
-
-        if X_sfm.shape[1] == 0:
-            self._sfm = SelectFromModel(
-                estimator=pre_lasso, max_features=1, threshold=-np.inf
-            )
-            self._sfm.fit(X, y, sample_weight=sample_weight)
-            X_sfm = self._sfm.transform(X)
+        # A univariate F-test selector: deterministic, O(n*p), and the same selector
+        # the out-of-fold folds refit -- so OOF predictions describe this model.
+        self._sfm = SelectKBest(f_regression, k=min(_sfm_max_features(n, p), p))
+        X_sfm = self._sfm.fit_transform(X, y)
 
         alpha_grid = (
             np.asarray(self.alpha_values)
             if self.alpha_values is not None
-            else _default_alpha_grid(n, X_sfm.shape[1])
+            else _elasticnet_alpha_grid(X_sfm, y, l1_ratio)
         )
-
         self._estimator = ElasticNetCV(
             alphas=alpha_grid,
             l1_ratio=[l1_ratio],
@@ -1375,7 +1354,7 @@ class BaseLinearRegressor(OnnxBoundHead, BaseEstimator):
             max_iter=self.max_iter,
             n_jobs=self.n_jobs,
         )
-        self._estimator.fit(X_sfm, y, sample_weight=sample_weight)
+        self._estimator.fit(X_sfm, y)
 
     def _fit_large(self, X, y, n, p, kf, scoring, l1_ratio, sample_weight):
         self._sfm = None
@@ -1391,10 +1370,8 @@ class BaseLinearRegressor(OnnxBoundHead, BaseEstimator):
             rng = np.random.default_rng(self.random_state)
             sub_idx = rng.choice(n, size=sub_size, replace=False)
             X_sub, y_sub = X[sub_idx], y[sub_idx]
-            sw_sub = sample_weight[sub_idx]
         else:
             X_sub, y_sub = X, y
-            sw_sub = sample_weight
 
         base_sgd = SGDRegressor(
             loss="squared_error",
@@ -1418,7 +1395,7 @@ class BaseLinearRegressor(OnnxBoundHead, BaseEstimator):
             n_jobs=self.n_jobs,
             refit=False,
         )
-        gs.fit(X_sub, y_sub, sample_weight=sw_sub)
+        gs.fit(X_sub, y_sub)
         best_alpha = gs.best_params_["alpha"]
 
         self._estimator = SGDRegressor(
@@ -1432,7 +1409,7 @@ class BaseLinearRegressor(OnnxBoundHead, BaseEstimator):
             n_iter_no_change=_SGD_N_ITER_NO_CHANGE,
             random_state=self.random_state,
         )
-        self._estimator.fit(X, y, sample_weight=sample_weight)
+        self._estimator.fit(X, y)
 
 
 # ---------------------------------------------------------------------------

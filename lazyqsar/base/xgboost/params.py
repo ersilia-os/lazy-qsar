@@ -559,35 +559,22 @@ def _set_classification_params(params: Dict[str, Any], profile: DatasetProfile) 
 
 
 def _set_regression_params(params: Dict[str, Any], profile: DatasetProfile) -> None:
-    skew = profile.y_skewness
-    abs_skew = abs(skew)
+    """Squared error, scored by RMSE -- always.
 
-    if abs_skew < 1.0:
-        # Approximately symmetric: standard MSE loss is appropriate.
-        params["objective"] = "reg:squarederror"
-        params["eval_metric"] = "rmse"
+    The heuristic used to switch to Tweedie (positive, skewed y) or pseudo-Huber
+    (skewed y with both signs). Neither held up:
 
-    elif abs_skew < 2.0:
-        # Moderate skew with positive y: Tweedie loss handles right-skewed,
-        # non-negative distributions (e.g. count data, insurance losses).
-        # For negative or mixed-sign y fall back to pseudoHuber which is
-        # robust to outliers without requiring positivity.
-        if profile.y_all_positive:
-            params["objective"] = "reg:tweedie"
-            params["tweedie_variance_power"] = 1.5
-            params["eval_metric"] = "tweedie-nloglik@1.5"
-        else:
-            params["objective"] = "reg:pseudohubererror"
-            params["eval_metric"] = "mae"
+    - Inside LazyQSAR the target is standardised before any head sees it, so it is
+      never all-positive and Tweedie could not trigger -- dead code.
+    - Choosing the objective by skew also changed the *validation metric* (MAE instead
+      of RMSE), so in the preset race the heuristic was scored on a different, smaller
+      number than every other preset: a built-in bias, not a fair comparison.
+    - No QSAR benchmark we found shows pseudo-Huber beating squared error; skewed
+      bioactivity targets are conventionally handled by working in log units
+      (pIC50, logS, log CLint), which the user's data already is.
 
-    else:
-        # Severe skew: pseudoHuber is robust to the heavy tail regardless
-        # of sign. For positive-only targets Tweedie is also valid but
-        # pseudoHuber makes no distributional assumptions.
-        if profile.y_all_positive:
-            params["objective"] = "reg:tweedie"
-            params["tweedie_variance_power"] = 1.5
-            params["eval_metric"] = "tweedie-nloglik@1.5"
-        else:
-            params["objective"] = "reg:pseudohubererror"
-            params["eval_metric"] = "mae"
+    A user can still construct a booster with any objective; its export is faithful
+    (see ``_booster_to_sklearn_wrapper``).
+    """
+    params["objective"] = "reg:squarederror"
+    params["eval_metric"] = "rmse"
