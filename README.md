@@ -346,6 +346,28 @@ the core dependencies alone — `numpy`, `onnxruntime`, `pandas`, `h5py`, `psuti
 `-n auto --dist loadfile` for the heavier tier, and `--durations=15` to see where the time
 goes.
 
+### How ONNX fidelity is guarded
+
+A saved model runs as ONNX graphs, so the question that matters is whether a checkpoint
+computes what the fitted model computed. Several layers answer it:
+
+- **Fit through the graph.** Every head, the preprocessor and the applicability domain
+  are converted to ONNX as soon as they are fitted, and from then on predict through that
+  graph, so a fitted model and its checkpoint run the same function.
+- **Verify at bind time.** Each graph is checked against the native model on training
+  rows before it is used. The tolerance is 1e-5 relative for trees and linear models —
+  tight enough to catch a single dropped tree — and 1e-4 for kernel SVMs, whose float32
+  rounding is larger. The preprocessor's graph is checked against the scikit-learn
+  pipeline. A failure raises; nothing falls back silently.
+- **Write what was verified.** `save` writes exactly the bound bytes and checks the file
+  against them.
+- **Test the whole path.** The parity tests (`tests/fit/test_onnx_parity_matrix.py`,
+  `tests/pipeline/test_regression_pipeline.py`, `tests/chem/test_fixture_export_fidelity.py`)
+  compare fitted models, loaded checkpoints and the inference runner for every head,
+  regime and task. They cover multi-batch models, intervals, blocked and one-at-a-time
+  scoring, and rows one float32 ULP either side of training values.
+- **Old checkpoints.** Checkpoints written by 3.8 load and predict identically.
+
 ### What is not covered
 
 Worth stating plainly, because a green suite does not mean these are exercised:
@@ -355,8 +377,6 @@ Worth stating plainly, because a green suite does not mean these are exercised:
   in stubbed registries, CLI argument validation and import-purity checks — so a change to
   any of them can break `slow` mode without reddening anything. Test them by hand against
   real molecules before changing them.
-- **The SVC ONNX export.** The score-column sign and the per-head export-versus-fit
-  comparison are not checked. A converter regression there is silent.
 - **Python 3.11 and 3.13.** Supported per `requires-python`, exercised by nothing.
 
 Install the `fit` extra from the pins rather than whatever is already in your environment:
