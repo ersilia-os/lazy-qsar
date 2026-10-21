@@ -162,6 +162,23 @@ PRESETS = {
             colsample_bytree=0.71,
             colsample_bylevel=0.64,
         ),
+        # Faster Probst variants for large n: fewer rounds (eta 0.1), shallower trees.
+        "probst_eta01": _xgb(
+            eta=0.1,
+            max_depth=11,
+            min_child_weight=2,
+            subsample=0.87,
+            colsample_bytree=0.71,
+            colsample_bylevel=0.64,
+        ),
+        "probst_d8_eta008": _xgb(
+            eta=0.08,
+            max_depth=8,
+            min_child_weight=2,
+            subsample=0.87,
+            colsample_bytree=0.71,
+            colsample_bylevel=0.64,
+        ),
         # AutoGluon tabular XGBoost default (lr 0.1, depth 6, colsample 1.0).
         "autogluon": _xgb(eta=0.1, max_depth=6),
         # Slow-and-wide: eta 0.05, depth 6, subsample 0.8, colsample 0.5 (fingerprint-
@@ -230,7 +247,7 @@ def _fit_predict(builder, Xtr, ztr, Xte, n, p, sparse):
     return est.predict(Xte), size
 
 
-def run(label, heads, task_names, max_n):
+def run(label, heads, task_names, max_n, min_n=0):
     from lazyqsar.base.preprocessing import BaseRegressorPreprocessor
     from lazyqsar.utils.metrics import regression_metrics
 
@@ -244,7 +261,7 @@ def run(label, heads, task_names, max_n):
                 done.add((r["task"], r["split"], r["head"], r["preset"]))
     for task in task_names:
         smiles, y, X, provided = task_registry.load(task)
-        if len(y) > max_n:
+        if len(y) > max_n or len(y) < min_n:
             continue
         for split, tr, te in task_registry.splits(task, smiles, provided, n_random=1):
             with contextlib.redirect_stdout(io.StringIO()):
@@ -301,8 +318,15 @@ def main():
     ap.add_argument("--heads", nargs="*", default=list(PRESETS))
     ap.add_argument("--tasks", nargs="*", default=None)
     ap.add_argument("--max-n", type=int, default=100_000)
+    ap.add_argument("--min-n", type=int, default=0)
     args = ap.parse_args()
-    run(args.label, args.heads, args.tasks or task_registry.task_names(), args.max_n)
+    run(
+        args.label,
+        args.heads,
+        args.tasks or task_registry.task_names(),
+        args.max_n,
+        args.min_n,
+    )
 
 
 if __name__ == "__main__":

@@ -40,6 +40,9 @@ from .inspector import DatasetProfile
 from . import flaml_data as _fd
 
 
+# Above this many rows the regression preset trades a little accuracy for speed.
+_FAST_PRESET_MIN_N = 2_000
+
 # Metrics where higher is better (all others are minimised by XGBoost)
 MAXIMIZE_METRICS = frozenset({"auc", "aucpr", "map", "ndcg"})
 
@@ -336,12 +339,18 @@ def probst_regression_params(
     candidates -- within 1.1% of the per-task best on average, best on 41 of 90 task
     splits -- against 6.8% for xgboost's own defaults and 4.4% for AutoGluon's. Early
     stopping on a held-out split sets the number of rounds.
+
+    Above 2,000 rows the learning rate rises to 0.08 and the depth falls to 8. On the
+    32 benchmark splits of that size this costs 0.8% RMSE on the head and 31% of its fit
+    time -- the cheapest of the faster variants tried (eta 0.1: +1.1%, 0.58x; depth 7:
+    +0.9%, 0.95x) -- and keeps large regression fits near classification's fit time.
     """
+    large = profile.n_samples > _FAST_PRESET_MIN_N
     params: Dict[str, Any] = {
         "tree_method": "hist",
         "device": "cuda" if device == "gpu" else "cpu",
-        "learning_rate": 0.052,
-        "max_depth": 11,
+        "learning_rate": 0.08 if large else 0.052,
+        "max_depth": 8 if large else 11,
         "min_child_weight": 2,
         "subsample": 0.87,
         "colsample_bytree": 0.71,

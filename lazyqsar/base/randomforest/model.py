@@ -51,6 +51,8 @@ from .params import (
 
 
 _IMBALANCE_BALANCED_SUBSAMPLE_RATIO = 3.0
+# Regression: above this many rows the forest's OOB predictions serve as its OOF.
+_OOB_OOF_MIN_N = 5_000
 _PORTFOLIO_MIN_N = (
     200  # below this skip OOB comparison; OOB is unreliable on tiny datasets
 )
@@ -467,10 +469,13 @@ class BaseRFRegressor(_RFHead, RegressorHead):
         Reproducibility seed.
     oof : bool
         If True (default), collect OOF predictions after fitting.
-    oof_source : {"folds", "oob"}
+    oof_source : {"auto", "folds", "oob"}
         Where the OOF predictions come from. ``"folds"`` refits the forest on k folds,
         like every other head; ``"oob"`` reads the final forest's out-of-bag
-        predictions, which are also out-of-sample and cost no refit.
+        predictions, which are also out-of-sample and cost no refit. ``"auto"`` (the
+        default) uses the OOB above 5,000 rows, where the forest is the only head
+        besides XGBoost and its fold refits were a third of the fit; on the benchmark
+        the OOB cost 0.4% RMSE on average, mostly at small n where folds remain.
 
     Attributes (after fit)
     ----------------------
@@ -495,7 +500,7 @@ class BaseRFRegressor(_RFHead, RegressorHead):
         n_jobs: int = -1,
         random_state: int | None = 42,
         oof: bool = True,
-        oof_source: str = "folds",
+        oof_source: str = "auto",
     ):
         self.n_estimators = n_estimators
         self.max_depth = max_depth
@@ -562,7 +567,10 @@ class BaseRFRegressor(_RFHead, RegressorHead):
             f"BaseRFRegressor.collect_oof: full fit on n={len(y)} (forest fit runs once)"
         )
         self._fit_raw(X, y)
-        if self.oof_source == "oob" and np.isfinite(self.oob_preds_).all():
+        use_oob = self.oof_source == "oob" or (
+            self.oof_source == "auto" and len(y) > _OOB_OOF_MIN_N
+        )
+        if use_oob and np.isfinite(self.oob_preds_).all():
             logger.info("collect_oof: out-of-bag predictions of the final forest")
             self.timing_["oof_folds"] = []
             self.timing_["oof_total"] = 0.0

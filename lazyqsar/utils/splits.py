@@ -95,9 +95,17 @@ def check_trainable_regression(y, where="fit"):
         )
 
 
+# Above this many rows regression OOF uses 3 folds instead of 5: every head refits once
+# per fold, so the folds are most of a large fit's cost, and with thousands of rows three
+# folds already give the stacker and the interval model plenty of held-out predictions.
+_REGRESSION_FEW_FOLDS_N = 2_000
+
+
 def auto_regression_oof_n_splits(y: np.ndarray) -> int:
     """Auto-select k-fold count for regression from sample size (between 3 and 5)."""
     n = len(np.asarray(y))
+    if n > _REGRESSION_FEW_FOLDS_N:
+        return 3
     return max(2, min(5, max(3, n // 50), n // 2))
 
 
