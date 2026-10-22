@@ -13,26 +13,16 @@ Batching is by size only: below ``max_batch_size`` one batch; above it, quantile
 partitions so every batch spans the full target range, averaged at inference.
 """
 
-import json
-import os
-import time as _time
-
 import numpy as np
 
 from lazyqsar.utils.logging import logger
 from lazyqsar.utils.metrics import spearman_score
-from lazyqsar.utils.ranking import prepare_knots, rank_from_knots, subsample_knots
+from lazyqsar.utils.ranking import rank_from_knots
 from lazyqsar.utils.splits import check_trainable_regression
 
-from ..heads.regression.lr import Head as LRHead
-from ..heads.regression.rf import Head as RFHead
-from ..heads.regression.svr import Head as SVRHead
-from ..heads.regression.xgb import Head as XGBHead
 from ..poolers.regression import InnerPooler
 from ..portfolios.regression import Portfolio
-from ..preprocessors.regression.prep import Preprocessor
-
-_HEAD_LABELS = {"lr": "LR", "xgb": "XGB", "rf": "RF", "svr": "SVR"}
+from ._base import _AssemblerBase, _BatchBase
 
 
 def _plan_regression_batches(y, max_batch_size=100_000, random_state=42):
@@ -55,66 +45,16 @@ def _plan_regression_batches(y, max_batch_size=100_000, random_state=42):
     return [np.sort(np.where(assignment == b)[0]) for b in range(k)]
 
 
-def _timing_steps(t_prep, portfolio, heads, t_pooler):
-    steps = [("Preprocessing", t_prep, False)]
-    for head_name, head in zip(portfolio, heads):
-        label = _HEAD_LABELS.get(head_name, head_name)
-        t = getattr(getattr(head, "model", None), "timing_", {})
-        if "portfolio_select" in t:
-            steps.append((f"{label} — portfolio select", t["portfolio_select"], False))
-        if "hparam_search" in t:
-            steps.append((f"{label} — hyperparam search", t["hparam_search"], False))
-        if "phase2_refit" in t:
-            steps.append((f"{label} — phase-2 refit", t["phase2_refit"], False))
-        if "fit" in t:
-            steps.append((f"{label} — fit", t["fit"], False))
-        if "oof_total" in t:
-            folds = t.get("oof_folds", [])
-            steps.append((f"{label} — OOF ({len(folds)} folds)", t["oof_total"], False))
-            for fi, ft in enumerate(folds):
-                steps.append((f"fold {fi + 1}/{len(folds)}", ft, True))
-    steps.append(("Pooler — gating network", t_pooler, False))
-    return steps
-
-
-class _BatchLazyRegressor(object):
+class _BatchLazyRegressor(_BatchBase):
     """Single-batch ensemble on standardised targets: preprocessor + heads + gate."""
 
-    def __init__(self, portfolio: list, max_rounds: int | None = None):
-        self.prep = Preprocessor()
-        self.heads = []
-        for head_name in portfolio:
-            if head_name == "lr":
-                self.heads.append(LRHead())
-            elif head_name == "xgb":
-                self.heads.append(XGBHead(max_rounds=max_rounds))
-            elif head_name == "rf":
-                self.heads.append(RFHead())
-            elif head_name == "svr":
-                self.heads.append(SVRHead())
-            else:
-                raise ValueError(f"Unknown regression head {head_name}.")
-        self.portfolio = portfolio
-        self.pooler = InnerPooler(portfolio=portfolio)
+    task = "regression"
+    _pooler_cls = InnerPooler
+    _oof_attr = "oof_preds_"
 
     def fit(self, X, z):
         """Fit preprocessor, heads and pooler on (X, z) with z standardised."""
-        _t_prep = _time.perf_counter()
-        self.prep.fit(X, z)
-        X = self.prep.transform(X)
-        t_prep = _time.perf_counter() - _t_prep
-
-        for i, head in enumerate(self.heads):
-            logger.info(f"Fitting head {i + 1}/{len(self.heads)}: {self.portfolio[i]}")
-            head.fit(X, z)
-        if all(hasattr(getattr(h, "model", None), "oof_preds_") for h in self.heads):
-            P = np.column_stack([h.model.oof_preds_ for h in self.heads])
-        else:
-            P = None
-        _t_pooler = _time.perf_counter()
-        self.pooler.fit(P, z, X_prep=X)
-        t_pooler = _time.perf_counter() - _t_pooler
-        logger.timing_table(_timing_steps(t_prep, self.portfolio, self.heads, t_pooler))
+        self._fit_batch(X, z)
 
     def predict(self, X):
         """Gated prediction in standardised units, shape (n,)."""
@@ -122,19 +62,8 @@ class _BatchLazyRegressor(object):
         P = np.column_stack([head.predict(X_prep) for head in self.heads])
         return self.pooler.predict(P, X_prep)
 
-    def save(self, directory, batch_num):
-        if batch_num is not None:
-            directory = f"{directory}/batch_{batch_num}"
-        os.makedirs(directory, exist_ok=True)
-        self.pooler.save(directory)
-        self.prep.save(directory)
-        for head in self.heads:
-            head.save(directory)
-        logger.debug(f"Batch saved to {directory}")
-        return directory
 
-
-class LazyRegressor(object):
+class LazyRegressor(_AssemblerBase):
     """
     Ensemble regressor for pre-computed feature arrays.
 
@@ -235,10 +164,9 @@ class LazyRegressor(object):
 
     def _build_oof_percentile(self, X, y):
         """OOF ECDF knots (the reliability rank) and the out-of-fold ρ."""
-        self.oof_percentile_knots_ = None
-        self._oof_percentile_prepared_ = None
         self.oof_rho_ = None
         pooled = self._oof_accumulate(X)
+        self._set_oof_reference(pooled)
         if pooled is None:
             logger.warning(
                 "No out-of-fold predictions were kept, so the out-of-fold ρ is unknown "
@@ -247,8 +175,6 @@ class LazyRegressor(object):
             return
         self.oof_preds_ = pooled
         self.oof_rho_ = spearman_score(y, pooled)
-        self.oof_percentile_knots_ = subsample_knots(np.sort(pooled))
-        self._oof_percentile_prepared_ = prepare_knots(self.oof_percentile_knots_)
 
     def oof_channels(self, X):
         """Out-of-fold ``(value, rank)`` per training row, or None. Fit-time only."""
@@ -289,13 +215,8 @@ class LazyRegressor(object):
     # Save
     # ------------------------------------------------------------------
 
-    def save(self, directory):
-        """Save all batch models and ``metadata.json`` to *directory*."""
-        logger.info(f"Saving LazyRegressor to {directory!r}")
-        for batch_num, model in enumerate(self.models):
-            model.save(directory, batch_num)
-        metadata = {
-            "task": "regression",
+    def _metadata(self) -> dict:
+        return {
             "portfolio": self.portfolio,
             "max_batch_size": self.max_batch_size,
             "num_batches": len(self.models),
@@ -304,13 +225,3 @@ class LazyRegressor(object):
             "oof_rho": self.oof_rho_,
             "train_rho": self.train_rho_,
         }
-        knots = getattr(self, "oof_percentile_knots_", None)
-        if knots is not None and len(knots):
-            metadata["oof_percentile"] = {
-                "knots": np.asarray(knots, dtype=np.float64).tolist(),
-                "n_train": int(len(knots)),
-            }
-        with open(f"{directory}/metadata.json", "w") as f:
-            json.dump(metadata, f, indent=4)
-        logger.success(f"Saved {len(self.models)} batch(es) to {directory!r}")
-        logger.dir_tree(directory)

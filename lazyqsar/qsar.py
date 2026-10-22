@@ -1,7 +1,15 @@
-import hashlib
+"""SMILES-level classification: ``LazyClassifierQSAR``, its ONNX wrapper, ``LazyQSAR``.
+
+The recipe shared with regression -- descriptor screen, one agnostic model and one
+applicability domain per descriptor, pruning, per-sample combination, checkpoints -- is
+in :mod:`lazyqsar.qsar_base`. This module adds what only classification has: the
+reference library behind ``rank``, the decision cutoff on that scale, the pooled score
+map, and the out-of-fold diagnostics.
+"""
+
 import json
 import os
-import shutil
+
 import numpy as np
 
 from .ensemble import (
@@ -9,10 +17,7 @@ from .ensemble import (
     EnsembleSpec,
     build_pooled_score_knots,
     combine,
-    mask_rows,
 )
-from .ensemble.channels import score_smiles_chunkwise
-from .ensemble.runner import get_chunk_size
 from .registry import (  # noqa: F401  (re-exported for backwards compatibility)
     DESCRIPTOR_TYPES,
     DESCRIPTORS_MODE,
@@ -21,11 +26,26 @@ from .registry import (  # noqa: F401  (re-exported for backwards compatibility)
 from .ensemble.combine import (
     DECISION_CUTOFF_SOURCE,
     read_decision_cutoff,
-    read_pooled_rank_anchors,
     read_pooled_rank_knots,
     read_pooled_score_knots,
 )
-from .utils.archives import read_json, unpack_to_scratch
+from .qsar_base import (  # noqa: F401  (re-exported: callers have always looked here)
+    _ArtifactWrapperBase,
+    _EnsemblePredictMixin,
+    _QSARBase,
+    _check_task,
+    _descriptor_dirs,
+    _empty_channels,
+    _load_descriptor_stack,
+    _positions_to_load,
+    _save_maybe_zipped,
+    _smiles_md5,
+    _stack_channels,
+    _unpacked,
+    invalid_smiles_indices,
+    validate_smiles,
+)
+from .utils.archives import read_json
 from .utils.splits import check_trainable
 from .utils.logging import logger
 from .utils.ranking import (
@@ -43,9 +63,10 @@ from .utils.ranking import (
 # the `lift` output is compared against.
 _LIFT_EPS = 1e-7
 
-
-def _smiles_md5(smiles_list):
-    return hashlib.md5("\x00".join(smiles_list).encode()).hexdigest()
+# Descriptor pruning on out-of-fold AUC: below the floor, or more than the gap below the
+# best descriptor.
+_PRUNE_FLOOR = 0.55
+_PRUNE_GAP = 0.10
 
 
 def _has_onnx(descriptor_dir):
@@ -83,29 +104,6 @@ def _quality_weight(oof_auc, train_auc):
     return float(np.clip(2.0 * oof_auc - train_auc, 0.0, 1.0))
 
 
-def validate_smiles(smiles_list):
-    """Parse-check SMILES, importing RDKit only when actually called.
-
-    Kept out of the module imports so that ``LazyClassifierQSAR`` and ``ArtifactWrapper``
-    can be imported on a base install. RDKit is still required to featurize anything, so
-    a real prediction needs it either way — but importing the class must not.
-    """
-    from .descriptors._validate import validate_smiles as _validate
-
-    return _validate(smiles_list)
-
-
-def invalid_smiles_indices(smiles_list):
-    """Positions RDKit cannot parse, importing RDKit only when actually called.
-
-    The predict counterpart to :func:`validate_smiles`: prediction reports the gap rather
-    than refusing the batch, so a single malformed row cannot abort a library screen.
-    """
-    from .descriptors._validate import invalid_smiles_indices as _indices
-
-    return _indices(smiles_list)
-
-
 def _optional(fn, X):
     """Call *fn(X)* and take the positive column, or return None if it is unavailable.
 
@@ -126,87 +124,17 @@ def _optional(fn, X):
         return None
 
 
-def _empty_channels(n_descriptors):
-    """Correctly shaped ``(Y, R, S, A)`` for a query of no molecules."""
-    zero = np.zeros((0, n_descriptors), dtype=np.float64)
-    return zero, zero.copy(), zero.copy(), zero.copy()
+class _ClassifierPredictMixin(_EnsemblePredictMixin):
+    """The six ``predict_*`` methods, implemented once over :func:`combine`."""
 
-
-def _stack_channels(y_hats, rank_preds, score_preds, ad_scores):
-    """Stack per-descriptor prediction lists into the (n_samples, n_descriptors) channels.
-
-    ``R`` and ``S`` collapse to None unless *every* descriptor supplied them, matching how
-    the weighting treats a partially available channel: it is not meaningful to mix a real
-    rank for one descriptor with a placeholder for another.
-    """
-    Y = np.stack(y_hats, axis=1).astype(np.float64)
-    R = (
-        np.stack(rank_preds, axis=1).astype(np.float64)
-        if rank_preds and all(r is not None for r in rank_preds)
-        else None
-    )
-    S = (
-        np.stack(score_preds, axis=1).astype(np.float64)
-        if score_preds and all(sc is not None for sc in score_preds)
-        else None
-    )
-    A = (
-        np.stack(ad_scores, axis=1).astype(np.float64)
-        if len(ad_scores) == Y.shape[1]
-        else None
-    )
-    return Y, R, S, A
-
-
-class _EnsemblePredictMixin:
-    """The six ``predict_*`` methods, implemented once over :func:`combine`.
-
-    Subclasses supply :meth:`_channels`, which is the only thing that genuinely differs
-    between the fit-time estimator and the ONNX artifact wrapper: one reads in-memory
-    scikit-learn models, the other reads ONNX sessions. Everything downstream — weighting,
-    the six output formulas, the diagnostics table — is identical, and used to be
-    maintained as two near-verbatim copies that drifted apart.
-
-    Results are cached per SMILES list, so asking for several outputs featurizes once.
-    """
-
-    def _channels(self, smiles_list):
-        """Return ``(Y, R, S, A, spec)`` for *smiles_list*.
-
-        ``R``, ``S`` and ``A`` may be ``None`` when a descriptor cannot supply them.
-        """
-        raise NotImplementedError
-
-    def _combined(self, smiles_list):
-        cache_key = _smiles_md5(smiles_list)
-        result = self._ensemble_cache.get(cache_key)
-        if result is None:
-            # Unparseable SMILES are scored like any other row -- their descriptors come
-            # back all-NaN and the exported preprocessor imputes them -- and then blanked.
-            # The positions are taken up front rather than inferred from the NaN pattern
-            # afterwards, because an all-NaN descriptor row is not proof the SMILES was
-            # bad: a descriptor can fail on a molecule that parses perfectly well, and
-            # that row should keep its score from the descriptors that did work.
-            bad = invalid_smiles_indices(smiles_list)
-            Y, R, S, A, spec = self._channels(smiles_list)
-            # Narrowed, not blanket. `combine` raises for `rank` on a checkpoint with no
-            # reference library, and this call asks for every output at once -- so without
-            # this the raise would take `predict_proba` down with it on every checkpoint
-            # fitted before v3.6. `predict_rank` raises it deliberately instead.
-            wanted = OUTPUT_NAMES
-            if getattr(spec, "pooled_rank_knots", None) is None:
-                wanted = tuple(n for n in OUTPUT_NAMES if n != "rank")
-            result = combine(Y, R, S, A, spec=spec, outputs=wanted)
-            if bad:
-                logger.warning(
-                    f"{len(bad)} SMILES could not be parsed; their predictions are NaN "
-                    f"(positions: {bad[:10]}{' ...' if len(bad) > 10 else ''})"
-                )
-                mask_rows(result.values, bad)
-            if result.diagnostics:
-                logger.ad_weights_table(result.diagnostics, n_samples=len(smiles_list))
-            self._ensemble_cache[cache_key] = result
-        return result
+    def _wanted_outputs(self, spec) -> tuple:
+        # `combine` raises for `rank` on a checkpoint with no reference library, and this
+        # call asks for every output at once -- so without this the raise would take
+        # `predict_proba` down with it on every checkpoint fitted before v3.6.
+        # `predict_rank` raises it deliberately instead.
+        if getattr(spec, "pooled_rank_knots", None) is None:
+            return tuple(n for n in OUTPUT_NAMES if n != "rank")
+        return OUTPUT_NAMES
 
     def predict_proba(self, smiles_list):
         """Calibrated ensemble probabilities, shape (n_samples, 2)."""
@@ -408,201 +336,56 @@ def _spec_from_attributes(
     )
 
 
-def _positions_to_load(active_descriptors, n_descriptors):
-    """Which descriptor positions a loader should actually open.
-
-    All of them when the checkpoint carries no active mask, and all of them when the mask
-    rejects every descriptor -- both ``_channels`` implementations fall back to scoring
-    everything in that case, so loading nothing would leave them indexing ``None``.
-    """
-    if not active_descriptors or not any(active_descriptors):
-        return [True] * n_descriptors
-    return [bool(a) for a in active_descriptors]
-
-
-def _load_descriptor_stack(model_dir, descriptor_types, to_load, model_loader=None):
-    """Featurizer, model and applicability domain per descriptor; ``None`` where skipped.
-
-    Inactive positions are kept rather than dropped so that every per-descriptor list stays
-    index-aligned with *descriptor_types*, which is what ``_spec_from_attributes`` and both
-    ``_channels`` implementations index into.
-
-    Skipping is the point. A descriptor the portfolio rejected at fit time is never scored,
-    but it was still being loaded -- an onnxruntime session per head per batch, plus the
-    featurizer's own weights, which for chemeleon or cddd is a torch model read off disk.
-    The shared inference runner has resolved the active set before opening anything since
-    the descriptor union moved into ``ensemble.runner``; this is the Python entry point
-    catching up.
-
-    *model_loader* loads one descriptor's model; ``LazyClassifier.load`` by default,
-    ``LazyRegressor.load`` for a regression checkpoint.
-    """
-    from .agnostic import LazyClassifier
-    from .applicability import ApplicabilityDomainArtifact
-
-    if model_loader is None:
-        model_loader = LazyClassifier.load
-
-    descriptors, models, ad_models = [], [], []
-    for descriptor_type, wanted in zip(descriptor_types, to_load):
-        if not wanted:
-            descriptors.append(None)
-            models.append(None)
-            ad_models.append(None)
-            continue
-        model_subdir = os.path.join(model_dir, descriptor_type)
-        if not os.path.exists(model_subdir):
-            raise FileNotFoundError(
-                f"Descriptor directory {model_subdir} does not exist."
-            )
-        descriptors.append(get_descriptor_type(descriptor_type).load(model_subdir))
-        models.append(model_loader(model_subdir))
-        ad_subdir = os.path.join(model_subdir, "applicability_domain")
-        ad_models.append(
-            ApplicabilityDomainArtifact.load(ad_subdir)
-            if os.path.isdir(ad_subdir)
-            else None
-        )
-    return descriptors, models, ad_models
-
-
-class ArtifactWrapper(_EnsemblePredictMixin):
+class ArtifactWrapper(_ClassifierPredictMixin, _ArtifactWrapperBase):
     """
     ONNX inference wrapper for a multi-descriptor LazyClassifierQSAR model.
 
-    Returned by ``LazyClassifierQSAR.load()`` / ``load_onnx()``. Holds one
-    ONNX artifact per descriptor type and exposes the same predict_* API as
-    the training-time ``LazyClassifierQSAR``.
-
-    Parameters
-    ----------
-    descriptors : list
-        Fitted descriptor objects (one per descriptor type).
-    artifacts : list
-        Loaded ONNX artifact objects (one per descriptor type).
-    ad_artifacts : list or None
-        Applicability domain artifacts (optional).
-    active_descriptors : list[bool] or None
-        Mask of which descriptors passed the applicability check.
-    ad_hard_cutoffs : list[float] or None
-        AD threshold below which a descriptor is vetoed for a sample.
-    oof_aucs : list[float | None]
-        Out-of-fold AUC per descriptor (used for weighting).
-    proxy_aucs : list[float | None]
-        Proxy AUC per descriptor (used for weighting).
-    rank_error_curves : list[tuple | None]
-        (r_knots, e_knots) rank→error curves per descriptor.
-    population_prior : float
-        Fraction of positives in the original training set.
-    descriptor_types : list[str] or None
-        Descriptor names in the same order as artifacts.
+    Returned by ``LazyClassifierQSAR.load()`` / ``load_onnx()``. Holds one ONNX artifact
+    per descriptor type and exposes the same predict_* API as the training-time
+    ``LazyClassifierQSAR``. The ensemble spec comes from
+    :meth:`EnsembleSpec.from_metadata`, the same reader the inference runner uses.
     """
 
-    def __init__(
-        self,
-        descriptors,
-        artifacts,
-        ad_artifacts=None,
-        active_descriptors=None,
-        ad_hard_cutoffs=None,
-        oof_aucs=None,
-        proxy_aucs=None,
-        rank_error_curves=None,
-        population_prior=0.5,
-        descriptor_types=None,
-        pooled_rank_knots=None,
-        pooled_score_knots=None,
-        pooled_rank_anchors=None,
-        decision_cutoff=None,
-    ):
-        self.descriptors = descriptors
-        self.artifacts = artifacts
-        self.ad_artifacts = ad_artifacts
-        self.active_descriptors = active_descriptors  # list[bool] or None
-        self.ad_hard_cutoffs = ad_hard_cutoffs  # list[float] or None
-        self.oof_aucs = oof_aucs  # list[float|None]
-        self.proxy_aucs = proxy_aucs  # list[float|None]
-        self.rank_error_curves = rank_error_curves  # list[(r_knots, e_knots)|None]
-        self.population_prior = population_prior
-        self.descriptor_types = descriptor_types  # list[str] or None
-        self.pooled_rank_knots = pooled_rank_knots  # ndarray or None
-        self.pooled_score_knots = pooled_score_knots  # (ndarray, ndarray) or None
-        self.pooled_rank_anchors = pooled_rank_anchors  # (low, high) or None
-        self.decision_cutoff = (
-            decision_cutoff  # float or None -> `binary` falls back to 0.5
-        )
-        self._ensemble_cache = {}
+    task = "classification"
 
-    def _channels(self, smiles_list):
-        active_mask = self.active_descriptors or [True] * len(self.descriptors)
-        active_indices = [i for i, a in enumerate(active_mask) if a]
-        if not active_indices:
-            active_indices = list(range(len(self.descriptors)))
+    def _wanted_channels(self) -> set:
+        # `s` only when this checkpoint has no pooled score map. With one, `score` is
+        # read off the pooled probability, so asking for the raw channel would run every
+        # graph a second time for a value nothing reads.
+        if self.spec.pooled_score_knots is not None:
+            return {"y", "r", "a"}
+        return {"y", "r", "s", "a"}
 
-        if not smiles_list:
-            # Scoring nothing is a legitimate request -- an empty shard, a query whose
-            # every row was filtered upstream -- and `combine` handles zero rows. Without
-            # this the chunked scorer returned None per descriptor and `_stack_channels`
-            # raised AxisError on `np.stack([None], axis=1)`, so the caller got an
-            # internal numpy error instead of an empty result.
-            return _empty_channels(len(active_indices)) + (
-                self._spec_for(active_indices),
-            )
+    @property
+    def oof_aucs(self):
+        """Per-descriptor skill the ensemble weights by (quality AUC), all descriptors."""
+        meta = self.metadata
+        quality = meta.get("quality_aucs") or {}
+        oof = meta.get("oof_aucs") or {}
+        return [quality.get(d, oof.get(d, 1.0)) for d in self.descriptor_types]
 
-        # Featurize and score in chunks rather than transforming the whole list first.
-        # A million compounds against a 2048-dimensional descriptor is ~8 GB of float32,
-        # and this is the entry point used to score large libraries from Python.
-        chunk_size = get_chunk_size()
-        y_hats, score_preds, rank_preds, ad_scores = [], [], [], []
-        for i in active_indices:
-            ad = (
-                self.ad_artifacts[i]
-                if self.ad_artifacts is not None and self.ad_artifacts[i] is not None
-                else None
-            )
-            channels = score_smiles_chunkwise(
-                self.descriptors[i],
-                self.artifacts[i],
-                ad,
-                smiles_list,
-                chunk_size,
-                # `s` only when this checkpoint has no pooled score map. With one, `score`
-                # is read off the pooled probability, so asking for the raw channel would
-                # run every graph a second time for a value nothing reads.
-                want={"y", "r", "a"}
-                if getattr(self, "pooled_score_knots", None) is not None
-                else {"y", "r", "s", "a"},
-                logger=logger,
-            )
-            y_hats.append(channels.y)
-            score_preds.append(channels.s)
-            rank_preds.append(channels.r)
-            if ad is not None:
-                ad_scores.append(channels.a)
+    @property
+    def population_prior(self):
+        return self.spec.population_prior
 
-        return _stack_channels(y_hats, rank_preds, score_preds, ad_scores) + (
-            self._spec_for(active_indices),
-        )
+    @property
+    def pooled_rank_knots(self):
+        return self.spec.pooled_rank_knots
 
-    def _spec_for(self, active_indices):
-        """The ensemble spec for *active_indices*, independent of what was scored."""
-        names = self.descriptor_types or [str(i) for i in range(len(self.descriptors))]
-        return _spec_from_attributes(
-            names,
-            active_indices,
-            self.oof_aucs,
-            self.proxy_aucs,
-            self.rank_error_curves,
-            self.ad_hard_cutoffs,
-            self.population_prior,
-            getattr(self, "pooled_rank_knots", None),
-            getattr(self, "pooled_score_knots", None),
-            getattr(self, "pooled_rank_anchors", None),
-            getattr(self, "decision_cutoff", None),
-        )
+    @property
+    def pooled_score_knots(self):
+        return self.spec.pooled_score_knots
+
+    @property
+    def pooled_rank_anchors(self):
+        return self.spec.pooled_rank_anchors
+
+    @property
+    def decision_cutoff(self):
+        return read_decision_cutoff(self.metadata)
 
 
-class LazyClassifierQSAR(_EnsemblePredictMixin):
+class LazyClassifierQSAR(_ClassifierPredictMixin, _QSARBase):
     """
     SMILES-aware binary classifier with built-in descriptor computation.
 
@@ -631,31 +414,55 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
         Fraction of positives in the training set.
     """
 
-    def __init__(
-        self,
-        mode: str = "slow",
-    ):
-        assert mode in ("fast", "slow"), (
-            f"Mode '{mode}' not recognized. Choose from 'fast' or 'slow'."
-        )
-        self.mode = mode
-        self.descriptor_types = DESCRIPTORS_MODE[mode]
-        self.descriptors = []  # populated in fit() after applicability check
-        self._feature_cache = {}
-        self._ensemble_cache = {}
+    task = "classification"
+    _skill_attrs = ("oof_aucs_", "train_aucs_", "quality_aucs_", "proxy_aucs_")
+    _metric_label = "AUC"
+    _prune_floor = _PRUNE_FLOOR
+    _prune_gap = _PRUNE_GAP
 
-    def _smiles_hash(self, smiles_list):
-        return _smiles_md5(smiles_list)
+    def _model_class(self):
+        from .agnostic import LazyClassifier
 
-    def _transform_cached(self, i, smiles_list):
-        key = (i, self._smiles_hash(smiles_list))
-        if key not in self._feature_cache:
-            self._feature_cache[key] = self.descriptors[i].transform(smiles_list)
-        else:
-            logger.debug(
-                f"Using cached features for descriptor: {self.descriptor_types[i]}"
+        return LazyClassifier
+
+    @staticmethod
+    def _model_skill(model):
+        return model.oof_auc_, model.train_auc_
+
+    @staticmethod
+    def _quality(oof, train):
+        return _quality_weight(oof, train)
+
+    @staticmethod
+    def _rank_error_curve(model, X, y, channels):
+        """Rank -> error curve from training predictions (20 knots, windowed).
+
+        Training-set predictions are optimistic but sufficient as a relative reliability
+        signal: high ``|rank - 0.5|`` should map to low error.
+        """
+        try:
+            _p = model.predict_proba(X=X)[:, 1]
+            _r = model._oof_percentile(X=X)[:, 1]
+            _err = np.abs(_p - y.astype(float))
+            _sidx = np.argsort(_r)
+            _rs, _es = _r[_sidx], _err[_sidx]
+            _nk = min(20, len(_rs))
+            _ki = np.round(np.linspace(0, len(_rs) - 1, _nk)).astype(int)
+            _hw = max(1, len(_rs) // (_nk * 2))
+            _r_knots = _rs[_ki]
+            _e_knots = np.array(
+                [_es[max(0, k - _hw) : k + _hw + 1].mean() for k in _ki]
             )
-        return self._feature_cache[key]
+            return (_r_knots.tolist(), _e_knots.tolist())
+        except Exception:
+            return None
+
+    def _before_descriptor_fits(self) -> None:
+        # Before any training: the reference is read only at the end of fit, and a missing
+        # one would otherwise cost the whole fit to discover.
+        from .reference import require_fetchable
+
+        require_fetchable(self.descriptor_types)
 
     def fit(self, smiles_list, y, precomputed=None, validate=True):
         """Fit one classifier per applicable descriptor.
@@ -676,11 +483,6 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
             Parse-check the SMILES. Callers that have already validated a superset can
             skip the repeat work.
         """
-        import time
-        from .agnostic import LazyClassifier
-        from .applicability import ApplicabilityDomain
-        from .descriptors.portfolio import DescriptorPortfolio
-
         # Clear any cached state from a previous fit.
         self._feature_cache.clear()
         self._ensemble_cache.clear()
@@ -698,134 +500,15 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
         self.n_compounds_ = n
         self.n_actives_ = int((y == 1).sum())
 
-        applicable = DescriptorPortfolio(self.mode).select(
-            smiles_list, y=y, precomputed=precomputed
-        )
-        self.descriptor_types = [name for name, _, _, _ in applicable]
-        self.descriptors = [desc for _, desc, _, _ in applicable]
-        self.proxy_aucs_ = [pauc for _, _, _, pauc in applicable]
-
-        # Pre-populate feature cache with matrices computed during screening.
-        smiles_hash = self._smiles_hash(smiles_list)
-        for i, (_, _, X, _) in enumerate(applicable):
-            if X is not None:
-                self._feature_cache[(i, smiles_hash)] = X
-
+        proxy = self._select_descriptors(smiles_list, y, precomputed)
         logger.rule("LazyClassifierQSAR")
         logger.info(
             f"mode={self.mode}  descriptors={self.descriptor_types}  "
             f"n={n:,}  pos_rate={pos_rate:.1%}"
         )
-
-        # Before any training: the reference is read only at the end of fit, and a missing
-        # one would otherwise cost the whole fit to discover.
-        from .reference import require_fetchable
-
-        require_fetchable(self.descriptor_types)
-
-        self.models = []
-        self.ad_models = []
-        self.oof_aucs_ = []
-        self.train_aucs_ = []
-        self.quality_aucs_ = []
-        self._rank_error_curves_ = []
-        _ad_hard_cutoffs_raw = []
-        _oof_channels = []
-        _train_ad = []
-        desc_rows = []
-
-        for i, desc_name in enumerate(self.descriptor_types):
-            t0 = time.perf_counter()
-            X = self._transform_cached(i, smiles_list)
-            feat_time = time.perf_counter() - t0
-
-            sparsity = float((X == 0).mean())
-            logger.info(
-                f"[{desc_name}] p={X.shape[1]:,}  sparsity={sparsity:.3f}  "
-                f"feat_time={feat_time:.1f}s"
-            )
-
-            model = LazyClassifier()
-            model.fit(X=X, y=y)
-            self.models.append(model)
-
-            # Build rank→error curve from training predictions (20 knots, windowed).
-            # Training-set predictions are optimistic but sufficient as a relative
-            # reliability signal: high |rank - 0.5| should map to low error.
-            try:
-                _p = model.predict_proba(X=X)[:, 1]
-                _r = model._oof_percentile(X=X)[:, 1]
-                _err = np.abs(_p - y.astype(float))
-                _sidx = np.argsort(_r)
-                _rs, _es = _r[_sidx], _err[_sidx]
-                _nk = min(20, len(_rs))
-                _ki = np.round(np.linspace(0, len(_rs) - 1, _nk)).astype(int)
-                _hw = max(1, len(_rs) // (_nk * 2))
-                _r_knots = _rs[_ki]
-                _e_knots = np.array(
-                    [_es[max(0, k - _hw) : k + _hw + 1].mean() for k in _ki]
-                )
-                self._rank_error_curves_.append((_r_knots.tolist(), _e_knots.tolist()))
-            except Exception:
-                self._rank_error_curves_.append(None)
-
-            oof_auc = model.oof_auc_
-            train_auc = model.train_auc_
-            quality = _quality_weight(oof_auc, train_auc)
-
-            self.oof_aucs_.append(oof_auc)
-            self.train_aucs_.append(train_auc)
-            self.quality_aucs_.append(quality)
-
-            _oof_channels.append(self.models[i].oof_channels(X=X))
-
-            ad = ApplicabilityDomain()
-            ad.fit(X)
-            self.ad_models.append(ad)
-            train_ad = ad.score(X)
-            _train_ad.append(train_ad)
-            _ad_hard_cutoffs_raw.append(float(np.percentile(train_ad, 5)))
-
-            def _fmt(value):
-                return "unknown" if value is None else f"{value:.4f}"
-
-            gap = None if oof_auc is None or train_auc is None else train_auc - oof_auc
-            logger.info(
-                f"[{desc_name}] OOF={_fmt(oof_auc)}  train={_fmt(train_auc)}  "
-                f"gap={_fmt(gap)}  quality={_fmt(quality)}  "
-                f"AD comps={ad.pca_.n_components_}"
-            )
-
-            desc_rows.append(
-                {
-                    "name": desc_name,
-                    "n_features": X.shape[1],
-                    "sparsity": sparsity,
-                    "feat_time": feat_time,
-                    "ad_n_components": ad.pca_.n_components_,
-                    "ad_cal_min": float(ad.cal_knots_[0]),
-                    "ad_cal_max": float(ad.cal_knots_[-1]),
-                    "proxy_auc": self.proxy_aucs_[i],
-                    "train_auc": train_auc,
-                    "quality_auc": quality,
-                }
-            )
-
-        # Descriptor-level pruning: drop if OOF AUC < floor OR < best - gap
-        # An unknown out-of-fold AUC keeps its descriptor rather than pruning it: the
-        # measurement failed, which says nothing about the descriptor. Pruning on a
-        # stand-in value is how a failed computation used to delete a good descriptor.
-        _known = [auc for auc in self.oof_aucs_ if auc is not None]
-        best_oof = max(_known) if _known else 0.0
-        _floor, _gap = 0.55, 0.10
-        active_mask = [
-            True if auc is None else ((auc >= _floor) and (auc >= best_oof - _gap))
-            for auc in self.oof_aucs_
-        ]
-        if not any(active_mask):
-            active_mask = [True] * len(self.oof_aucs_)
-        self.active_descriptors_ = active_mask
-        self.ad_hard_cutoffs_ = _ad_hard_cutoffs_raw
+        _oof_channels, _train_ad, desc_rows = self._fit_descriptors(
+            smiles_list, y, proxy
+        )
 
         # Cleared before the build, not after: `_channels` passes `pooled_rank_knots_`
         # into the spec, so a refit that reused the attribute would calibrate the new
@@ -843,9 +526,6 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
         # Before the diagnostics too: `sensitivity_at_cutoff` needs the cutoff.
         self.decision_cutoff_ = self._build_decision_cutoff()
         self.oof_diagnostics_ = self._build_oof_diagnostics(_stacked, y)
-
-        for row, active in zip(desc_rows, active_mask):
-            row["active"] = active
 
         logger.rule()
         logger.descriptor_table(desc_rows)
@@ -1239,13 +919,6 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
         )
         return knots, meta
 
-    def _active_indices(self):
-        active_mask = getattr(
-            self, "active_descriptors_", [True] * len(self.descriptor_types)
-        )
-        active_indices = [i for i, a in enumerate(active_mask) if a]
-        return active_indices or list(range(len(self.descriptor_types)))
-
     def _channels_from_matrices(self, matrices, active_indices, want_score=True):
         """Channels for feature matrices the caller already has.
 
@@ -1305,6 +978,7 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
     def save_raw(self, model_dir: str):
         os.makedirs(model_dir, exist_ok=True)
         meta = {
+            "task": "classification",
             "mode": self.mode,
             "descriptor_types": self.descriptor_types,
             "n_compounds": getattr(self, "n_compounds_", None),
@@ -1482,24 +1156,13 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
         with open(os.path.join(model_dir, "metadata.json"), "w") as f:
             json.dump(meta, f, indent=2)
 
-        for i, descriptor_name in enumerate(self.descriptor_types):
-            model_subdir = os.path.join(model_dir, descriptor_name)
-            os.makedirs(model_subdir, exist_ok=True)
-            logger.debug(f"Saving model to {model_subdir}")
-            self.models[i].save(model_subdir)
-            logger.debug(f"Saving descriptor to {model_subdir}")
-            self.descriptors[i].save(model_subdir)
-            if self.ad_models:
-                ad_subdir = os.path.join(model_subdir, "applicability_domain")
-                self.ad_models[i].save(ad_subdir)
+        self._save_descriptor_dirs(model_dir)
 
     @classmethod
     def load_raw(cls, model_dir: str):
-        descriptor_types = []
-        for fn in os.listdir(model_dir):
-            if fn in DESCRIPTOR_TYPES.keys():
-                descriptor_types += [fn]
-        descriptor_types = sorted(descriptor_types)
+        from .agnostic import LazyClassifier
+
+        descriptor_types = _descriptor_dirs(model_dir)
         # Read mode from metadata if available; fall back to inference for old models.
         meta_path = os.path.join(model_dir, "metadata.json")
         mode = None
@@ -1526,6 +1189,7 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
                 else None,
                 len(descriptor_types),
             ),
+            model_loader=LazyClassifier.load,
         )
 
         obj = cls(mode=mode)
@@ -1600,144 +1264,45 @@ class LazyClassifierQSAR(_EnsemblePredictMixin):
 
     @classmethod
     def load_onnx(cls, model_dir: str):
-        descriptor_types = []
-        for fn in os.listdir(model_dir):
-            if fn in DESCRIPTOR_TYPES.keys():
-                descriptor_types += [fn]
-        descriptor_types = sorted(descriptor_types)
+        """Load an exported checkpoint as an ONNX-backed :class:`ArtifactWrapper`.
 
-        # The metadata is read before anything is opened, not after: it carries the active
-        # mask, and a descriptor the portfolio rejected should never be loaded at all.
+        The metadata is read before anything is opened: it carries the active mask, and a
+        descriptor the portfolio rejected is never loaded at all.
+        """
+        from .agnostic import LazyClassifier
+
+        descriptor_types = _descriptor_dirs(model_dir)
         meta_path = os.path.join(model_dir, "metadata.json")
-        oof_aucs = None
-        proxy_aucs = None
-        active_descriptors = None
-        ad_hard_cutoffs = None
-        rank_error_curves = None
-        population_prior = 0.5
-        pooled_rank_knots = None
-        pooled_score_knots = None
-        # Initialised here, not only inside the branch below: both are passed to
-        # `ArtifactWrapper` unconditionally, so a checkpoint with no `metadata.json` raised
-        # `UnboundLocalError` on `pooled_rank_anchors`.
-        pooled_rank_anchors = None
-        decision_cutoff = None
-        if os.path.isfile(meta_path):
-            meta = read_json(meta_path)
-            oof_map = meta.get("oof_aucs", {})
-            proxy_map = meta.get("proxy_aucs", {})
-            quality_map = meta.get("quality_aucs", {})
-            active_map = meta.get("active_descriptors", {})
-            cutoff_map = meta.get("ad_hard_cutoffs", {})
-            curve_map = meta.get("rank_error_curves", {})
-            population_prior = float(meta.get("population_prior", 0.5))
-            oof_aucs = [
-                quality_map.get(d, oof_map.get(d, 1.0)) for d in descriptor_types
-            ]
-            proxy_aucs = [proxy_map.get(d) for d in descriptor_types]
-            active_descriptors = (
-                [active_map.get(d, True) for d in descriptor_types]
-                if active_map
-                else None
-            )
-            ad_hard_cutoffs = (
-                [cutoff_map.get(d, 0.0) for d in descriptor_types]
-                if cutoff_map
-                else None
-            )
-            rank_error_curves = (
-                [
-                    (np.array(curve_map[d][0]), np.array(curve_map[d][1]))
-                    if d in curve_map
-                    else None
-                    for d in descriptor_types
-                ]
-                if curve_map
-                else None
-            )
-            pooled_rank_knots = read_pooled_rank_knots(meta)
-            pooled_rank_anchors = read_pooled_rank_anchors(meta)
-            pooled_score_knots = read_pooled_score_knots(meta)
-            decision_cutoff = read_decision_cutoff(meta)
-
+        meta = read_json(meta_path) if os.path.isfile(meta_path) else {}
+        spec, active_names = EnsembleSpec.from_metadata(meta, descriptor_types)
+        active_indices = [descriptor_types.index(n) for n in active_names]
         descriptors, artifacts, ad_artifacts = _load_descriptor_stack(
             model_dir,
             descriptor_types,
-            _positions_to_load(active_descriptors, len(descriptor_types)),
+            [i in active_indices for i in range(len(descriptor_types))],
+            model_loader=LazyClassifier.load,
         )
         has_ad = any(a is not None for a in ad_artifacts)
-
         return ArtifactWrapper(
-            descriptors=descriptors,
-            artifacts=artifacts,
-            ad_artifacts=ad_artifacts if has_ad else None,
-            active_descriptors=active_descriptors,
-            ad_hard_cutoffs=ad_hard_cutoffs,
-            oof_aucs=oof_aucs,
-            proxy_aucs=proxy_aucs,
-            rank_error_curves=rank_error_curves,
-            population_prior=population_prior,
-            descriptor_types=descriptor_types,
-            pooled_rank_knots=pooled_rank_knots,
-            pooled_rank_anchors=pooled_rank_anchors,
-            pooled_score_knots=pooled_score_knots,
-            decision_cutoff=decision_cutoff,
+            descriptors,
+            artifacts,
+            ad_artifacts if has_ad else None,
+            spec,
+            active_indices,
+            dict(meta, descriptor_types=descriptor_types),
         )
 
     def save(self, model_dir: str):
-        if model_dir.endswith(".zip"):
-            zip = True
-            model_dir = model_dir[:-4]
-        else:
-            zip = False
-        self.save_raw(model_dir)
-        self.save_onnx(model_dir)
-        if zip:
-            shutil.make_archive(model_dir, "zip", model_dir)
-            if os.path.exists(model_dir):
-                shutil.rmtree(model_dir)
-            return model_dir + ".zip"
-        return model_dir
+        """Write the checkpoint; a path ending in ``.zip`` writes a zip archive."""
+        return _save_maybe_zipped(model_dir, self.save_raw)
 
     @classmethod
     def load(cls, model_dir: str):
-        # The scratch copy is removed once loading is done: onnxruntime reads a graph
-        # into memory when the session is constructed, so the sessions outlive the files
-        # they came from. The old code deleted a sibling directory instead, and cleaned
-        # up on only one of its two branches.
-        scratch = None
-        try:
-            if model_dir.endswith(".zip"):
-                scratch, model_dir = unpack_to_scratch(model_dir)
-            _check_task(model_dir, "classification")
-            descriptor_types = []
-            for fn in os.listdir(model_dir):
-                if fn in DESCRIPTOR_TYPES.keys():
-                    descriptor_types += [fn]
-            descriptor_types = sorted(descriptor_types)
-            if any(
-                _has_onnx(os.path.join(model_dir, descriptor_type))
-                for descriptor_type in descriptor_types
-            ):
-                return cls.load_onnx(model_dir=model_dir)
-            return cls.load_raw(model_dir=model_dir)
-        finally:
-            if scratch is not None:
-                shutil.rmtree(scratch, ignore_errors=True)
-
-
-def _check_task(model_dir, expected):
-    """Refuse a checkpoint of the other task with a pointer to the right loader."""
-    meta_path = os.path.join(model_dir, "metadata.json")
-    if not os.path.isfile(meta_path):
-        return
-    task = read_json(meta_path).get("task") or "classification"
-    if task != expected:
-        right = "LazyRegressorQSAR" if task == "regression" else "LazyClassifierQSAR"
-        raise ValueError(
-            f"{model_dir!r} is a {task} checkpoint; load it with {right}.load "
-            "(or LazyQSAR.load, which dispatches on the checkpoint's task)."
-        )
+        with _unpacked(model_dir) as path:
+            _check_task(path, "classification")
+            if any(_has_onnx(os.path.join(path, d)) for d in _descriptor_dirs(path)):
+                return cls.load_onnx(model_dir=path)
+            return cls.load_raw(model_dir=path)
 
 
 # Defined in its own module, re-exported here where callers have always looked for it.
@@ -1766,18 +1331,10 @@ class LazyQSAR:
     @staticmethod
     def load(model_dir: str):
         """Load a saved QSAR model of either task, dispatching on its ``metadata.json``."""
-        scratch = None
-        try:
-            path = model_dir
-            if model_dir.endswith(".zip"):
-                scratch, path = unpack_to_scratch(model_dir)
-            meta_path = os.path.join(path, "metadata.json")
-            task = (
-                read_json(meta_path).get("task") if os.path.isfile(meta_path) else None
-            ) or "classification"
-        finally:
-            if scratch is not None:
-                shutil.rmtree(scratch, ignore_errors=True)
+        from .qsar_base import _read_task
+
+        with _unpacked(model_dir) as path:
+            task = _read_task(path)
         if task == "regression":
             return LazyRegressorQSAR.load(model_dir)
         return LazyClassifierQSAR.load(model_dir)

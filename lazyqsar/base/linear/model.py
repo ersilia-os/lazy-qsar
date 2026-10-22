@@ -50,7 +50,7 @@ try:
         SGDClassifier,
         SGDRegressor,
     )
-    from sklearn.metrics import balanced_accuracy_score, r2_score, roc_auc_score
+    from sklearn.metrics import r2_score, roc_auc_score
     from sklearn.model_selection import (
         GridSearchCV,
         KFold,
@@ -69,27 +69,17 @@ except ImportError:
     SelectFromModel = SelectKBest = VarianceThreshold = f_classif = f_regression = None  # type: ignore[assignment,misc]
     ElasticNet = ElasticNetCV = Lasso = LogisticRegression = LogisticRegressionCV = None  # type: ignore[assignment,misc]
     Ridge = RidgeCV = SGDClassifier = SGDRegressor = None  # type: ignore[assignment,misc]
-    balanced_accuracy_score = r2_score = roc_auc_score = None  # type: ignore[assignment]
+    r2_score = roc_auc_score = None  # type: ignore[assignment]
     GridSearchCV = KFold = StratifiedKFold = StratifiedShuffleSplit = None  # type: ignore[assignment,misc]
     LabelEncoder = None  # type: ignore[assignment,misc]
     check_array = check_is_fitted = None  # type: ignore[assignment]
     _FIT_DEPS_AVAILABLE = False
 
-from lazyqsar.base._onnx_binding import OnnxBoundHead
+from lazyqsar.base._head import ClassifierHead, RegressorHead, require_fit_deps
 from lazyqsar.utils.logging import logger
-from lazyqsar.utils.onnx_check import check_probability, check_values, probe_rows
+from lazyqsar.utils.onnx_check import probe_rows
 from lazyqsar.utils.metrics import spearman_score
-from lazyqsar.utils.ranking import (
-    binarize,
-    prepare_knots,
-    rank_from_knots,
-    subsample_knots,
-)
-from lazyqsar.utils.splits import (
-    auto_stratified_oof_n_splits,
-    make_quantile_oof_splits,
-    make_stratified_oof_splits,
-)
+from lazyqsar.utils.splits import make_quantile_oof_splits, make_stratified_oof_splits
 
 
 def _linear_pipeline_onnx(model, last_step: str) -> bytes:
@@ -119,21 +109,10 @@ def _sklearn_kwargs(estimator, **kwargs):
 # ---------------------------------------------------------------------------
 
 
-def _auto_n_splits(y: np.ndarray) -> int:
-    """Backward-compatible wrapper around the shared stratified OOF helper."""
-    return auto_stratified_oof_n_splits(y)
-
-
-# Minimum minority-class OOF samples required to use isotonic calibration.
-# Below this threshold, Platt scaling (2-parameter sigmoid) is used instead.
-_CALIBRATION_ISOTONIC_MIN_MINORITY = 500
-_RANKER_MAX_KNOTS = 10_000
-
 _CLASSIFIER_STANDARD_MAX_CV_WORK = 2_000_000
 _CLASSIFIER_HIGHDIM_MAX_CV_WORK = 1_000_000
 _SGD_VALIDATION_FRACTION = 0.1
 _SGD_N_ITER_NO_CHANGE = 10
-_DEFAULT_DECISION_CUTOFF = 0.5
 
 
 def _detect_classifier_regime(n: int, p: int) -> str:
@@ -166,50 +145,6 @@ def _classifier_solver_label(regime: str, calibrated: bool = False) -> str:
     if regime == "large":
         return "SGDClassifier"
     return "unknown"
-
-
-def _learn_balanced_accuracy_cutoff(
-    y_true: np.ndarray, p1: np.ndarray
-) -> tuple[float, str]:
-    """Learn a deterministic balanced-accuracy cutoff from OOF class-1 probabilities."""
-    y_arr = np.asarray(y_true, dtype=int)
-    p_arr = np.asarray(p1, dtype=float)
-    mask = np.isfinite(p_arr)
-    if mask.sum() == 0 or len(np.unique(y_arr[mask])) < 2:
-        return _DEFAULT_DECISION_CUTOFF, "default_0.5"
-
-    probs = p_arr[mask]
-    labels = y_arr[mask]
-    unique = np.unique(probs)
-    if unique.size == 0:
-        return _DEFAULT_DECISION_CUTOFF, "default_0.5"
-
-    candidates = np.unique(
-        np.concatenate(
-            [
-                unique,
-                np.array(
-                    [
-                        np.nextafter(unique[0], -np.inf),
-                        _DEFAULT_DECISION_CUTOFF,
-                        np.nextafter(unique[-1], np.inf),
-                    ],
-                    dtype=float,
-                ),
-            ]
-        )
-    )
-
-    best_threshold = _DEFAULT_DECISION_CUTOFF
-    best_key = None
-    for thr in candidates:
-        score = balanced_accuracy_score(labels, (probs >= thr).astype(int))
-        key = (-float(score), abs(float(thr) - _DEFAULT_DECISION_CUTOFF), float(thr))
-        if best_key is None or key < best_key:
-            best_key = key
-            best_threshold = float(thr)
-
-    return best_threshold, "oof_balanced_accuracy"
 
 
 def _detect_regime(n: int, p: int) -> str:
@@ -281,7 +216,110 @@ def _sfm_max_features(n: int, p: int) -> int:
 # ---------------------------------------------------------------------------
 
 
-class BaseLinearClassifier(OnnxBoundHead, BaseEstimator):
+class _LinearHead(BaseEstimator):
+    """The linear-specific half of both linear heads.
+
+    Shared: the VarianceThreshold front end, the consolidated feature mask, the
+    pipeline export (VarianceThreshold, optional selector, estimator), the fold loop
+    (VarianceThreshold refit per fold) and the common part of ``save``. A subclass
+    fits its regime-specific estimator and provides
+    ``_fit_predict_fold(X_tr_vt, y_tr, X_val_vt)``.
+    """
+
+    _task = ""
+    _onnx_last_step = ""
+    _fitted_attr = "_estimator"
+
+    def _fit_variance_threshold(self, X):
+        """VarianceThreshold only; scaling is the caller's responsibility."""
+        self._vt = VarianceThreshold(threshold=self.variance_threshold)
+        try:
+            X_vt = self._vt.fit_transform(X)
+        except ValueError:
+            raise ValueError(
+                "All features have zero variance after VarianceThreshold. "
+                "Check your input data."
+            )
+        if X_vt.shape[1] == 0:
+            raise ValueError(
+                "All features have zero variance after VarianceThreshold. "
+                "Check your input data."
+            )
+        return X_vt
+
+    def _finish_fit(self, p: int) -> None:
+        """Consolidated feature mask, coefficients, and binding to the ONNX graph."""
+        vt_support = self._vt.get_support()
+        if self._sfm is not None:
+            sfm_support = self._sfm.get_support()
+            combined = np.zeros(p, dtype=bool)
+            idx = np.where(vt_support)[0]
+            combined[idx[sfm_support]] = True
+            self.feature_mask_ = combined
+        else:
+            self.feature_mask_ = vt_support
+        self.coef_ = getattr(self._estimator, "coef_", None)
+        self._bind_onnx()
+
+    def _transform(self, X) -> np.ndarray:
+        X_vt = self._vt.transform(X)
+        if self._sfm is not None:
+            return self._sfm.transform(X_vt)
+        return X_vt
+
+    def _oof(self, X, y, fold_splits) -> np.ndarray:
+        def fit_predict(train_idx, val_idx):
+            # Refit VarianceThreshold on fold training data (cheap)
+            vt = VarianceThreshold(threshold=self.variance_threshold)
+            X_tr_vt = vt.fit_transform(X[train_idx])
+            X_val_vt = vt.transform(X[val_idx])
+            return self._fit_predict_fold(X_tr_vt, y[train_idx], X_val_vt)
+
+        return self._oof_loop(fold_splits, fit_predict)
+
+    def get_feature_names_out(self) -> np.ndarray:
+        check_is_fitted(self, attributes=["feature_mask_"])
+        return np.where(self.feature_mask_)[0].astype(str)
+
+    def _onnx_bytes(self) -> bytes:
+        return _linear_pipeline_onnx(self, self._onnx_last_step)
+
+    def _save_extras(self) -> dict:
+        return {}
+
+    def save(self, directory: str) -> None:
+        """
+        Save the trained model to a directory.
+
+        Always writes ``linear.json`` (fit metadata) and ``linear.onnx``.
+
+        Parameters
+        ----------
+        directory : str
+            Destination directory (created if it does not exist).
+        """
+        check_is_fitted(self, attributes=[self._fitted_attr])
+        os.makedirs(directory, exist_ok=True)
+        self.to_onnx(os.path.join(directory, "linear.onnx"))
+        metadata = {
+            "task": self._task,
+            "format": "onnx",
+            "regime": self.regime_,
+            "n_features_in": self.n_features_in_,
+            **self._save_extras(),
+            "feature_mask": self.feature_mask_.tolist(),
+        }
+        metadata.update(self._task_metadata())
+        with open(os.path.join(directory, "linear.json"), "w") as f:
+            json.dump(metadata, f, indent=2)
+
+
+# ---------------------------------------------------------------------------
+# Main classifier
+# ---------------------------------------------------------------------------
+
+
+class BaseLinearClassifier(_LinearHead, ClassifierHead):
     """
     Binary logistic regression with embedded L1/ElasticNet feature selection.
 
@@ -323,6 +361,9 @@ class BaseLinearClassifier(OnnxBoundHead, BaseEstimator):
         If True, log rule banners and regime info.
     """
 
+    _task = "classification"
+    _onnx_last_step = "clf"
+
     def __init__(
         self,
         *,
@@ -356,23 +397,19 @@ class BaseLinearClassifier(OnnxBoundHead, BaseEstimator):
     # sklearn-compatible interface
     # ------------------------------------------------------------------
 
+    # ------------------------------------------------------------------
+    # sklearn-compatible interface
+    # ------------------------------------------------------------------
+
     def fit(self, X, y) -> "BaseLinearClassifier":
         """Fit the model. If calibrated=True, runs calibrate() for OOF calibration."""
-        if not _FIT_DEPS_AVAILABLE:
-            raise ImportError(
-                "Training requires scikit-learn. Install with: pip install 'lazyqsar[fit]'"
-            )
-        if self.calibrated:
-            y_arr = np.asarray(y, dtype=int)
-            if np.bincount(y_arr).min() >= 2:
-                return self.calibrate(X, y)
+        require_fit_deps(_FIT_DEPS_AVAILABLE)
+        if self._wants_calibration(y):
+            return self.calibrate(X, y)
         return self._fit_raw(X, y)
 
     def _fit_raw(self, X, y) -> "BaseLinearClassifier":
-        if not _FIT_DEPS_AVAILABLE:
-            raise ImportError(
-                "Training requires scikit-learn. Install with: pip install 'lazyqsar[fit]'"
-            )
+        require_fit_deps(_FIT_DEPS_AVAILABLE)
         logger.rule("BaseLinearClassifier")
 
         X = check_array(X, dtype="numeric", accept_sparse="csr")
@@ -413,22 +450,7 @@ class BaseLinearClassifier(OnnxBoundHead, BaseEstimator):
         skf = StratifiedKFold(
             n_splits=effective_cv, shuffle=True, random_state=self.random_state
         )
-
-        # --- Preprocessing: VarianceThreshold only (scaling is caller's responsibility) ---
-        self._vt = VarianceThreshold(threshold=self.variance_threshold)
-        try:
-            X_vt = self._vt.fit_transform(X)
-        except ValueError:
-            raise ValueError(
-                "All features have zero variance after VarianceThreshold. "
-                "Check your input data."
-            )
-
-        if X_vt.shape[1] == 0:
-            raise ValueError(
-                "All features have zero variance after VarianceThreshold. "
-                "Check your input data."
-            )
+        X_vt = self._fit_variance_threshold(X)
 
         # --- Dispatch ---
         _t_hp = _time.perf_counter()
@@ -443,31 +465,10 @@ class BaseLinearClassifier(OnnxBoundHead, BaseEstimator):
                 f"Unknown regime: {self.regime_!r}. Expected 'standard', 'high_dim', or 'large'."
             )
         self.timing_ = {"hparam_search": _time.perf_counter() - _t_hp}
-
-        # --- Consolidated feature mask ---
-        vt_support = self._vt.get_support()
-        if self._sfm is not None:
-            sfm_support = self._sfm.get_support()
-            combined = np.zeros(p, dtype=bool)
-            idx = np.where(vt_support)[0]
-            combined[idx[sfm_support]] = True
-            self.feature_mask_ = combined
-        else:
-            self.feature_mask_ = vt_support
-
-        # --- Coef extraction ---
-        if hasattr(self._estimator, "coef_"):
-            self.coef_ = self._estimator.coef_
-        else:
-            self.coef_ = None
-        self._bind_onnx()
+        self._finish_fit(p)
 
         self.classes_ = self._label_encoder.classes_
-        self.decision_cutoff_raw_ = _DEFAULT_DECISION_CUTOFF
-        self.decision_cutoff_raw_source_ = "default_0.5"
-        self.decision_cutoff_proba_ = _DEFAULT_DECISION_CUTOFF
-        self.decision_cutoff_rank_ = _DEFAULT_DECISION_CUTOFF
-        self.decision_cutoff_logit_ = 0.0
+        self._set_default_cutoffs()
         logger.info(
             "decision cutoff: "
             f"{self.decision_cutoff_raw_:.4f} | metric=balanced_accuracy | source={self.decision_cutoff_raw_source_}"
@@ -476,339 +477,113 @@ class BaseLinearClassifier(OnnxBoundHead, BaseEstimator):
         logger.rule("Done")
         return self
 
-    def predict_logit(self, X) -> np.ndarray:
-        """Return logit of calibrated probabilities, shape (n_samples, 2)."""
-        p = np.clip(self.predict_proba(X)[:, 1], 1e-7, 1.0 - 1e-7)
-        logit_1 = np.log(p / (1.0 - p))
-        return np.column_stack([-logit_1, logit_1])
-
-    def predict_score(self, X) -> np.ndarray:
-        """Return raw (pre-calibration) probabilities, shape (n_samples, 2)."""
-        check_is_fitted(self, attributes=["_estimator"])
-        p_raw = self._raw(X)
-        return np.column_stack([1 - p_raw, p_raw])
-
     def predict(self, X, cutoff: float | None = None) -> np.ndarray:
         check_is_fitted(self, attributes=["_estimator"])
-        threshold = self.decision_cutoff_raw_ if cutoff is None else float(cutoff)
-        proba = self.predict_score(X)[:, 1]
-        y_enc = binarize(proba, threshold)
-        return self._label_encoder.inverse_transform(y_enc)
-
-    def predict_rank(self, X) -> np.ndarray:
-        """Map raw scores to [0, 1] ranks via OOF ECDF, shape (n_samples, 2)."""
-        check_is_fitted(self, attributes=["_ranker_knots"])
-        scores = self.predict_score(X)[:, 1]
-        prepared = getattr(self, "_ranker_prepared_", None)
-        if prepared is None:
-            prepared = self._ranker_prepared_ = prepare_knots(self._ranker_knots)
-        rank_1 = rank_from_knots(scores, prepared=prepared)
-        return np.column_stack([1 - rank_1, rank_1])
-
-    _onnx_kind = "probability"
+        return self._label_encoder.inverse_transform(super().predict(X, cutoff))
 
     def _raw_native(self, X) -> np.ndarray:
         """Raw P(y=1) from the scikit-learn pipeline itself."""
         X = check_array(X, dtype="numeric", accept_sparse="csr")
         return self._estimator.predict_proba(self._transform(X))[:, 1]
 
-    def _onnx_bytes(self) -> bytes:
-        return _linear_pipeline_onnx(self, "clf")
-
-    def predict_proba(self, X) -> np.ndarray:
-        check_is_fitted(self, attributes=["_estimator"])
-        p_raw = self._raw(X)
-        proba = np.column_stack([1 - p_raw, p_raw])
-        if hasattr(self, "calibrator_"):
-            if self.calibrator_method_ == "isotonic":
-                p1 = np.clip(self.calibrator_.predict(proba[:, 1]), 0, 1)
-            else:  # platt
-                p1 = self.calibrator_.predict_proba(proba[:, 1].reshape(-1, 1))[:, 1]
-            proba = np.column_stack([1 - p1, p1])
-        return proba
-
     def calibrate(
         self, X, y, n_splits: int | None = None, random_state: int = 42
     ) -> "BaseLinearClassifier":
         """
         Collect out-of-fold predicted probabilities via stratified k-fold CV,
-        then fit an isotonic calibrator on them.
+        then fit the calibrator on them.
 
         Hyperparameter selection (C-search / alpha-grid) runs ONCE on the full
         data via self.fit().  Each fold reuses the pre-selected hyperparameter
         with a single model fit — no inner LogisticRegressionCV or GridSearchCV.
-
-        After this call
-        ---------------
-        self.oof_probas_ : ndarray, shape (n,)
-            Calibrated out-of-fold probabilities for class 1, in the same
-            row order as the input X / y.
-        self.oof_y_ : ndarray, shape (n,)
-            Original y labels (0/1), same order as X.
-        self.calibrator_ : IsotonicRegression
-            Fitted isotonic calibrator.  predict_proba() will apply this
-            layer to new-data predictions.
         """
-        if not _FIT_DEPS_AVAILABLE:
-            raise ImportError(
-                "Training requires scikit-learn. Install with: pip install 'lazyqsar[fit]'"
-            )
-        from sklearn.isotonic import IsotonicRegression
-
+        require_fit_deps(_FIT_DEPS_AVAILABLE)
         X = check_array(X, dtype="numeric", accept_sparse="csr")
         y = np.asarray(y, dtype=int)
-        n = len(y)
-
         k, fold_splits = make_stratified_oof_splits(
             y, n_splits=n_splits, random_state=random_state
         )
 
         # Step 1: full fit — hyperparameter search runs ONCE here
         logger.info(
-            f"BaseLinearClassifier.calibrate: full fit on n={n} (C/alpha search runs once)"
+            f"BaseLinearClassifier.calibrate: full fit on n={len(y)} (C/alpha search runs once)"
         )
         self._fit_raw(X, y)  # sets self.regime_, self._vt, self._sfm, self._estimator
 
-        # Extract best hyperparameter from the full-data fit
         regime = self.regime_
         if regime in ("standard", "high_dim"):
-            best_C = float(np.ravel(self._estimator.C_)[0])
-            logger.info(f"calibrate: regime={regime}  best_C={best_C:.4g}")
+            logger.info(
+                f"calibrate: regime={regime}  best_C={float(np.ravel(self._estimator.C_)[0]):.4g}"
+            )
         else:  # large
-            best_alpha = float(self._estimator.alpha)
-            best_l1_ratio = float(self._estimator.l1_ratio)
-            logger.info(f"calibrate: regime={regime}  best_alpha={best_alpha:.4g}")
-
-        # Step 2: k-fold OOF — reuse best hyperparam, no inner CV per fold
-        oof_raw = np.full(n, np.nan, dtype=float)
+            logger.info(
+                f"calibrate: regime={regime}  best_alpha={float(self._estimator.alpha):.4g}"
+            )
         logger.info(
             "calibrate: "
             f"{k}-fold OOF (no inner CV in folds) | fold_solver={_classifier_solver_label(regime, calibrated=True)}"
         )
+        oof_raw = self._oof(X, y, fold_splits)
+        self._finish_calibration(y, oof_raw)
+        return self
 
-        fold_times = []
-        for fold_idx, (train_idx, val_idx) in enumerate(fold_splits):
-            logger.debug(
-                f"  Fold {fold_idx + 1}/{k}: train={len(train_idx)}  val={len(val_idx)}"
-            )
-            _t_fold = _time.perf_counter()
-            X_tr, y_tr = X[train_idx], y[train_idx]
-            X_val = X[val_idx]
-
-            # Refit VarianceThreshold on fold training data (cheap)
-            vt = VarianceThreshold(threshold=self.variance_threshold)
-            X_tr_vt = vt.fit_transform(X_tr)
-            X_val_vt = vt.transform(X_val)
-
-            if regime == "standard":
-                fold_est = LogisticRegression(
-                    **_sklearn_kwargs(
-                        LogisticRegression,
-                        C=best_C,
-                        solver="saga",
-                        penalty="l1",
-                        class_weight=self.class_weight,
-                        max_iter=self.max_iter,
-                        random_state=self.random_state,
-                    )
-                )
-                fold_est.fit(X_tr_vt, y_tr)
-                oof_raw[val_idx] = fold_est.predict_proba(X_val_vt)[:, 1]
-
-            elif regime == "high_dim":
-                # Refit fast univariate F-test on fold data (O(n*p), no inner model)
-                fold_sfm = SelectKBest(f_classif, k=self._sfm.k)
-                fold_sfm.fit(X_tr_vt, y_tr)
-                X_tr_sfm = fold_sfm.transform(X_tr_vt)
-                X_val_sfm = fold_sfm.transform(X_val_vt)
-                fold_est = LogisticRegression(
-                    **_sklearn_kwargs(
-                        LogisticRegression,
-                        C=best_C,
-                        solver="saga",
-                        penalty="elasticnet",
-                        l1_ratio=self._estimator.l1_ratios[0],
-                        class_weight=self.class_weight,
-                        max_iter=self.max_iter,
-                        random_state=self.random_state,
-                    )
-                )
-                fold_est.fit(X_tr_sfm, y_tr)
-                oof_raw[val_idx] = fold_est.predict_proba(X_val_sfm)[:, 1]
-
-            else:  # large
-                fold_est = SGDClassifier(
-                    loss="log_loss",
-                    penalty="elasticnet",
-                    l1_ratio=best_l1_ratio,
-                    alpha=best_alpha,
+    def _fit_predict_fold(self, X_tr_vt, y_tr, X_val_vt) -> np.ndarray:
+        """One fold with the full fit's hyperparameter frozen (no inner CV)."""
+        regime = self.regime_
+        if regime == "standard":
+            fold_est = LogisticRegression(
+                **_sklearn_kwargs(
+                    LogisticRegression,
+                    C=float(np.ravel(self._estimator.C_)[0]),
+                    solver="saga",
+                    penalty="l1",
                     class_weight=self.class_weight,
                     max_iter=self.max_iter,
-                    early_stopping=True,
-                    validation_fraction=_SGD_VALIDATION_FRACTION,
-                    n_iter_no_change=_SGD_N_ITER_NO_CHANGE,
                     random_state=self.random_state,
-                    n_jobs=self.n_jobs,
-                )
-                fold_est.fit(X_tr_vt, y_tr)
-                oof_raw[val_idx] = fold_est.predict_proba(X_val_vt)[:, 1]
-
-            fold_times.append(_time.perf_counter() - _t_fold)
-
-        self.timing_["calibration_folds"] = fold_times
-        self.timing_["calibration_total"] = sum(fold_times)
-
-        # Step 3: fit calibrator — method chosen by minority class size
-        minority_count = int(np.bincount(y).min())
-        if minority_count >= _CALIBRATION_ISOTONIC_MIN_MINORITY:
-            cal = IsotonicRegression(out_of_bounds="clip")
-            self.oof_probas_ = cal.fit_transform(oof_raw, y)
-            self.calibrator_method_ = "isotonic"
-        else:
-            cal = LogisticRegression(C=1.0, solver="lbfgs")
-            cal.fit(oof_raw.reshape(-1, 1), y)
-            self.oof_probas_ = cal.predict_proba(oof_raw.reshape(-1, 1))[:, 1]
-            self.calibrator_method_ = "platt"
-        self.calibrator_ = cal
-        self.decision_cutoff_raw_, self.decision_cutoff_raw_source_ = (
-            _learn_balanced_accuracy_cutoff(y, oof_raw)
-        )
-        if self.calibrator_method_ == "isotonic":
-            self.decision_cutoff_proba_ = float(
-                np.clip(
-                    self.calibrator_.predict(np.array([self.decision_cutoff_raw_]))[0],
-                    0.0,
-                    1.0,
                 )
             )
-        else:
-            self.decision_cutoff_proba_ = float(
-                self.calibrator_.predict_proba(np.array([[self.decision_cutoff_raw_]]))[
-                    :, 1
-                ][0]
+            fold_est.fit(X_tr_vt, y_tr)
+            return fold_est.predict_proba(X_val_vt)[:, 1]
+        if regime == "high_dim":
+            # Refit fast univariate F-test on fold data (O(n*p), no inner model)
+            fold_sfm = SelectKBest(f_classif, k=self._sfm.k)
+            fold_sfm.fit(X_tr_vt, y_tr)
+            fold_est = LogisticRegression(
+                **_sklearn_kwargs(
+                    LogisticRegression,
+                    C=float(np.ravel(self._estimator.C_)[0]),
+                    solver="saga",
+                    penalty="elasticnet",
+                    l1_ratio=self._estimator.l1_ratios[0],
+                    class_weight=self.class_weight,
+                    max_iter=self.max_iter,
+                    random_state=self.random_state,
+                )
             )
-        self.oof_y_ = y.copy()
-        # Uncalibrated [0,1] out-of-fold probabilities (the calibrator's input), kept alongside the
-        # calibrated oof_probas_ so downstream can report the raw score too.
-        self.oof_raw_ = oof_raw.copy()
-        sorted_scores = np.sort(oof_raw)
-        n_r = len(sorted_scores)
-        if n_r > _RANKER_MAX_KNOTS:
-            idx = np.round(np.linspace(0, n_r - 1, _RANKER_MAX_KNOTS)).astype(int)
-            self._ranker_knots = sorted_scores[idx]
-        else:
-            self._ranker_knots = sorted_scores
-        self._ranker_prepared_ = prepare_knots(self._ranker_knots)
-        self.decision_cutoff_rank_ = float(
-            rank_from_knots(self.decision_cutoff_raw_, prepared=self._ranker_prepared_)
+            fold_est.fit(fold_sfm.transform(X_tr_vt), y_tr)
+            return fold_est.predict_proba(fold_sfm.transform(X_val_vt))[:, 1]
+        fold_est = SGDClassifier(
+            loss="log_loss",
+            penalty="elasticnet",
+            l1_ratio=float(self._estimator.l1_ratio),
+            alpha=float(self._estimator.alpha),
+            class_weight=self.class_weight,
+            max_iter=self.max_iter,
+            early_stopping=True,
+            validation_fraction=_SGD_VALIDATION_FRACTION,
+            n_iter_no_change=_SGD_N_ITER_NO_CHANGE,
+            random_state=self.random_state,
+            n_jobs=self.n_jobs,
         )
-        _p = np.clip(self.decision_cutoff_proba_, 1e-7, 1.0 - 1e-7)
-        self.decision_cutoff_logit_ = float(np.log(_p / (1.0 - _p)))
-        logger.success(
-            f"Calibrator fitted ({self.calibrator_method_}, minority={minority_count}) "
-            f"on OOF predictions."
-        )
-        logger.info(
-            "calibration cutoff learned from OOF scores: "
-            f"{self.decision_cutoff_raw_:.4f} | metric=balanced_accuracy | source={self.decision_cutoff_raw_source_}"
-        )
-        return self
+        fold_est.fit(X_tr_vt, y_tr)
+        return fold_est.predict_proba(X_val_vt)[:, 1]
 
     def score(self, X, y) -> float:
         proba = self.predict_proba(X)[:, 1]
         return roc_auc_score(y, proba)
 
-    def get_feature_names_out(self) -> np.ndarray:
-        check_is_fitted(self, attributes=["feature_mask_"])
-        return np.where(self.feature_mask_)[0].astype(str)
-
-    def to_onnx(self, path: str) -> None:
-        """
-        Export the trained model to an ONNX file.
-
-        Accepts a float32 input named ``"float_input"`` with shape
-        ``(n_samples, n_features_in_)`` (raw, unprocessed features).
-        Produces:
-          - ``"output_label"``       int64  (n_samples,)   — predicted class
-          - ``"output_probability"`` float32 (n_samples, 2) — [P(class_0), P(class_1)]
-
-        Parameters
-        ----------
-        path : str
-            Destination file path, e.g. ``"model.onnx"``.
-        """
-        check_is_fitted(self, attributes=["_estimator"])
-        self._write_onnx(path)
-        probe = getattr(self, "_onnx_probe_", None)
-        if probe is not None:
-            check_probability(
-                path, probe, self._raw_native(probe), "BaseLinearClassifier"
-            )
-
-    def save(self, directory: str) -> None:
-        """
-        Save the trained model to a directory.
-
-        Always writes ``linear.json`` (fit metadata) and ``linear.onnx``.
-
-        Parameters
-        ----------
-        directory : str
-            Destination directory (created if it does not exist).
-        """
-        check_is_fitted(self, attributes=["_estimator"])
-        os.makedirs(directory, exist_ok=True)
-        self.to_onnx(os.path.join(directory, "linear.onnx"))
-        metadata = {
-            "task": "classification",
-            "format": "onnx",
-            "regime": self.regime_,
-            "n_features_in": self.n_features_in_,
-            "classes": self._label_encoder.classes_.tolist(),
-            "feature_mask": self.feature_mask_.tolist(),
-            "decision_cutoff_raw": float(
-                getattr(self, "decision_cutoff_raw_", _DEFAULT_DECISION_CUTOFF)
-            ),
-            "decision_cutoff_raw_source": getattr(
-                self, "decision_cutoff_raw_source_", "default_0.5"
-            ),
-            "decision_cutoff_proba": float(
-                getattr(self, "decision_cutoff_proba_", _DEFAULT_DECISION_CUTOFF)
-            ),
-            "decision_cutoff_rank": float(
-                getattr(self, "decision_cutoff_rank_", _DEFAULT_DECISION_CUTOFF)
-            ),
-            "decision_cutoff_logit": float(
-                getattr(self, "decision_cutoff_logit_", 0.0)
-            ),
-        }
-        if hasattr(self, "calibrator_"):
-            if self.calibrator_method_ == "isotonic":
-                metadata["calibrator"] = {
-                    "method": "isotonic",
-                    "X_thresholds": self.calibrator_.X_thresholds_.tolist(),
-                    "y_thresholds": self.calibrator_.y_thresholds_.tolist(),
-                }
-            else:  # platt
-                metadata["calibrator"] = {
-                    "method": "platt",
-                    "coef": float(self.calibrator_.coef_[0][0]),
-                    "intercept": float(self.calibrator_.intercept_[0]),
-                }
-        if hasattr(self, "_ranker_knots"):
-            metadata["ranker"] = {"knots": self._ranker_knots.tolist()}
-        with open(os.path.join(directory, "linear.json"), "w") as f:
-            json.dump(metadata, f, indent=2)
-
-    # ------------------------------------------------------------------
-    # Internal: transform helpers
-    # ------------------------------------------------------------------
-
-    def _transform(self, X) -> np.ndarray:
-        X_vt = self._vt.transform(X)
-        if self._sfm is not None:
-            return self._sfm.transform(X_vt)
-        return X_vt
+    def _save_extras(self) -> dict:
+        return {"classes": self._label_encoder.classes_.tolist()}
 
     # ------------------------------------------------------------------
     # Internal: regime-specific fit methods
@@ -991,7 +766,7 @@ def _elasticnet_alpha_grid(X: np.ndarray, y: np.ndarray, l1_ratio: float) -> np.
 # ---------------------------------------------------------------------------
 
 
-class BaseLinearRegressor(OnnxBoundHead, BaseEstimator):
+class BaseLinearRegressor(_LinearHead, RegressorHead):
     """
     Linear regression with embedded feature selection.
 
@@ -1040,6 +815,9 @@ class BaseLinearRegressor(OnnxBoundHead, BaseEstimator):
     train_rho_ : float or None  — Spearman ρ of in-sample predictions
     """
 
+    _task = "regression"
+    _onnx_last_step = "reg"
+
     def __init__(
         self,
         *,
@@ -1071,10 +849,7 @@ class BaseLinearRegressor(OnnxBoundHead, BaseEstimator):
 
     def fit(self, X, y) -> "BaseLinearRegressor":
         """Fit the regressor, then collect OOF predictions when ``oof=True``."""
-        if not _FIT_DEPS_AVAILABLE:
-            raise ImportError(
-                "Training requires scikit-learn. Install with: pip install 'lazyqsar[fit]'"
-            )
+        require_fit_deps(_FIT_DEPS_AVAILABLE)
         if self.oof:
             return self.collect_oof(X, y)
         return self._fit_raw(X, y)
@@ -1109,22 +884,7 @@ class BaseLinearRegressor(OnnxBoundHead, BaseEstimator):
         # equal counts -- and real inverse-density weighting trades bulk accuracy for
         # the extremes, which is not what QSAR ranking needs.)
         sample_weight = None
-
-        # --- Preprocessing: VarianceThreshold only ---
-        self._vt = VarianceThreshold(threshold=self.variance_threshold)
-        try:
-            X_vt = self._vt.fit_transform(X)
-        except ValueError:
-            raise ValueError(
-                "All features have zero variance after VarianceThreshold. "
-                "Check your input data."
-            )
-
-        if X_vt.shape[1] == 0:
-            raise ValueError(
-                "All features have zero variance after VarianceThreshold. "
-                "Check your input data."
-            )
+        X_vt = self._fit_variance_threshold(X)
 
         # --- Dispatch ---
         if self.regime_ == "standard":
@@ -1139,24 +899,7 @@ class BaseLinearRegressor(OnnxBoundHead, BaseEstimator):
             )
         else:
             raise ValueError(f"Unknown regime: {self.regime_!r}.")
-
-        # --- Consolidated feature mask ---
-        vt_support = self._vt.get_support()
-        if self._sfm is not None:
-            sfm_support = self._sfm.get_support()
-            combined = np.zeros(p, dtype=bool)
-            idx = np.where(vt_support)[0]
-            combined[idx[sfm_support]] = True
-            self.feature_mask_ = combined
-        else:
-            self.feature_mask_ = vt_support
-
-        # --- Coef extraction ---
-        if hasattr(self._estimator, "coef_"):
-            self.coef_ = self._estimator.coef_
-        else:
-            self.coef_ = None
-        self._bind_onnx()
+        self._finish_fit(p)
 
         self.timing_ = {"hparam_search": _time.perf_counter() - _t_hp}
         self.train_rho_ = spearman_score(y, self.predict(X))
@@ -1177,67 +920,35 @@ class BaseLinearRegressor(OnnxBoundHead, BaseEstimator):
 
         return clone(self._estimator)
 
+    def _fit_predict_fold(self, X_tr_t, y_tr, X_val_t) -> np.ndarray:
+        if self._sfm is not None:
+            # The same univariate selector as the full fit, refit on fold data.
+            n_keep = int(self._sfm.get_support().sum())
+            fold_sfm = SelectKBest(f_regression, k=min(n_keep, X_tr_t.shape[1]))
+            X_tr_t = fold_sfm.fit_transform(X_tr_t, y_tr)
+            X_val_t = fold_sfm.transform(X_val_t)
+        fold_est = self._fold_estimator()
+        fold_est.fit(X_tr_t, y_tr)
+        return fold_est.predict(X_val_t)
+
     def collect_oof(
         self, X, y, n_splits: int | None = None, random_state: int = 42
     ) -> "BaseLinearRegressor":
         """
         Full fit (alpha search runs once), then quantile-stratified k-fold OOF
         predictions reusing the selected regularization — no inner CV per fold.
-
-        After this call
-        ---------------
-        self.oof_preds_ : ndarray, shape (n,)
-        self.oof_y_ : ndarray, shape (n,)
-        self.oof_rho_ : float or None
-        self._ranker_knots : ndarray — ECDF knots over OOF predictions
         """
         X = check_array(X, dtype="numeric", accept_sparse="csr")
         y = np.asarray(y, dtype=float).ravel()
-        n = len(y)
         k, fold_splits = make_quantile_oof_splits(
             y, n_splits=n_splits, random_state=random_state
         )
-
         logger.info(
-            f"BaseLinearRegressor.collect_oof: full fit on n={n} (alpha search runs once)"
+            f"BaseLinearRegressor.collect_oof: full fit on n={len(y)} (alpha search runs once)"
         )
         self._fit_raw(X, y)
-
-        oof = np.full(n, np.nan, dtype=float)
         logger.info(f"collect_oof: {k}-fold OOF | regime={self.regime_}")
-        fold_times = []
-        for fold_idx, (train_idx, val_idx) in enumerate(fold_splits):
-            logger.debug(
-                f"  Fold {fold_idx + 1}/{k}: train={len(train_idx)}  val={len(val_idx)}"
-            )
-            _t_fold = _time.perf_counter()
-            X_tr, y_tr = X[train_idx], y[train_idx]
-            X_val = X[val_idx]
-            vt = VarianceThreshold(threshold=self.variance_threshold)
-            X_tr_t = vt.fit_transform(X_tr)
-            X_val_t = vt.transform(X_val)
-            if self._sfm is not None:
-                # The same univariate selector as the full fit, refit on fold data.
-                n_keep = int(self._sfm.get_support().sum())
-                fold_sfm = SelectKBest(f_regression, k=min(n_keep, X_tr_t.shape[1]))
-                X_tr_t = fold_sfm.fit_transform(X_tr_t, y_tr)
-                X_val_t = fold_sfm.transform(X_val_t)
-            fold_est = self._fold_estimator()
-            fold_est.fit(X_tr_t, y_tr)
-            oof[val_idx] = fold_est.predict(X_val_t)
-            fold_times.append(_time.perf_counter() - _t_fold)
-
-        self.timing_["oof_folds"] = fold_times
-        self.timing_["oof_total"] = sum(fold_times)
-        self.oof_preds_ = oof
-        self.oof_y_ = y.copy()
-        self.oof_rho_ = spearman_score(y, oof)
-        self._ranker_knots = subsample_knots(np.sort(oof), _RANKER_MAX_KNOTS)
-        self._ranker_prepared_ = prepare_knots(self._ranker_knots)
-        logger.success(
-            f"OOF collected ({k} folds) | rho_oof={self.oof_rho_} | "
-            f"rho_train={self.train_rho_}"
-        )
+        self._finish_oof(y, self._oof(X, y, fold_splits))
         return self
 
     def _raw_native(self, X) -> np.ndarray:
@@ -1245,84 +956,12 @@ class BaseLinearRegressor(OnnxBoundHead, BaseEstimator):
         X = check_array(X, dtype="numeric", accept_sparse="csr")
         return self._estimator.predict(self._transform(X))
 
-    def _onnx_bytes(self) -> bytes:
-        return _linear_pipeline_onnx(self, "reg")
-
-    def predict(self, X) -> np.ndarray:
-        check_is_fitted(self, attributes=["_estimator"])
-        return self._raw(X)
-
-    def predict_rank(self, X) -> np.ndarray:
-        """Map predictions to [0, 1] via the OOF ECDF, shape (n_samples,)."""
-        check_is_fitted(self, "_ranker_knots")
-        prepared = getattr(self, "_ranker_prepared_", None)
-        if prepared is None:
-            prepared = self._ranker_prepared_ = prepare_knots(self._ranker_knots)
-        return rank_from_knots(self.predict(X), prepared=prepared)
-
     def score(self, X, y) -> float:
         return r2_score(y, self.predict(X))
-
-    def get_feature_names_out(self) -> np.ndarray:
-        check_is_fitted(self, attributes=["feature_mask_"])
-        return np.where(self.feature_mask_)[0].astype(str)
-
-    def to_onnx(self, path: str) -> None:
-        """
-        Export the trained model to an ONNX file.
-
-        Accepts a float32 input named ``"float_input"`` with shape
-        ``(n_samples, n_features_in_)`` (raw, unprocessed features).
-        Produces a single output ``"variable"`` (float32, shape [n_samples, 1]).
-
-        Parameters
-        ----------
-        path : str
-            Destination file path, e.g. ``"model.onnx"``.
-        """
-        check_is_fitted(self, attributes=["_estimator"])
-        self._write_onnx(path)
-        probe = getattr(self, "_onnx_probe_", None)
-        if probe is not None:
-            check_values(path, probe, self._raw_native(probe), "BaseLinearRegressor")
-
-    def save(self, directory: str) -> None:
-        """
-        Save the trained model to a directory.
-
-        Always writes ``linear.json`` (fit metadata) and ``linear.onnx``.
-
-        Parameters
-        ----------
-        directory : str
-            Destination directory (created if it does not exist).
-        """
-        check_is_fitted(self, attributes=["_estimator"])
-        os.makedirs(directory, exist_ok=True)
-        self.to_onnx(os.path.join(directory, "linear.onnx"))
-        metadata = {
-            "task": "regression",
-            "format": "onnx",
-            "regime": self.regime_,
-            "n_features_in": self.n_features_in_,
-            "feature_mask": self.feature_mask_.tolist(),
-            "oof_rho": getattr(self, "oof_rho_", None),
-            "train_rho": getattr(self, "train_rho_", None),
-        }
-        if hasattr(self, "_ranker_knots"):
-            metadata["ranker"] = {"knots": self._ranker_knots.tolist()}
-        with open(os.path.join(directory, "linear.json"), "w") as f:
-            json.dump(metadata, f, indent=2)
 
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
-
-    def _transform(self, X) -> np.ndarray:
-        X_vt = self._vt.transform(X)
-        if self._sfm is not None:
-            return self._sfm.transform(X_vt)
-        return X_vt
 
     def _fit_standard(self, X, y, n, p, kf, scoring, sample_weight):
         self._sfm = None

@@ -111,7 +111,7 @@ def check_probability(path: str, probe, expected_p1, what: str) -> None:
 def check_decision(path: str, probe, expected_decision, what: str) -> None:
     """SVC graph: one of the two (mutually negated) score columns is the decision value.
 
-    Which column depends on the estimator type (see ``base.svc.model._to_onnx``), so
+    Which column depends on the estimator type (see ``base.svc.model._svc_onnx_bytes``), so
     either may match; neither matching is the failure.
     """
     if probe is None:

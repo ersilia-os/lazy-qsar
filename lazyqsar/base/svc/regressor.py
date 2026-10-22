@@ -14,7 +14,7 @@ On .fit(), the estimator runs a two-phase portfolio process:
 
   Phase 1 – Portfolio selection (n >= 200):
     Three preset configurations are evaluated on a 90/10 holdout split
-    (stratified on quantile bins of y) and scored by Spearman ρ:
+    (stratified on quantile bins of y) and scored by RMSE on the standardised target:
       1. heuristic – rule-based params (same kernel and C rules as the SVC)
       2. default   – sklearn SVR defaults (C=1, RBF, gamma='scale', epsilon=0.1)
       3. linear    – LinearSVR, C scaled by n (compact ONNX, fast on fingerprints)
@@ -55,28 +55,33 @@ except ImportError:
 
 from .inspector import inspect as _inspect, DatasetProfile
 from .params import get_params as _svc_get_params
-from lazyqsar.base._onnx_binding import OnnxBoundHead
+from ._common import (
+    _MAX_COST_MULTIPLIER,
+    _RANDOM_STATE,
+    _VAL_FRACTION,
+    _VAL_MIN_ROWS,
+    _SVMHead,
+    svm_cost as _svr_cost,
+)
+from lazyqsar.base._head import RegressorHead, require_fit_deps
+from lazyqsar.base._race import min_gain_threshold
 from lazyqsar.utils.logging import logger
-from lazyqsar.utils.onnx_check import check_values, probe_rows
+from lazyqsar.utils.onnx_check import probe_rows
 from lazyqsar.utils.metrics import spearman_score
-from lazyqsar.utils.ranking import prepare_knots, rank_from_knots, subsample_knots
 from lazyqsar.utils.splits import make_quantile_oof_splits, quantile_bins
 
 
-_VAL_FRACTION = 0.1
-_VAL_MIN_ROWS = 200
 # Same as the XGBoost preset race: below this many training rows, average the holdout
 # score over several random splits.
 _STAGE1_MULTI_SPLIT_THRESHOLD = 2_000
 _STAGE1_MULTI_SPLITS = 3
-_PORTFOLIO_MIN_GAIN = 0.005
-_MAX_COST_MULTIPLIER = 20
-_ONNX_MAX_BYTES = 5_000_000
-_ONNX_MAX_RETRIES = 3
-_RANKER_MAX_KNOTS = 10_000
-_RANDOM_STATE = 42
 # epsilon-tube width in standardised target units (sklearn's SVR default).
 _EPSILON = 0.1
+
+
+# ---------------------------------------------------------------------------
+# Presets
+# ---------------------------------------------------------------------------
 
 
 # ---------------------------------------------------------------------------
@@ -164,21 +169,9 @@ def _make_svr(params: dict):
     )
 
 
-def _svr_cost(params: dict, n_tr: int, n_features: int) -> float:
-    if params.get("use_linear", False):
-        return float(n_tr * n_features)
-    return float(n_tr**2 * n_features)
-
-
 def _min_gain_threshold(n: int) -> float:
-    coef = 0.3 if n < 2_000 else 0.1
-    return max(_PORTFOLIO_MIN_GAIN, coef / max(1, n) ** 0.5)
-
-
-def _onnx_size_bytes(svr, n_features: int) -> int:
-    if not hasattr(svr, "support_vectors_"):
-        return 0
-    return svr.support_vectors_.shape[0] * n_features * 4
+    """Relative-RMSE margin a challenger preset must win by; noise scales as 1/sqrt(n)."""
+    return min_gain_threshold(n, n)
 
 
 def _validation_split(X, z: np.ndarray, random_state: int = _RANDOM_STATE):
@@ -273,12 +266,6 @@ def _portfolio_select_svr(
     return best_name, dict(candidates)[best_name], scores
 
 
-def _to_onnx(svr, path: str, n_features: int) -> None:
-    """Export SVR or LinearSVR to ONNX; single output of standardised predictions."""
-    with open(path, "wb") as f:
-        f.write(_svr_onnx_bytes(svr, n_features))
-
-
 def _svr_onnx_bytes(svr, n_features: int) -> bytes:
     """SVR or LinearSVR as a serialised ONNX graph (standardised output)."""
     from skl2onnx import convert_sklearn
@@ -295,7 +282,12 @@ def _svr_onnx_bytes(svr, n_features: int) -> bytes:
 # ---------------------------------------------------------------------------
 
 
-class BaseSVR(OnnxBoundHead, BaseEstimator, RegressorMixin):
+# ---------------------------------------------------------------------------
+# BaseSVR
+# ---------------------------------------------------------------------------
+
+
+class BaseSVR(_SVMHead, RegressorHead, BaseEstimator, RegressorMixin):
     """
     Regressor with automatically selected SVR hyperparameters.
 
@@ -314,7 +306,7 @@ class BaseSVR(OnnxBoundHead, BaseEstimator, RegressorMixin):
     profile_ : DatasetProfile
     params_ : dict
     preset_name_ : str         — "heuristic", "default" or "linear" (+ "+linear_guard")
-    portfolio_scores_ : dict   — holdout Spearman ρ per preset
+    portfolio_scores_ : dict   — negative holdout RMSE (standardised) per preset
     svr_ : SVR or LinearSVR    — fitted on standardised targets
     y_mean_, y_std_ : float    — target standardisation
     oof_preds_ : ndarray (n,)  — OOF predictions in original units
@@ -322,6 +314,8 @@ class BaseSVR(OnnxBoundHead, BaseEstimator, RegressorMixin):
     train_rho_ : float or None
     timing_ : dict
     """
+
+    _fitted_attr = "svr_"
 
     def __init__(
         self,
@@ -335,13 +329,21 @@ class BaseSVR(OnnxBoundHead, BaseEstimator, RegressorMixin):
         self.random_state = random_state
 
     def fit(self, X, y) -> "BaseSVR":
-        if not _FIT_DEPS_AVAILABLE:
-            raise ImportError(
-                "Training requires scikit-learn. Install with: pip install 'lazyqsar[fit]'"
-            )
+        require_fit_deps(_FIT_DEPS_AVAILABLE)
         if self.oof:
             return self.collect_oof(X, y)
         return self._fit_raw(X, y)
+
+    @staticmethod
+    def _make(params: dict):
+        return _make_svr(params)
+
+    def _linear_fallback_params(self, profile) -> dict:
+        return dict(
+            svr_linear_params(profile),
+            C=min(self.params_["C"], 10.0),
+            random_state=self.random_state,
+        )
 
     def _fit_raw(self, X, y) -> "BaseSVR":
         X = check_array(X, dtype="numeric", accept_sparse=False)
@@ -353,7 +355,6 @@ class BaseSVR(OnnxBoundHead, BaseEstimator, RegressorMixin):
 
         profile = _inspect(X, y, task="regression")
         self.profile_ = profile
-        n_features = profile.n_features
         self.timing_ = {}
 
         logger.rule("BaseSVR")
@@ -375,40 +376,10 @@ class BaseSVR(OnnxBoundHead, BaseEstimator, RegressorMixin):
         self._use_linear_ = bool(best_params.get("use_linear", False))
 
         _t_p2 = _time.perf_counter()
-        self.svr_ = _make_svr(self.params_).fit(X, z)
-
-        # ONNX size guard (kernel SVR only), as in BaseSVCClassifier.
-        if not self._use_linear_:
-            for _retry in range(_ONNX_MAX_RETRIES):
-                size = _onnx_size_bytes(self.svr_, n_features)
-                if size <= _ONNX_MAX_BYTES:
-                    break
-                new_C = self.params_["C"] / 2.0
-                logger.warning(
-                    f"ONNX size guard: {size / 1e6:.1f} MB > "
-                    f"{_ONNX_MAX_BYTES / 1e6:.0f} MB — halving C: "
-                    f"{self.params_['C']:.4g} → {new_C:.4g}"
-                )
-                self.params_["C"] = new_C
-                self.svr_ = _make_svr(self.params_).fit(X, z)
-            else:
-                size = _onnx_size_bytes(self.svr_, n_features)
-                if size > _ONNX_MAX_BYTES:
-                    logger.warning(
-                        f"ONNX size guard exhausted after {_ONNX_MAX_RETRIES} retries; "
-                        "switching to LinearSVR."
-                    )
-                    self.params_ = dict(
-                        svr_linear_params(profile),
-                        C=min(self.params_["C"], 10.0),
-                        random_state=self.random_state,
-                    )
-                    self.svr_ = _make_svr(self.params_).fit(X, z)
-                    self._use_linear_ = True
-                    self.preset_name_ = self.preset_name_ + "+linear_guard"
+        self._fit_final(X, z, profile)
         self.timing_["phase2_refit"] = _time.perf_counter() - _t_p2
 
-        self.n_features_in_ = n_features
+        self.n_features_in_ = profile.n_features
         self._bind_onnx()
         self.train_rho_ = spearman_score(y, self.predict(X))
         logger.rule("Done")
@@ -424,34 +395,21 @@ class BaseSVR(OnnxBoundHead, BaseEstimator, RegressorMixin):
         """Full fit (portfolio runs once), then quantile-stratified k-fold OOF."""
         X = check_array(X, dtype="numeric", accept_sparse=False)
         y = np.asarray(y, dtype=float).ravel()
-        n = len(y)
         k, fold_splits = make_quantile_oof_splits(
             y, n_splits=n_splits, random_state=random_state
         )
-        logger.info(f"BaseSVR.collect_oof: full fit on n={n} (portfolio runs once)")
+        logger.info(
+            f"BaseSVR.collect_oof: full fit on n={len(y)} (portfolio runs once)"
+        )
         self._fit_raw(X, y)
 
-        oof = np.full(n, np.nan, dtype=float)
-        fold_times = []
-        for train_idx, val_idx in fold_splits:
-            _t_fold = _time.perf_counter()
+        def fit_predict(train_idx, val_idx):
             y_tr = y[train_idx]
             mu, sd = float(y_tr.mean()), float(y_tr.std()) or 1.0
             est = _make_svr(self.params_).fit(X[train_idx], (y_tr - mu) / sd)
-            oof[val_idx] = est.predict(X[val_idx]) * sd + mu
-            fold_times.append(_time.perf_counter() - _t_fold)
+            return est.predict(X[val_idx]) * sd + mu
 
-        self.timing_["oof_folds"] = fold_times
-        self.timing_["oof_total"] = sum(fold_times)
-        self.oof_preds_ = oof
-        self.oof_y_ = y.copy()
-        self.oof_rho_ = spearman_score(y, oof)
-        self._ranker_knots = subsample_knots(np.sort(oof), _RANKER_MAX_KNOTS)
-        self._ranker_prepared_ = prepare_knots(self._ranker_knots)
-        logger.success(
-            f"OOF collected ({k} folds) | rho_oof={self.oof_rho_} | "
-            f"rho_train={self.train_rho_}"
-        )
+        self._finish_oof(y, self._oof_loop(fold_splits, fit_predict))
         return self
 
     def _raw_native(self, X) -> np.ndarray:
@@ -468,22 +426,6 @@ class BaseSVR(OnnxBoundHead, BaseEstimator, RegressorMixin):
         X = check_array(X, dtype="numeric", accept_sparse=False)
         return self._raw(X) * self.y_std_ + self.y_mean_
 
-    def predict_rank(self, X) -> np.ndarray:
-        """Map predictions to [0, 1] via the OOF ECDF, shape (n_samples,)."""
-        check_is_fitted(self, "_ranker_knots")
-        prepared = getattr(self, "_ranker_prepared_", None)
-        if prepared is None:
-            prepared = self._ranker_prepared_ = prepare_knots(self._ranker_knots)
-        return rank_from_knots(self.predict(X), prepared=prepared)
-
-    def to_onnx(self, path: str) -> None:
-        """Export to ONNX. The graph emits standardised predictions (see y_mean/y_std)."""
-        check_is_fitted(self, "svr_")
-        self._write_onnx(path)
-        probe = getattr(self, "_onnx_probe_", None)
-        if probe is not None:
-            check_values(path, probe, self._raw_native(probe), "BaseSVR")
-
     def save(self, directory: str) -> None:
         """Write ``svr.onnx`` and ``svr.json`` (fit metadata incl. target scaling)."""
         check_is_fitted(self, "svr_")
@@ -499,64 +441,11 @@ class BaseSVR(OnnxBoundHead, BaseEstimator, RegressorMixin):
             "portfolio_scores": self.portfolio_scores_,
             "y_mean": self.y_mean_,
             "y_std": self.y_std_,
-            "oof_rho": getattr(self, "oof_rho_", None),
-            "train_rho": getattr(self, "train_rho_", None),
         }
-        if hasattr(self, "_ranker_knots"):
-            metadata["ranker"] = {"knots": self._ranker_knots.tolist()}
+        metadata.update(self._task_metadata())
         with open(os.path.join(directory, "svr.json"), "w") as f:
             json.dump(metadata, f, indent=2)
 
 
-class BaseSVRArtifact:
-    """
-    Inference-only loader for a model saved by BaseSVR.save().
-
-    Only requires numpy and onnxruntime. Applies the inverse target
-    standardisation to the ONNX output.
-    """
-
-    def __init__(self):
-        self._session = None
-        self._input_name = ""
-        self.metadata: dict = {}
-        self.task = "regression"
-        self._ranker = None
-        self._y_mean = 0.0
-        self._y_std = 1.0
-
-    @classmethod
-    def load(cls, directory: str) -> "BaseSVRArtifact":
-        json_path = os.path.join(directory, "svr.json")
-        onnx_path = os.path.join(directory, "svr.onnx")
-        if not os.path.isfile(json_path):
-            raise FileNotFoundError(f"svr.json not found in {directory!r}")
-        if not os.path.isfile(onnx_path):
-            raise FileNotFoundError(f"svr.onnx not found in {directory!r}")
-        self = cls()
-        with open(json_path) as f:
-            self.metadata = json.load(f)
-        self._ranker = self.metadata.get("ranker", None)
-        self._y_mean = float(self.metadata["y_mean"])
-        self._y_std = float(self.metadata["y_std"])
-        import onnxruntime as rt
-
-        self._session = rt.InferenceSession(
-            onnx_path, providers=["CPUExecutionProvider"]
-        )
-        self._input_name = self._session.get_inputs()[0].name
-        return self
-
-    def run(self, X) -> np.ndarray:
-        """Return predictions in original target units, shape (n_samples,)."""
-        X_f32 = np.asarray(X, dtype=np.float32)
-        out = self._session.run(None, {self._input_name: X_f32})[0]
-        return np.asarray(out, dtype=np.float64).ravel() * self._y_std + self._y_mean
-
-    def predict_rank(self, X) -> np.ndarray:
-        """Map predictions to [0, 1] via the OOF ECDF, shape (n_samples,)."""
-        if self._ranker is None:
-            raise RuntimeError("No ranker stored in this artifact.")
-        if getattr(self, "_ranker_prepared", None) is None:
-            self._ranker_prepared = prepare_knots(self._ranker["knots"])
-        return rank_from_knots(self.run(X), prepared=self._ranker_prepared)
+# Inference: one implementation per head, in lazyqsar.artifacts.
+from lazyqsar.artifacts.svc import SVRArtifact as BaseSVRArtifact  # noqa: E402,F401

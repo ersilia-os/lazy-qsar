@@ -1,6 +1,10 @@
-import json
-import os
-import time as _time
+"""Classification assembler: preprocessor + heads + gating pooler, batched for imbalance.
+
+The shared skeleton is :mod:`lazyqsar.assemblers._base`; this module adds what only
+classification has: imbalance-aware batching with a prior correction, calibrated
+probabilities, and the decision cutoff.
+"""
+
 import numpy as np
 
 from lazyqsar.utils.ranking import (
@@ -8,16 +12,11 @@ from lazyqsar.utils.ranking import (
     binarize,
     prepare_knots,
     rank_from_knots,
-    subsample_knots,
 )
 
 from ..portfolios.classification import Portfolio
-from ..preprocessors.classification.prep import Preprocessor
-from ..heads.classification.lr import Head as LRHead
-from ..heads.classification.xgb import Head as XGBHead
-from ..heads.classification.rf import Head as RFHead
-from ..heads.classification.svc import Head as SVCHead
 from ..poolers.classification import InnerPooler
+from ._base import _AssemblerBase, _BatchBase
 from lazyqsar.utils.logging import logger
 from lazyqsar.utils.splits import check_trainable
 
@@ -70,7 +69,7 @@ def _plan_batches(
     return [np.concatenate([pos_idx, split]) for split in neg_splits]
 
 
-class _BatchLazyClassifier(object):
+class _BatchLazyClassifier(_BatchBase):
     """
     Single-batch ensemble: preprocessor + heads + gating pooler.
 
@@ -88,144 +87,28 @@ class _BatchLazyClassifier(object):
         XGBoost round cap (None = use portfolio-selected value).
     """
 
-    def __init__(
-        self, portfolio: list, calibrated: bool = True, max_rounds: int | None = None
-    ):
-        self.prep = Preprocessor()
-        self.heads = []
-        for head_name in portfolio:
-            if head_name == "lr":
-                self.heads += [LRHead(calibrated=calibrated)]
-            elif head_name == "xgb":
-                self.heads += [XGBHead(calibrated=calibrated, max_rounds=max_rounds)]
-            elif head_name == "rf":
-                self.heads += [RFHead(calibrated=calibrated)]
-            elif head_name == "svc":
-                self.heads += [SVCHead(calibrated=calibrated)]
-            else:
-                raise ValueError(f"Unknown head {head_name}.")
-        self.portfolio = portfolio
-        self.pooler = InnerPooler(portfolio=portfolio)
+    task = "classification"
+    _pooler_cls = InnerPooler
+    _oof_attr = "oof_probas_"
 
     def fit(self, X, y):
         """Fit preprocessor, all heads, and the gating pooler on (X, y)."""
         self.train_prior_ = float(np.mean(y == 1))
-        _t_prep = _time.perf_counter()
-        self.prep.fit(X, y)
-        X = self.prep.transform(X)
-        t_prep = _time.perf_counter() - _t_prep
+        self._fit_batch(X, y)
 
-        for i, head in enumerate(self.heads):
-            logger.info(f"Fitting head {i + 1}/{len(self.heads)}: {self.portfolio[i]}")
-            head.fit(X, y)
-        if all(hasattr(getattr(h, "model", None), "oof_probas_") for h in self.heads):
-            S = np.column_stack([h.model.oof_probas_ for h in self.heads])
-        else:
-            S = None
-        _t_pooler = _time.perf_counter()
-        self.pooler.fit(S, y, X_prep=X)
-        t_pooler = _time.perf_counter() - _t_pooler
-        cutoffs = [
-            h.model.decision_cutoff_raw_
-            for h in self.heads
-            if hasattr(getattr(h, "model", None), "decision_cutoff_raw_")
-        ]
-        self.decision_cutoff_raw_ = float(np.mean(cutoffs)) if cutoffs else 0.5
-        cutoffs_proba = [
-            h.model.decision_cutoff_proba_
-            for h in self.heads
-            if hasattr(getattr(h, "model", None), "decision_cutoff_proba_")
-        ]
-        self.decision_cutoff_proba_ = (
-            float(np.mean(cutoffs_proba)) if cutoffs_proba else 0.5
-        )
-        cutoffs_rank = [
-            h.model.decision_cutoff_rank_
-            for h in self.heads
-            if hasattr(getattr(h, "model", None), "decision_cutoff_rank_")
-        ]
-        self.decision_cutoff_rank_ = (
-            float(np.mean(cutoffs_rank)) if cutoffs_rank else 0.5
-        )
+        def mean_of(attr):
+            values = [
+                getattr(h.model, attr)
+                for h in self.heads
+                if hasattr(getattr(h, "model", None), attr)
+            ]
+            return float(np.mean(values)) if values else 0.5
+
+        self.decision_cutoff_raw_ = mean_of("decision_cutoff_raw_")
+        self.decision_cutoff_proba_ = mean_of("decision_cutoff_proba_")
+        self.decision_cutoff_rank_ = mean_of("decision_cutoff_rank_")
         _p = np.clip(self.decision_cutoff_proba_, 1e-7, 1.0 - 1e-7)
         self.decision_cutoff_logit_ = float(np.log(_p / (1.0 - _p)))
-
-        # Build and display per-step timing table
-        steps = [("Preprocessing", t_prep, False)]
-        for head_name, head in zip(self.portfolio, self.heads):
-            t = getattr(getattr(head, "model", None), "timing_", {})
-            if head_name == "xgb":
-                if "portfolio_select" in t:
-                    steps.append(
-                        (
-                            "XGB \u2014 portfolio select (stage 1+2)",
-                            t["portfolio_select"],
-                            False,
-                        )
-                    )
-                steps.append(
-                    ("XGB \u2014 phase-2 refit", t.get("phase2_refit", 0.0), False)
-                )
-                if "calibration_total" in t:
-                    folds = t.get("calibration_folds", [])
-                    steps.append(
-                        (
-                            f"XGB \u2014 calibration ({len(folds)} folds)",
-                            t["calibration_total"],
-                            False,
-                        )
-                    )
-                    for fi, ft in enumerate(folds):
-                        steps.append((f"fold {fi + 1}/{len(folds)}", ft, True))
-            elif head_name == "lr":
-                steps.append(
-                    ("LR \u2014 hyperparam search", t.get("hparam_search", 0.0), False)
-                )
-                if "calibration_total" in t:
-                    folds = t.get("calibration_folds", [])
-                    steps.append(
-                        (
-                            f"LR \u2014 calibration ({len(folds)} folds)",
-                            t["calibration_total"],
-                            False,
-                        )
-                    )
-                    for fi, ft in enumerate(folds):
-                        steps.append((f"fold {fi + 1}/{len(folds)}", ft, True))
-            elif head_name == "rf":
-                steps.append(("RF \u2014 fit", t.get("fit", 0.0), False))
-                if "calibration_total" in t:
-                    folds = t.get("calibration_folds", [])
-                    steps.append(
-                        (
-                            f"RF \u2014 calibration ({len(folds)} folds)",
-                            t["calibration_total"],
-                            False,
-                        )
-                    )
-                    for fi, ft in enumerate(folds):
-                        steps.append((f"fold {fi + 1}/{len(folds)}", ft, True))
-            elif head_name == "svc":
-                if "portfolio_select" in t:
-                    steps.append(
-                        ("SVC \u2014 portfolio select", t["portfolio_select"], False)
-                    )
-                steps.append(
-                    ("SVC \u2014 phase-2 refit", t.get("phase2_refit", 0.0), False)
-                )
-                if "calibration_total" in t:
-                    folds = t.get("calibration_folds", [])
-                    steps.append(
-                        (
-                            f"SVC \u2014 calibration ({len(folds)} folds)",
-                            t["calibration_total"],
-                            False,
-                        )
-                    )
-                    for fi, ft in enumerate(folds):
-                        steps.append((f"fold {fi + 1}/{len(folds)}", ft, True))
-        steps.append(("Pooler \u2014 gating network", t_pooler, False))
-        logger.timing_table(steps)
 
     def predict_proba(self, X):
         """Return calibrated probabilities, shape (n, 2)."""
@@ -254,20 +137,8 @@ class _BatchLazyClassifier(object):
         threshold = self.decision_cutoff_raw_ if cutoff is None else cutoff
         return binarize(self.predict_score(X)[:, 1], threshold)
 
-    def save(self, directory, batch_num):
-        """Save this batch to ``{directory}/batch_{batch_num}/``."""
-        if batch_num is not None:
-            directory = f"{directory}/batch_{batch_num}"
-        os.makedirs(directory, exist_ok=True)
-        self.pooler.save(directory)
-        self.prep.save(directory)
-        for head in self.heads:
-            head.save(directory)
-        logger.debug(f"Batch saved to {directory}")
-        return directory
 
-
-class LazyClassifier(object):
+class LazyClassifier(_AssemblerBase):
     """
     Imbalance-aware ensemble classifier for pre-computed feature arrays.
 
@@ -302,6 +173,8 @@ class LazyClassifier(object):
     decision_cutoff_ : float
         OOF-learned decision threshold, averaged across batches.
     """
+
+    task = "classification"
 
     def __init__(
         self,
@@ -429,13 +302,8 @@ class LazyClassifier(object):
         ``None`` when out-of-fold data is unavailable, and ``_oof_percentile`` then keeps its
         pre-v3.5.0 behaviour.
         """
-        self.oof_percentile_knots_ = None
-        self._oof_percentile_prepared_ = None
         pooled = self._oof_accumulate(X)
-        if pooled is None:
-            return
-        self.oof_percentile_knots_ = subsample_knots(np.sort(pooled[0]))
-        self._oof_percentile_prepared_ = prepare_knots(self.oof_percentile_knots_)
+        self._set_oof_reference(None if pooled is None else pooled[0])
 
     def _oof_accumulate(self, X):
         """Pooled out-of-fold ``(proba, score)`` per training row, or None.
@@ -624,11 +492,7 @@ class LazyClassifier(object):
         threshold = self.decision_cutoff_raw_ if cutoff is None else cutoff
         return binarize(self.predict_score(X)[:, 1], threshold)
 
-    def save(self, directory):
-        """Save all batch models and metadata.json to *directory*."""
-        logger.info(f"Saving LazyClassifier to {directory!r}")
-        for batch_num, model in enumerate(self.models):
-            model.save(directory, batch_num)
+    def _metadata(self) -> dict:
         metadata = {
             "portfolio": self.portfolio,
             "max_batch_size": self.max_batch_size,
@@ -653,22 +517,14 @@ class LazyClassifier(object):
             # Only when the cutoff was placed against a reference library, and under the
             # same key the task level uses for that position.
             metadata["decision_cutoff_rank"] = float(reference_rank)
-        knots = getattr(self, "oof_percentile_knots_", None)
-        if knots is not None and len(knots):
-            # A new key, not a redefinition of `pooled_ranker`. That name means the
-            # reference library at the task level, and a v3.5.x descriptor checkpoint
-            # carries out-of-fold knots under it -- so reusing it here would let the two be
-            # read as the same thing. Under the new name an old checkpoint simply has none,
-            # and falls back to the graph, which is correct.
-            metadata["oof_percentile"] = {
-                "knots": np.asarray(knots, dtype=np.float64).tolist(),
-                "n_train": int(len(knots)),
-            }
+        return metadata
+
+    def _extend_metadata(self, metadata: dict) -> None:
         ref = getattr(self, "reference_rank_knots_", None)
         if ref is not None and len(ref):
             # `pooled_ranker` means the reference library wherever it appears, so the
             # agnostic path writes the same block the task level does and is read by the
-            # same code. The out-of-fold percentile lives under `oof_percentile` above.
+            # same code. The out-of-fold percentile lives under `oof_percentile`.
             metadata["pooled_ranker"] = {
                 "knots": np.asarray(ref, dtype=np.float64).tolist(),
                 "n_train": int(len(ref)),
@@ -677,10 +533,6 @@ class LazyClassifier(object):
             anchors = getattr(self, "reference_rank_anchors_", None)
             if anchors:
                 metadata["pooled_ranker"].update(anchors)
-        with open(f"{directory}/metadata.json", "w") as f:
-            json.dump(metadata, f, indent=4)
-        logger.success(f"Saved {len(self.models)} batch(es) to {directory!r}")
-        logger.dir_tree(directory)
 
     def load(self, directory):
         raise NotImplementedError("Loading not implemented for LazyClassifier yet.")
