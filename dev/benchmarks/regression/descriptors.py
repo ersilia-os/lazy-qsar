@@ -71,7 +71,9 @@ def collect(label, task_names):
                     arrays[f"{d}_oof"] = value
                     arrays[f"{d}_oof_rank"] = rank
                     arrays[f"{d}_test"] = test_value
-                    arrays[f"{d}_test_rank"] = model._oof_percentile_from_value(test_value)
+                    arrays[f"{d}_test_rank"] = model._oof_percentile_from_value(
+                        test_value
+                    )
                     arrays[f"{d}_ad_train"] = ad_train
                     arrays[f"{d}_ad_test"] = ad.score(X[te])
                     arrays[f"{d}_ad_cutoff"] = np.float64(np.percentile(ad_train, 5))

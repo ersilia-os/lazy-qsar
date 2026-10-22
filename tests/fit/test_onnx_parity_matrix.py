@@ -250,8 +250,12 @@ def test_svc_graph_score_column_is_the_decision_function(kind, tmp_path):
     assert model._onnx_column_ == (1 if kind == "linear" else 0)
 
     Q = _queries(X)
-    session = rt.InferenceSession(model._onnx_bytes_, providers=["CPUExecutionProvider"])
-    labels, scores = session.run(None, {session.get_inputs()[0].name: Q.astype(np.float32)})
+    session = rt.InferenceSession(
+        model._onnx_bytes_, providers=["CPUExecutionProvider"]
+    )
+    labels, scores = session.run(
+        None, {session.get_inputs()[0].name: Q.astype(np.float32)}
+    )
     decision = model.svc_.decision_function(Q)
     col = model._onnx_column_
     scale = max(1.0, float(np.abs(decision).max()))
@@ -266,7 +270,12 @@ def test_svc_graph_score_column_is_the_decision_function(kind, tmp_path):
 
     art = _roundtrip(model, SVCArtifact, tmp_path)
     assert art._score_col == col
-    np.testing.assert_array_equal(art.run(Q)[:, 1], model.predict_proba(Q)[:, 1])
+    # The graph's column is pinned exactly above; the calibrated probabilities differ by
+    # float64 rounding between the head's and the artifact's calibrator code (1.1e-16
+    # on x86 Linux).
+    np.testing.assert_allclose(
+        art.run(Q)[:, 1], model.predict_proba(Q)[:, 1], rtol=0, atol=1e-12
+    )
 
 
 @pytest.mark.parametrize("data", ["dense", "fingerprint"])
@@ -291,7 +300,8 @@ def test_rbf_svr_graph_matches_sklearn_and_skl2onnx(data):
     ours = _svr_onnx_bytes(svr, X.shape[1])
     assert "MatMul" in {n.op_type for n in onnx.load_from_string(ours).graph.node}
     reference = convert_sklearn(
-        svr, initial_types=[("float_input", FloatTensorType([None, X.shape[1]]))],
+        svr,
+        initial_types=[("float_input", FloatTensorType([None, X.shape[1]]))],
         target_opset=15,
     ).SerializeToString()
 
@@ -474,7 +484,9 @@ def test_zero_iqr_column_is_scaled(task, monkeypatch, tmp_path):
     )
 
     monkeypatch.setattr(pipeline, "select_scaler", lambda profile: "robust")
-    monkeypatch.setattr(pipeline, "select_reducer", lambda profile: "correlation_filter")
+    monkeypatch.setattr(
+        pipeline, "select_reducer", lambda profile: "correlation_filter"
+    )
     X = _dense(p=12)
     X[:, 3] = 1e5
     X[::30, 3] = 0.0  # 1e5 on ~97% of rows, as RDKit writes it

@@ -37,7 +37,9 @@ RAW = os.path.join(CACHE, "raw", "admet_group")
 FEATURES = os.path.join(CACHE, "features", "tdc_official")
 RESULTS = os.path.join(CACHE, "results")
 ADMET_GROUP_ID = 4426004  # TDC's benchmark2id["admet_group"]
-USER_AGENT = "lazyqsar-regression-benchmark/1.0 (+https://github.com/ersilia-os/lazy-qsar)"
+USER_AGENT = (
+    "lazyqsar-regression-benchmark/1.0 (+https://github.com/ersilia-os/lazy-qsar)"
+)
 
 # task: (metric, fit on log10?)
 TASKS = {
@@ -80,7 +82,9 @@ def _features(task, part, smiles, descriptor):
         return np.load(path)
     from lazyqsar.registry import get_descriptor_type
 
-    X = np.asarray(get_descriptor_type(descriptor)().transform(smiles), dtype=np.float32)
+    X = np.asarray(
+        get_descriptor_type(descriptor)().transform(smiles), dtype=np.float32
+    )
     np.save(path, X)
     return X
 
@@ -108,7 +112,9 @@ def run(label, mode, task_names, repeats):
         metric, log10 = TASKS[task]
         smi_tr, y_tr = _read(task, "train_val")
         smi_te, y_te = _read(task, "test")
-        pre_tr = {d: _features(task, "train_val", smi_tr, d) for d in DESCRIPTORS_MODE[mode]}
+        pre_tr = {
+            d: _features(task, "train_val", smi_tr, d) for d in DESCRIPTORS_MODE[mode]
+        }
         pre_te = {d: _features(task, "test", smi_te, d) for d in DESCRIPTORS_MODE[mode]}
         target = np.log10(y_tr) if log10 else y_tr
         for rep in range(repeats):
@@ -150,7 +156,10 @@ def run(label, mode, task_names, repeats):
             }
             with open(out_path, "a") as f:
                 f.write(json.dumps(record) + "\n")
-            print(f"{task:28s} rep={rep} {metric}={score:.3f} t={fit_seconds:.0f}s", flush=True)
+            print(
+                f"{task:28s} rep={rep} {metric}={score:.3f} t={fit_seconds:.0f}s",
+                flush=True,
+            )
 
 
 def main():

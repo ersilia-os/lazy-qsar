@@ -46,7 +46,9 @@ def test_stacking_weights_skip_non_finite_rows():
     P = np.column_stack([y + 0.2 * rng.normal(size=500), y + rng.normal(size=500)])
     P_nan = P.copy()
     P_nan[:7, 1] = np.nan
-    np.testing.assert_allclose(stacking_weights(P_nan, y), stacking_weights(P[7:], y[7:]))
+    np.testing.assert_allclose(
+        stacking_weights(P_nan, y), stacking_weights(P[7:], y[7:])
+    )
     assert stacking_weights(np.full((5, 2), np.nan), y[:5]).tolist() == [0.5, 0.5]
 
 
@@ -94,8 +96,12 @@ def test_weights_round_trip_through_the_artifact(tmp_path):
 
 @pytest.mark.parametrize(
     "n, expected",
-    [(150, ["lr", "xgb", "svr"]), (2000, ["lr", "xgb", "svr"]), (3000, ["lr", "xgb"]),
-     (8000, ["xgb", "rf"])],
+    [
+        (150, ["lr", "xgb", "svr"]),
+        (2000, ["lr", "xgb", "svr"]),
+        (3000, ["lr", "xgb"]),
+        (8000, ["xgb", "rf"]),
+    ],
 )
 def test_portfolio_picks_heads_by_size(n, expected):
     rng = np.random.default_rng(1)

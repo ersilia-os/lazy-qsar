@@ -158,7 +158,9 @@ class BasePreprocessor(BaseEstimator, TransformerMixin):
         if np.all(scale == 1.0):
             return
         scaler.scale_[zero_iqr] = scale
-        logger.debug(f"robust scaler: {int((scale > 1).sum())} zero-IQR columns rescaled by std")
+        logger.debug(
+            f"robust scaler: {int((scale > 1).sum())} zero-IQR columns rescaled by std"
+        )
         steps["reducer"].fit(scaler.transform(Xs), y)
 
     def _bind_onnx_runtime(self, X=None) -> None:

@@ -222,9 +222,7 @@ def test_stacking_weights_are_read_for_the_active_descriptors_and_renormalised()
 
 def test_stacking_weights_replace_skill_and_keep_the_ad_veto():
     Y = _values(4, 3)
-    A = np.array(
-        [[1.0, 1.0, 1.0], [0.0, 1.0, 1.0], [0.0, 0.0, 0.0], [1.0, 1.0, 0.0]]
-    )
+    A = np.array([[1.0, 1.0, 1.0], [0.0, 1.0, 1.0], [0.0, 0.0, 0.0], [1.0, 1.0, 0.0]])
     spec = _spec(
         oof_aucs=(0.9, 0.1, 0.1),
         ad_hard_cutoffs=(0.5, 0.5, 0.5),
@@ -234,7 +232,9 @@ def test_stacking_weights_replace_skill_and_keep_the_ad_veto():
     np.testing.assert_allclose(base, [0.5, 0.3, 0.2])
     np.testing.assert_allclose(W[0], [0.5, 0.3, 0.2])
     np.testing.assert_allclose(W[1], [0.0, 0.6, 0.4])  # a vetoed, the rest renormalised
-    np.testing.assert_allclose(W[2], [0.5, 0.3, 0.2])  # all vetoed: the stacking weights
+    np.testing.assert_allclose(
+        W[2], [0.5, 0.3, 0.2]
+    )  # all vetoed: the stacking weights
     np.testing.assert_allclose(W[3], [0.625, 0.375, 0.0])
     value = combine(Y, None, None, A, spec=spec, outputs=("value",)).values["value"]
     np.testing.assert_allclose(value, (W * Y).sum(axis=1))

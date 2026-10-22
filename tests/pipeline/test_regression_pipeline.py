@@ -97,13 +97,24 @@ def test_blocking_the_input_is_bit_identical(regression_checkpoint, predict_type
 
 
 def test_one_molecule_matches_its_batch_and_repeats_are_stable(regression_checkpoint):
+    """A molecule scored alone agrees with the same molecule scored in a batch.
+
+    To the tolerance the classification suite documents (``BATCH_SIZE_ATOL`` in
+    test_checkpoint_robustness): onnxruntime's graphs see different input shapes and the
+    last digits move -- tree ensembles sum in a shape-dependent order. Measured 5.8e-7 on
+    x86 Linux for a value of -2.0, nothing on arm64. Bit-identity is asserted for
+    blocking, which keeps the shapes, in test_blocking_the_input_is_bit_identical.
+    """
+    from test_checkpoint_robustness import BATCH_SIZE_ATOL
+
     cp = regression_checkpoint
     wrapper = _wrapper(cp, "alpha")
     query = cp["smiles"][:10]
     batch = wrapper.predict(query)
+    atol = BATCH_SIZE_ATOL * max(1.0, float(np.abs(batch).max()))
     for i in (0, 4, 9):
         single = _wrapper(cp, "alpha").predict([query[i]])
-        np.testing.assert_allclose(single, batch[i : i + 1], rtol=0, atol=1e-9)
+        np.testing.assert_allclose(single, batch[i : i + 1], rtol=0, atol=atol)
     repeated = _wrapper(cp, "alpha").predict([query[3]] * 5)
     assert np.unique(repeated).size == 1
 

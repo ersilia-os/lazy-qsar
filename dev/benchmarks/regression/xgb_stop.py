@@ -35,7 +35,15 @@ import tasks as task_registry  # noqa: E402
 
 CACHE = os.path.join(HERE, ".cache")
 RESULTS = os.path.join(CACHE, "results")
-RULES = [(50, 0.0), (50, 1e-4), (50, 3e-4), (50, 1e-3), (25, 0.0), (25, 3e-4), (25, 1e-3)]
+RULES = [
+    (50, 0.0),
+    (50, 1e-4),
+    (50, 3e-4),
+    (50, 1e-3),
+    (25, 0.0),
+    (25, 3e-4),
+    (25, 1e-3),
+]
 
 
 def collect(label, task_names, min_n, max_n=10**9):
@@ -58,8 +66,9 @@ def collect(label, task_names, min_n, max_n=10**9):
         for split, tr, te in task_registry.splits(task, smiles, provided, n_random=1):
             if not min_n <= len(tr) <= max_n or (task, split) in done:
                 continue
-            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
-                io.StringIO()
+            with (
+                contextlib.redirect_stdout(io.StringIO()),
+                contextlib.redirect_stderr(io.StringIO()),
             ):
                 prep = Preprocessor("regression")
                 prep.fit(X[tr], y[tr])
@@ -79,7 +88,9 @@ def collect(label, task_names, min_n, max_n=10**9):
             booster_params = {
                 k: v for k, v in params.items() if k not in xgb_model._META_KEYS
             }
-            dtrain = xgb.QuantileDMatrix(a, label=za, max_bin=params.get("max_bin", 256))
+            dtrain = xgb.QuantileDMatrix(
+                a, label=za, max_bin=params.get("max_bin", 256)
+            )
             dval = xgb.QuantileDMatrix(b, label=zb, ref=dtrain)
             history = {}
             booster = xgb.train(
@@ -99,7 +110,9 @@ def collect(label, task_names, min_n, max_n=10**9):
             test_curve = {
                 r: float(
                     np.sqrt(
-                        np.mean((booster.predict(dtest, iteration_range=(0, r)) - zte) ** 2)
+                        np.mean(
+                            (booster.predict(dtest, iteration_range=(0, r)) - zte) ** 2
+                        )
                     )
                 )
                 for r in rounds
@@ -138,7 +151,10 @@ def _test_at(test_curve, r):
 
 
 def score(label):
-    rows = [json.loads(l) for l in open(os.path.join(RESULTS, f"xgb_stop-{label}.jsonl"))]
+    rows = [
+        json.loads(line)
+        for line in open(os.path.join(RESULTS, f"xgb_stop-{label}.jsonl"))
+    ]
     print(f"{len(rows)} (task, split) pairs; relative to patience 50, no min_delta:")
     for lo, hi in ((0, 2000), (2000, 5000), (5000, 10**9), (0, 10**9)):
         sub = [r for r in rows if lo < r["n_train"] <= hi]
@@ -150,7 +166,9 @@ def score(label):
             for r in sub:
                 ref = stop_round(r["val_curve"], 50, 0.0)
                 got = stop_round(r["val_curve"], patience, delta)
-                rel.append(_test_at(r["test_curve"], got) / _test_at(r["test_curve"], ref) - 1)
+                rel.append(
+                    _test_at(r["test_curve"], got) / _test_at(r["test_curve"], ref) - 1
+                )
                 ratio.append(got / ref)
             rel = np.array(rel)
             print(

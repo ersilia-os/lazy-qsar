@@ -41,7 +41,14 @@ def test_one_varying_feature_fits_and_round_trips(task, tmp_path):
 
 @pytest.mark.parametrize(
     "value, expected",
-    [("", False), ("0", False), ("false", False), ("No", False), ("1", True), ("yes", True)],
+    [
+        ("", False),
+        ("0", False),
+        ("false", False),
+        ("No", False),
+        ("1", True),
+        ("yes", True),
+    ],
 )
 def test_offline_flag_reads_falsy_strings_as_off(monkeypatch, value, expected):
     from lazyqsar.reference.download import offline

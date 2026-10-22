@@ -199,7 +199,11 @@ def _rbf_svr_onnx_bytes(svr, n_features: int) -> bytes:
     graph = helper.make_graph(
         nodes,
         "rbf_svr",
-        [helper.make_tensor_value_info("float_input", TensorProto.FLOAT, [None, n_features])],
+        [
+            helper.make_tensor_value_info(
+                "float_input", TensorProto.FLOAT, [None, n_features]
+            )
+        ],
         [helper.make_tensor_value_info("variable", TensorProto.FLOAT, [None, 1])],
         initializers,
     )
@@ -343,7 +347,9 @@ class BaseSVR(_SVMHead, RegressorHead, BaseEstimator, RegressorMixin):
         self._finish_oof(
             y,
             self._oof_loop(
-                fold_splits, fit_predict, n_jobs=_fold_jobs(len(fold_splits), self.params_)
+                fold_splits,
+                fit_predict,
+                n_jobs=_fold_jobs(len(fold_splits), self.params_),
             ),
         )
         return self

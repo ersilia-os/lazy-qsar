@@ -24,7 +24,6 @@ from __future__ import annotations
 import argparse
 import contextlib
 import io
-import itertools
 import json
 import os
 import sys
@@ -60,7 +59,13 @@ def _fit_head(name, Xtr, ytr, Xte, cap=True, epsilon=None):
         seconds = time.perf_counter() - t0
         model = head.model
         size = len(model._onnx_bytes_) if getattr(model, "_onnx_bytes_", None) else None
-        return model.oof_preds_, model.predict(Xte), seconds, size, model.preset_name_ if hasattr(model, "preset_name_") else None
+        return (
+            model.oof_preds_,
+            model.predict(Xte),
+            seconds,
+            size,
+            model.preset_name_ if hasattr(model, "preset_name_") else None,
+        )
     finally:
         svr_module.BaseSVR._onnx_max_bytes = old_cap
         svr_module.svr_rbf_params = old_params
@@ -90,13 +95,21 @@ def collect(label, task_names, min_n, max_n):
                 ztr = (y[tr] - mu) / sd
                 runs = [("lr", {}), ("xgb", {}), ("rf", {}), ("svr", {})]
                 runs += [("svr_kernel", {"cap": False})]
-                runs += [(f"svr_eps{e}", {"cap": False, "epsilon": e}) for e in EPSILONS]
+                runs += [
+                    (f"svr_eps{e}", {"cap": False, "epsilon": e}) for e in EPSILONS
+                ]
                 for key, kw in runs:
                     name = "svr" if key.startswith("svr") else key
-                    oof, test, seconds, size, preset = _fit_head(name, Xtr, ztr, Xte, **kw)
+                    oof, test, seconds, size, preset = _fit_head(
+                        name, Xtr, ztr, Xte, **kw
+                    )
                     arrays[f"{key}_oof"] = np.asarray(oof) * sd + mu
                     arrays[f"{key}_test"] = np.asarray(test) * sd + mu
-                    meta[key] = {"seconds": seconds, "onnx_bytes": size, "preset": preset}
+                    meta[key] = {
+                        "seconds": seconds,
+                        "onnx_bytes": size,
+                        "preset": preset,
+                    }
             arrays["meta"] = np.asarray(json.dumps(meta))
             np.savez_compressed(path, **arrays)
             print(
@@ -141,7 +154,9 @@ def score(label):
     with open(os.path.join(RESULTS, f"svr_guard-{label}.json"), "w") as f:
         json.dump(rows, f, indent=1)
     ref = "lr+xgb+svr"
-    print(f"{len(rows)} (task, split) pairs; test RMSE of the NNLS stack relative to {ref}:")
+    print(
+        f"{len(rows)} (task, split) pairs; test RMSE of the NNLS stack relative to {ref}:"
+    )
     for s in subsets:
         key = "+".join(s)
         rel = np.array([r[key] / r[ref] - 1 for r in rows])
@@ -168,7 +183,9 @@ def main():
     ap.add_argument("--max-n", type=int, default=2000)
     args = ap.parse_args()
     if args.action == "collect":
-        collect(args.label, args.tasks or task_registry.task_names(), args.min_n, args.max_n)
+        collect(
+            args.label, args.tasks or task_registry.task_names(), args.min_n, args.max_n
+        )
     else:
         score(args.label)
 
