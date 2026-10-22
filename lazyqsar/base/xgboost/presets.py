@@ -40,6 +40,9 @@ from .inspector import DatasetProfile
 from . import flaml_data as _fd
 
 
+# Above this many rows the regression preset trades a little accuracy for speed.
+_FAST_PRESET_MIN_N = 2_000
+
 # Metrics where higher is better (all others are minimised by XGBoost)
 MAXIMIZE_METRICS = frozenset({"auc", "aucpr", "map", "ndcg"})
 
@@ -101,7 +104,7 @@ def flaml_params(
     FLAML configuration via 1-NN meta-feature matching.
 
     Selects one of four portfolio configs from FLAML's lossguide portfolio
-    (microsoft/FLAML, flaml/default/xgboost/{binary,regression}.json, MIT).
+    (microsoft/FLAML, flaml/default/xgboost/binary.json, MIT); classification only.
 
     Post-processing applied for small-dataset robustness:
       - n_estimators capped at 2000 (early stopping is the real control)
@@ -117,8 +120,8 @@ def flaml_params(
     p = profile.n_features
     pct_numeric = 1.0 - profile.binary_feature_fraction
 
-    data = _fd.BINARY if profile.task == "classification" else _fd.REGRESSION
-    n_classes = 2 if profile.task == "classification" else 0
+    data = _fd.BINARY
+    n_classes = 2
 
     center = np.array(data["preprocessing"]["center"])
     scale = np.array(data["preprocessing"]["scale"])
@@ -313,6 +316,56 @@ def rf_params(
         "reg_lambda": 1.0,
         "max_bin": max_bin,
         "n_estimators": 2000,
+        "early_stopping_rounds": 50,
+    }
+    if device == "cpu":
+        import os
+
+        params["nthread"] = (os.cpu_count() or 1) if nthread == -1 else nthread
+    _add_task_params(params, profile)
+    return params
+
+
+_REGRESSION_MAX_ROUNDS = 500
+
+
+def probst_regression_params(
+    profile: DatasetProfile, device: str, nthread: int = -1
+) -> Dict[str, Any]:
+    """The regression preset: Probst, Boulesteix & Bischl (2019) tuned defaults.
+
+    "Tunability: importance of hyperparameters of machine learning algorithms" (JMLR
+    20:53) derives data-independent defaults for xgboost from tuning on OpenML tasks:
+    eta 0.052, max_depth 11, min_child_weight 2, subsample 0.87, colsample_bytree 0.71,
+    colsample_bylevel 0.64. On LazyQSAR's regression benchmark (TDC ADMET, Biogen ADME,
+    MoleculeACE; random and scaffold splits; fingerprints) it was the best of five
+    candidates -- within 1.1% of the per-task best on average, best on 41 of 90 task
+    splits -- against 6.8% for xgboost's own defaults and 4.4% for AutoGluon's. Early
+    stopping on a held-out split sets the number of rounds.
+
+    Above 2,000 rows the learning rate rises to 0.08 and the depth falls to 8. On the
+    32 benchmark splits of that size this costs 0.8% RMSE on the head and 31% of its fit
+    time -- the cheapest of the faster variants tried (eta 0.1: +1.1%, 0.58x; depth 7:
+    +0.9%, 0.95x) -- and keeps large regression fits near classification's fit time.
+
+    Early stopping runs to at most 500 rounds. Its validation loss can creep down for
+    thousands of rounds (MoleculeACE CHEMBL218: 2,000); on 90 benchmark splits the cap
+    bound 11 of them and moved test RMSE by +0.002% on average, at most +0.41%.
+    """
+    large = profile.n_samples > _FAST_PRESET_MIN_N
+    params: Dict[str, Any] = {
+        "tree_method": "hist",
+        "device": "cuda" if device == "gpu" else "cpu",
+        "learning_rate": 0.08 if large else 0.052,
+        "max_depth": 8 if large else 11,
+        "min_child_weight": 2,
+        "subsample": 0.87,
+        "colsample_bytree": 0.71,
+        "colsample_bylevel": 0.64,
+        "reg_alpha": 0.0,
+        "reg_lambda": 1.0,
+        "max_bin": 128 if profile.n_samples > 100_000 else 256,
+        "n_estimators": _REGRESSION_MAX_ROUNDS,
         "early_stopping_rounds": 50,
     }
     if device == "cpu":

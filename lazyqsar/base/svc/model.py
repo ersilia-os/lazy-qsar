@@ -27,11 +27,11 @@ ONNX export notes
   Kernel SVC → ONNX stores all support vectors (O(n_sv * n_features)).
 
   ONNX size pre-flight: kernel presets are skipped during portfolio evaluation
-    when n_samples × n_features × 4 bytes already exceeds _ONNX_MAX_BYTES.
+    when n_samples × n_features × 5 bytes already exceeds _SVC_ONNX_MAX_BYTES.
     This avoids fitting models that cannot be exported within budget.
 
   After phase 2, the ONNX size guard checks kernel SVC models:
-    if n_sv * n_features * 4 > _ONNX_MAX_BYTES (5 MB):
+    if n_sv * n_features * 5 > _SVC_ONNX_MAX_BYTES (8 MB):
       Halve C and refit, up to _ONNX_MAX_RETRIES (3) times.
       If still too large: retrain with LinearSVC (always fits in budget).
 
@@ -84,11 +84,13 @@ from .presets import (
 )
 from ._common import (
     _MAX_COST_MULTIPLIER,
-    _ONNX_MAX_BYTES,
+    _ONNX_BYTES_PER_VALUE,
+    _SVC_ONNX_MAX_BYTES,
     _RANDOM_STATE,
     _VAL_FRACTION,
     _VAL_MIN_ROWS,
     _SVMHead,
+    _fold_jobs,
     svm_cost as _svc_cost,
 )
 from lazyqsar.base._head import (
@@ -264,12 +266,12 @@ def _portfolio_select_svc(
         # Uses profile.n_samples (full dataset) because the guard targets the
         # final model, not just the 90% validation split.
         if not params.get("use_linear", False):
-            worst_case = profile.n_samples * n_features * 4
-            if worst_case > _ONNX_MAX_BYTES:
+            worst_case = profile.n_samples * n_features * _ONNX_BYTES_PER_VALUE
+            if worst_case > _SVC_ONNX_MAX_BYTES:
                 logger.debug(
                     f"[portfolio] {name:12s}: skipped "
                     f"(worst-case ONNX {worst_case / 1e6:.1f} MB "
-                    f"> budget {_ONNX_MAX_BYTES / 1e6:.0f} MB)"
+                    f"> budget {_SVC_ONNX_MAX_BYTES / 1e6:.0f} MB)"
                 )
                 scores[name] = float("nan")
                 skipped.append(name)
@@ -381,6 +383,12 @@ def _svc_onnx_bytes(svc, n_features: int) -> bytes:
             if dim.dim_value == 0:
                 dim.ClearField("dim_value")
                 dim.dim_param = "batch_size"
+    # skl2onnx declares LinearSVC's scores as (n, 1); LinearClassifier emits (n, 2) for a
+    # binary model, and onnxruntime warns about the mismatch on every load. Declare what
+    # is computed.
+    scores = onnx_model.graph.output[1].type.tensor_type.shape
+    if len(scores.dim) == 2 and scores.dim[1].dim_value == 1:
+        scores.dim[1].dim_value = 2
     del onnx_model.graph.value_info[:]
     onnx_model = onnx.shape_inference.infer_shapes(onnx_model)
     return onnx_model.SerializeToString()
@@ -557,7 +565,9 @@ class BaseSVCClassifier(_SVMHead, ClassifierHead, BaseEstimator, ClassifierMixin
             return _decision_scores(fold_svc, X[val_idx])
 
         # The calibrator, cutoffs and ranks live on sigmoid(decision_function).
-        oof_raw = self._oof_loop(fold_splits, fit_predict)
+        oof_raw = self._oof_loop(
+            fold_splits, fit_predict, n_jobs=_fold_jobs(len(fold_splits), self.params_)
+        )
         self._finish_calibration(y, _sigmoid(oof_raw))
         return self
 
@@ -588,7 +598,7 @@ class BaseSVCClassifier(_SVMHead, ClassifierHead, BaseEstimator, ClassifierMixin
         Save the trained model to a directory.
 
         Always writes svc.onnx + svc.json.  The ONNX size guard in _fit_raw()
-        guarantees the model fits within _ONNX_MAX_BYTES — either by reducing C
+        guarantees the model fits within _SVC_ONNX_MAX_BYTES — either by reducing C
         or by switching to LinearSVC — so joblib is never needed.
         """
         import dataclasses
@@ -622,6 +632,9 @@ class BaseSVCClassifier(_SVMHead, ClassifierHead, BaseEstimator, ClassifierMixin
         probe = np.random.default_rng(_SCORE_CANARY_SEED).standard_normal(
             (_SCORE_CANARY_ROWS, int(self.profile_.n_features))
         )
+        # The column the fitted head was bound to; the artifact must resolve the same one.
+        if getattr(self, "_onnx_column_", None) is not None:
+            metadata["score_column"] = int(self._onnx_column_)
         metadata["score_canary"] = {
             "seed": _SCORE_CANARY_SEED,
             "n_rows": _SCORE_CANARY_ROWS,

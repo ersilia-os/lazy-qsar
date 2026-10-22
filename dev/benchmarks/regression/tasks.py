@@ -56,7 +56,7 @@ def task_names() -> list[str]:
     ace = sorted(
         f[len("moleculeace_") : -len(".csv")]
         for f in os.listdir(RAW)
-        if f.startswith("moleculeace_")
+        if f.startswith("moleculeace_") and f.endswith(".csv")
     )
     return list(_TDC) + list(_BIOGEN) + [f"ace_{a}" for a in ace]
 

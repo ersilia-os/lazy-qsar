@@ -7,6 +7,8 @@ from typing import Optional
 
 import numpy as np
 
+from lazyqsar.base._profiling import estimate_feature_signal
+
 
 @dataclass
 class DatasetProfile:
@@ -80,37 +82,6 @@ def _compute_binary_feature_fraction(X, n_sample: int = 5000) -> float:
     return float(is_binary.mean())
 
 
-def _estimate_feature_signal(
-    X, y: np.ndarray, n_sample: int = 5000, p_sample: int = 500
-):
-    n, p = X.shape
-    n_s = min(n_sample, n)
-    rng = np.random.RandomState(42)
-    row_idx = rng.choice(n, n_s, replace=False) if n > n_s else np.arange(n_s)
-    if hasattr(X, "toarray"):
-        X_s = X[row_idx].toarray().astype(float)
-    else:
-        X_s = np.asarray(X)[row_idx].astype(float)
-    y_s = y[row_idx].astype(float)
-    if p > p_sample:
-        col_idx = rng.choice(p, p_sample, replace=False)
-        X_s = X_s[:, col_idx]
-    x_std = X_s.std(axis=0)
-    X_s = X_s[:, x_std > 0]
-    y_std = float(y_s.std())
-    if X_s.shape[1] == 0 or y_std == 0.0:
-        return 0.0, 0.0
-    X_c = X_s - X_s.mean(axis=0)
-    y_c = y_s - y_s.mean()
-    cov = (X_c * y_c[:, None]).mean(axis=0)
-    x_stds = X_c.std(axis=0)
-    mask = x_stds > 0
-    corrs = np.clip(np.abs(cov[mask] / (x_stds[mask] * y_std)), 0.0, 1.0)
-    if corrs.size == 0:
-        return 0.0, 0.0
-    return float(corrs.mean()), float(np.percentile(corrs, 90))
-
-
 def _detect_task(y: np.ndarray) -> str:
     unique = np.unique(y)
     if len(unique) == 2 and set(unique).issubset({0, 1}):
@@ -128,7 +99,7 @@ def inspect(X, y, task: Optional[str] = None) -> DatasetProfile:
     sparsity = _compute_sparsity(X)
     is_sparse_counts = _detect_sparse_counts(X, sparsity)
     binary_feature_fraction = _compute_binary_feature_fraction(X)
-    feature_signal_strength, feature_signal_p90 = _estimate_feature_signal(X, y)
+    feature_signal_strength, feature_signal_p90 = estimate_feature_signal(X, y)
     n_p_ratio = float(n_samples) / n_features
     if task == "classification":
         unique, counts = np.unique(y, return_counts=True)

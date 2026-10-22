@@ -71,22 +71,31 @@ def build_reducer(reducer_name: str, profile: PreprocessingProfile):
 
 
 def _register_correlation_filter_onnx_converter():
+    """Export the column selectors as a single ``Gather`` over the kept columns.
+
+    Covers :class:`CorrelationFilter` (which skl2onnx does not know) and scikit-learn's
+    ``VarianceThreshold``, whose stock converter emits an invalid graph
+    (``ConstantOfShape`` on a float input) when its input has a single column -- a fit
+    with one varying feature could not be bound or exported. A gather of the support
+    indices is exact, so the graph computes the same values for every width.
+    """
     from skl2onnx import update_registered_converter
     from skl2onnx.common.data_types import FloatTensorType
     from skl2onnx.proto import onnx_proto
 
+    def _mask(op):
+        return op.mask_ if isinstance(op, CorrelationFilter) else op.get_support()
+
     def _shape_calc(operator):
-        op = operator.raw_operator
         N = operator.inputs[0].type.shape[0]
-        n_out = int(op.mask_.sum())
+        n_out = int(_mask(operator.raw_operator).sum())
         operator.outputs[0].type = FloatTensorType([N, n_out])
 
     def _converter(scope, operator, container):
-        op = operator.raw_operator
         input_name = operator.inputs[0].full_name
         output_name = operator.outputs[0].full_name
-        indices = np.where(op.mask_)[0].astype(np.int64)
-        indices_name = scope.get_unique_variable_name("cf_indices")
+        indices = np.where(_mask(operator.raw_operator))[0].astype(np.int64)
+        indices_name = scope.get_unique_variable_name("selected_indices")
         container.add_initializer(
             indices_name,
             onnx_proto.TensorProto.INT64,
@@ -98,13 +107,11 @@ def _register_correlation_filter_onnx_converter():
             [input_name, indices_name],
             [output_name],
             axis=1,
-            name=scope.get_unique_operator_name("GatherCorrelationFilter"),
+            name=scope.get_unique_operator_name("GatherSelectedColumns"),
         )
 
-    update_registered_converter(
-        CorrelationFilter,
-        "SklearnCorrelationFilter",
-        _shape_calc,
-        _converter,
-        overwrite=True,
-    )
+    for cls, alias in (
+        (CorrelationFilter, "SklearnCorrelationFilter"),
+        (VarianceThreshold, "SklearnVarianceThreshold"),
+    ):
+        update_registered_converter(cls, alias, _shape_calc, _converter, overwrite=True)

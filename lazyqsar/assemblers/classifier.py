@@ -16,7 +16,7 @@ from lazyqsar.utils.ranking import (
 
 from ..portfolios.classification import Portfolio
 from ..poolers.classification import InnerPooler
-from ._base import _AssemblerBase, _BatchBase
+from ._base import _AssemblerBase, _BatchBase, _digest
 from lazyqsar.utils.logging import logger
 from lazyqsar.utils.splits import check_trainable
 
@@ -286,8 +286,10 @@ class LazyClassifier(_AssemblerBase):
         from sklearn.metrics import roc_auc_score
 
         try:
-            train_proba = self.predict_proba(X)[:, 1]
-            return float(roc_auc_score(y, train_proba))
+            proba = self.predict_proba(X)
+            # The QSAR layer asks for the training-set probabilities again; keep them.
+            self._train_proba_ = (_digest(X), X.shape, proba)
+            return float(roc_auc_score(y, proba[:, 1]))
         except Exception as exc:  # noqa: BLE001 - reported, then degraded deliberately
             logger.warning(
                 f"Training AUC could not be computed ({type(exc).__name__}: {exc}); "
@@ -350,7 +352,7 @@ class LazyClassifier(_AssemblerBase):
             try:
                 S_cal = np.column_stack([m.oof_probas_ for m in heads])
                 S_raw = np.column_stack([m.oof_raw_ for m in heads])
-                W = batch.pooler.get_weights(batch.prep.transform(X[idx]))
+                W = batch.training_weights(X[idx])
             except Exception as exc:  # noqa: BLE001 - deliberately broad; degrade, don't raise
                 logger.debug(
                     f"pooled rank reference unavailable: {type(exc).__name__}: {exc}"
@@ -400,8 +402,7 @@ class LazyClassifier(_AssemblerBase):
                     )
                     return None
                 S = np.column_stack([h.model.oof_probas_ for h in heads])
-                X_prep = batch_clf.prep.transform(X[indices])
-                W_oof = batch_clf.pooler.get_weights(X_prep)
+                W_oof = batch_clf.training_weights(X[indices])
                 pooled = (W_oof * S).sum(axis=1)
                 batch_aucs.append(roc_auc_score(y[indices], pooled))
             return float(np.mean(batch_aucs))
@@ -417,6 +418,10 @@ class LazyClassifier(_AssemblerBase):
 
     def predict_proba(self, X):
         """Return prior-corrected calibrated probabilities, shape (n, 2)."""
+        cached = getattr(self, "_train_proba_", None)
+        if cached is not None and cached[1] == X.shape and cached[0] == _digest(X):
+            # Exactly the training rows: the same numbers, without another full pass.
+            return cached[2].copy()
         logger.debug(f"predict_proba: X={X.shape}  batches={len(self.models)}")
         R = np.array(
             [

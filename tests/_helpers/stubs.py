@@ -39,8 +39,8 @@ STUBBED_BINDINGS = (
     ("lazyqsar.qsar", "validate_smiles"),
     ("lazyqsar.qsar", "invalid_smiles_indices"),
     ("lazyqsar.qsar_regressor", "validate_smiles"),
-    ("lazyqsar.api.classifier_fit", "validate_smiles"),
-    ("lazyqsar.api.classifier_predict", "invalid_smiles_indices"),
+    ("lazyqsar.api.fit", "validate_smiles"),
+    ("lazyqsar.api.predict", "invalid_smiles_indices"),
 )
 
 # The names those bindings refer to, for the meta-test that looks for new ones.

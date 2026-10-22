@@ -146,6 +146,7 @@ class DescriptorPortfolio:
         precomputed: dict = None,
     ) -> list:
         from ..preprocessors import Preprocessor
+        from joblib import parallel_backend
         from sklearn.model_selection import cross_val_predict, StratifiedKFold
         from sklearn.metrics import roc_auc_score
         from sklearn.ensemble import RandomForestClassifier
@@ -216,9 +217,17 @@ class DescriptorPortfolio:
                 f"  [{name}] Preprocessed features: {X_prep.shape[1]:,} (after reduction)"
             )
 
-            proba = cross_val_predict(
-                proxy_model, X_prep, y_batch, cv=cv, method="predict_proba"
-            )[:, 1]
+            # The folds in threads: each forest stays single-threaded and seeded, so the
+            # predictions are those of the sequential run.
+            with parallel_backend("threading", n_jobs=3):
+                proba = cross_val_predict(
+                    proxy_model,
+                    X_prep,
+                    y_batch,
+                    cv=cv,
+                    method="predict_proba",
+                    n_jobs=3,
+                )[:, 1]
             oof_preds[name] = proba
             auc = float(roc_auc_score(y_batch, proba))
             solo_aucs[name] = auc
@@ -328,21 +337,37 @@ class DescriptorPortfolio:
         A shallow random-forest regressor on 3 quantile-stratified folds gives each
         descriptor an out-of-fold prediction. The reference descriptor seeds the ensemble;
         each other descriptor, best first, is added when its solo ρ matches the
-        reference's (gate A) or adding it does not lower the averaged ensemble's ρ
-        (gate B), up to the descriptor cap. No class-balance batching applies.
+        reference's (gate A) or adding it does not raise the averaged ensemble's RMSE
+        (gate B; RMSE, the metric every regression head is selected on), up to the
+        descriptor cap. No class-balance batching applies.
+
+        A descriptor whose out-of-fold ρ is undefined (constant predictions) ranks last
+        and is reported with an unknown proxy skill (``None``), never as a number the
+        ensemble weighting would read as real.
         """
         from ..preprocessors import Preprocessor
         from ..utils.metrics import spearman_score
         from ..utils.splits import quantile_bins
+        from joblib import parallel_backend
         from sklearn.ensemble import RandomForestRegressor
         from sklearn.model_selection import StratifiedKFold, cross_val_predict
 
         def rho(pred):
+            # For ranking only: an undefined ρ sorts below every real one.
             value = spearman_score(y, pred)
             return -1.0 if value is None else value
 
+        def rmse(pred):
+            return float(np.sqrt(np.mean((np.asarray(pred) - y) ** 2)))
+
+        # Single-threaded on purpose: parallel prediction sums the trees in a varying
+        # order (~1e-16), which can flip a tie in the screen between runs.
         proxy_model = RandomForestRegressor(
-            n_estimators=100, max_depth=6, n_jobs=1, random_state=42
+            n_estimators=100,
+            max_depth=6,
+            max_features=1.0 / 3.0,  # the regression forest's own split rule
+            n_jobs=1,
+            random_state=42,
         )
         bins = quantile_bins(y, max(1, min(5, len(y) // 6)))
         cv = list(
@@ -365,7 +390,8 @@ class DescriptorPortfolio:
             prep = Preprocessor("regression")
             prep.fit(X_full, y)
             X_prep = prep.transform(X_full)
-            pred = cross_val_predict(proxy_model, X_prep, y, cv=cv)
+            with parallel_backend("threading", n_jobs=3):
+                pred = cross_val_predict(proxy_model, X_prep, y, cv=cv, n_jobs=3)
             oof_preds[name] = pred
             solo_rhos[name] = rho(pred)
             logger.info(f"  [{name}] solo proxy ρ = {solo_rhos[name]:.4f}")
@@ -381,7 +407,7 @@ class DescriptorPortfolio:
             )
         ref_rho = solo_rhos[ref_name]
         passing = [(ref_name, next(d for n, d in applicable if n == ref_name))]
-        ensemble_rho = rho(oof_preds[ref_name])
+        ensemble_rmse = rmse(oof_preds[ref_name])
 
         candidates = sorted(
             [(n, d) for n, d in applicable if n != ref_name],
@@ -395,21 +421,23 @@ class DescriptorPortfolio:
                 )
                 continue
             gate_a = solo_rhos[name] >= ref_rho
-            candidate_rho = rho(
+            candidate_rmse = rmse(
                 np.mean([oof_preds[n] for n, _ in passing] + [oof_preds[name]], axis=0)
             )
-            gate_b = candidate_rho >= ensemble_rho
+            gate_b = candidate_rmse <= ensemble_rmse
             if gate_a or gate_b:
                 passing.append((name, desc))
-                ensemble_rho = rho(np.mean([oof_preds[n] for n, _ in passing], axis=0))
+                ensemble_rmse = rmse(
+                    np.mean([oof_preds[n] for n, _ in passing], axis=0)
+                )
                 logger.info(
                     f"  [{name}] ADDED   gate_A={gate_a} gate_B={gate_b} "
-                    f"→ ensemble ρ now {ensemble_rho:.4f}"
+                    f"→ ensemble RMSE now {ensemble_rmse:.4f}"
                 )
             else:
                 logger.info(
                     f"  [{name}] DROPPED gate_A={gate_a} gate_B={gate_b} "
-                    f"(ens would be {candidate_rho:.4f} < current={ensemble_rho:.4f})"
+                    f"(ens RMSE would be {candidate_rmse:.4f} > {ensemble_rmse:.4f})"
                 )
 
         passing_names = {n for n, _ in passing}
@@ -429,5 +457,6 @@ class DescriptorPortfolio:
         )
         logger.rule()
         return [
-            (name, desc, feature_map[name], solo_rhos[name]) for name, desc in passing
+            (name, desc, feature_map[name], spearman_score(y, oof_preds[name]))
+            for name, desc in passing
         ]

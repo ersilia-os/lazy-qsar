@@ -5,10 +5,13 @@ matrix -- through both the fitted model and the graph it just wrote, and raises
 :class:`OnnxExportMismatch` if they disagree. The comparison is on the *raw* model output
 (before calibration), because that is what the graph contains.
 
-The tolerance is chosen to catch structural conversion errors -- a dropped link
-function, missing trees, a lost imputation step, a swapped score column -- which move
-predictions by tenths or more, while never firing on the float32-versus-float64 rounding
-every export carries (measured at ~1e-6 relative). Precision itself is pinned separately
+Tolerances are per model family, relative to the output's scale. Trees and linear
+models carry ~1e-6 of float32-versus-float64 rounding, so their bind-time check uses
+1e-5, tight enough to catch a single dropped tree (pinned by a test). A kernel SVM sums
+a kernel over hundreds of dense features in float32 and carries up to ~1e-4 (measured:
+7e-5 on RDKit descriptors), so the SVMs use 1e-4 -- as does the save-time check of an
+unbound model. Structural errors (a lost link function, a swapped score column, a missing
+imputation) move outputs by tenths and are caught by either. Precision itself is pinned separately
 by the parity tests; this check exists so that a wrong graph can never be *saved*.
 
 Fit-time only: it needs onnxruntime (always installed) and the model's native predict.
@@ -19,7 +22,7 @@ from __future__ import annotations
 import numpy as np
 
 PROBE_ROWS = 64
-_RTOL = 1e-3
+_RTOL = 1e-4
 _ATOL_SCALE = 1e-4
 
 
@@ -56,14 +59,14 @@ def _positive_column(raw) -> np.ndarray:
     return arr[:, -1]
 
 
-def _assert_close(got, expected, what: str, atol: float) -> None:
+def _assert_close(got, expected, what: str, atol: float, rtol: float = _RTOL) -> None:
     got = np.asarray(got, dtype=np.float64).ravel()
     expected = np.asarray(expected, dtype=np.float64).ravel()
     if got.shape != expected.shape:
         raise OnnxExportMismatch(
             f"{what}: ONNX returned {got.size} values for {expected.size} probe rows."
         )
-    if not np.allclose(got, expected, rtol=_RTOL, atol=atol, equal_nan=True):
+    if not np.allclose(got, expected, rtol=rtol, atol=atol, equal_nan=True):
         worst = float(np.nanmax(np.abs(got - expected)))
         raise OnnxExportMismatch(
             f"{what}: the exported graph does not reproduce the fitted model "
@@ -72,9 +75,9 @@ def _assert_close(got, expected, what: str, atol: float) -> None:
         )
 
 
-def _atol(expected) -> float:
+def _atol(expected, tolerance: float = _ATOL_SCALE) -> float:
     scale = float(np.nanmax(np.abs(expected))) if np.size(expected) else 1.0
-    return _ATOL_SCALE * max(1.0, scale)
+    return tolerance * max(1.0, scale)
 
 
 def check_values(

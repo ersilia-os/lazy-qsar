@@ -38,7 +38,20 @@ class PreprocessorArtifact:
         return self
 
     def run(self, X) -> np.ndarray:
-        """Transform X through the preprocessor. Returns float32 array."""
-        return self._session.run(
-            None, {self._input_name: np.asarray(X, dtype=np.float32)}
-        )[0]
+        """Transform X through the preprocessor. Returns float32 array.
+
+        Infinite values, and finite values beyond the float32 range (which the cast turns
+        into infinities), are refused: the graph imputes NaN but not infinity, so they
+        would produce a prediction for a value the model never represented. The same
+        contract the fitting entry points enforce.
+        """
+        X32 = np.asarray(X, dtype=np.float32)
+        n_inf = int(np.isinf(X32).sum())
+        if n_inf:
+            raise ValueError(
+                f"Feature matrix has {n_inf} infinite or beyond-float32 value"
+                f"{'s' if n_inf != 1 else ''}. Models run as float32 ONNX graphs, which "
+                "cannot represent them; replace them with NaN (imputed like any missing "
+                "value) or clip them before predicting."
+            )
+        return self._session.run(None, {self._input_name: X32})[0]

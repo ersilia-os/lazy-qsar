@@ -119,12 +119,15 @@ class BasePreprocessor(BaseEstimator, TransformerMixin):
             else:
                 raise
 
+        if self.scaler_name_ == "robust":
+            self._rescale_zero_iqr_columns(X, y)
+
         self._n_features_out: int = self.pipeline_.transform(
             np.zeros((1, self.n_features_in_))
         ).shape[1]
 
         self.kept_feature_indices_: list = self._compute_kept_indices()
-        self._bind_onnx_runtime()
+        self._bind_onnx_runtime(X)
 
         logger.success(
             f"scaler={self.scaler_name_} | reducer={self.reducer_name_} | "
@@ -132,7 +135,35 @@ class BasePreprocessor(BaseEstimator, TransformerMixin):
         )
         return self
 
-    def _bind_onnx_runtime(self) -> None:
+    def _rescale_zero_iqr_columns(self, X, y) -> None:
+        """Scale zero-IQR columns by their standard deviation where it exceeds one.
+
+        ``RobustScaler`` divides by the interquartile range and falls back to 1 where it
+        is zero, so a column that is constant on most rows keeps its raw units. RDKit
+        descriptors include such columns (a sentinel of 1e5 on 97% of rows), which then
+        reach the heads at magnitude 1e5: a kernel's ``gamma="scale"`` collapses to
+        ~1e-8 and its float32 graph loses precision to cancellation (a 3e-3 bind
+        failure). The reducer is refitted on the corrected scale.
+        """
+        steps = self.pipeline_.named_steps
+        scaler = steps["scaler"]
+        Xs = self.pipeline_[:2].transform(X)
+        q25, q75 = np.percentile(Xs, [25, 75], axis=0)
+        zero_iqr = (q75 - q25) == 0
+        if not zero_iqr.any():
+            return
+        # Only shrink: a rare count column (std < 1) keeps scikit-learn's scale of one, so
+        # it is not amplified; a sentinel column (std ~1e4) comes down to unit spread.
+        scale = np.maximum(Xs[:, zero_iqr].std(axis=0), 1.0)
+        if np.all(scale == 1.0):
+            return
+        scaler.scale_[zero_iqr] = scale
+        logger.debug(
+            f"robust scaler: {int((scale > 1).sum())} zero-IQR columns rescaled by std"
+        )
+        steps["reducer"].fit(scaler.transform(Xs), y)
+
+    def _bind_onnx_runtime(self, X=None) -> None:
         """Make the fitted preprocessor compute the way the exported one will.
 
         The shipped checkpoint runs this pipeline as a float32 ONNX graph, while
@@ -152,28 +183,50 @@ class BasePreprocessor(BaseEstimator, TransformerMixin):
         of which is later handed the full training set. That is why the session is built
         with :func:`_fit_session_options` rather than onnxruntime's defaults: see there.
 
-        Falls back to the scikit-learn pipeline, with a warning, if the export or the
-        session fails -- a preprocessor that works is worth more than one that matches.
+        The graph is checked against the scikit-learn pipeline on a probe of training rows
+        before it is used, and the bytes are kept so that ``save`` writes exactly the graph
+        the heads were fitted against. A failure raises :class:`OnnxExportMismatch`: it
+        used to fall back to the scikit-learn path with a warning, which produced a model
+        whose checkpoint could compute something else.
         """
+        import onnxruntime as rt
+
+        from lazyqsar.utils.onnx_check import OnnxExportMismatch, probe_rows
+
         self._onnx_session_ = None
         self._onnx_input_ = None
         try:
-            import onnxruntime as rt
-
+            data = self._to_onnx_bytes()
             session = rt.InferenceSession(
-                self._to_onnx_bytes(),
+                data,
                 sess_options=_fit_session_options(rt),
                 providers=["CPUExecutionProvider"],
             )
-        except Exception as exc:  # noqa: BLE001 - see docstring; degrade, don't raise
-            logger.warning(
-                f"Preprocessor could not be bound to its ONNX form "
-                f"({type(exc).__name__}: {exc}); fitting against the scikit-learn path "
-                "instead. The exported checkpoint may not reproduce this model exactly."
-            )
-            return
+        except Exception as exc:
+            raise OnnxExportMismatch(
+                f"The preprocessor ({self.scaler_name_} + {self.reducer_name_}) could "
+                f"not be exported to ONNX ({type(exc).__name__}: {exc})."
+            ) from exc
+        input_name = session.get_inputs()[0].name
+        if X is not None:
+            probe = probe_rows(X)
+            if hasattr(probe, "toarray"):
+                probe = probe.toarray()
+            probe = np.asarray(probe, dtype=np.float32)
+            got = session.run(None, {input_name: probe})[0]
+            want = self.pipeline_.transform(probe)
+            scale = max(1.0, float(np.nanmax(np.abs(want))) if want.size else 1.0)
+            if got.shape != want.shape or not np.allclose(
+                got, want, rtol=1e-3, atol=1e-4 * scale, equal_nan=True
+            ):
+                raise OnnxExportMismatch(
+                    f"The preprocessor's ONNX graph ({self.scaler_name_} + "
+                    f"{self.reducer_name_}) does not reproduce the scikit-learn pipeline "
+                    "on the training probe; this is a conversion bug."
+                )
+        self._onnx_bytes_ = data
         self._onnx_session_ = session
-        self._onnx_input_ = session.get_inputs()[0].name
+        self._onnx_input_ = input_name
 
     def transform(self, X) -> np.ndarray:
         """Apply the fitted pipeline to X, returning the preprocessed array.
@@ -259,9 +312,14 @@ class BasePreprocessor(BaseEstimator, TransformerMixin):
         ).SerializeToString()
 
     def to_onnx(self, path: str) -> None:
-        """Export the pipeline to ONNX (opset 15) at *path*."""
+        """Write the pipeline's ONNX graph (opset 15) to *path*.
+
+        The bytes the fitted preprocessor was bound to and checked against, when bound:
+        re-converting could only ever produce a graph nobody verified.
+        """
+        data = getattr(self, "_onnx_bytes_", None) or self._to_onnx_bytes()
         with open(path, "wb") as f:
-            f.write(self._to_onnx_bytes())
+            f.write(data)
 
 
 class BasePreprocessorArtifact:

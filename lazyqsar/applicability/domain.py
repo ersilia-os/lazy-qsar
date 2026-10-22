@@ -246,6 +246,10 @@ class ApplicabilityDomain(OnnxBoundHead):
         All arithmetic is primitive ONNX ops; no custom extensions needed.
         """
         self._write_onnx(path)
+        # A bound AD was verified on its distances at fit time (see `_bind_comparison`)
+        # and the file holds those exact bytes; only an unbound one is re-checked here.
+        if self._written_is_bound(path):
+            return
         probe = getattr(self, "_onnx_probe_", None)
         if probe is not None:
             expected = self._distances_native(probe)

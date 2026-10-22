@@ -69,6 +69,7 @@ except ImportError:
 from .inspector import inspect as _inspect, DatasetProfile
 from .params import get_params as _get_params
 from .presets import (
+    probst_regression_params,
     xgb_default_params,
     flaml_params,
     autogluon_params,
@@ -82,12 +83,14 @@ from lazyqsar.utils.metrics import spearman_score
 from lazyqsar.utils.splits import (
     make_quantile_oof_splits,
     make_stratified_oof_splits,
-    quantile_bins,
+    quantile_strata,
 )
 
 
 _VAL_FRACTION = 0.1
 _VAL_MIN_ROWS = 200
+# Below this many rows a regression fit has no held-out split for early stopping.
+_REGRESSION_MIN_ES_ROWS = 50
 
 
 _VAL_MIN_MINORITY = 15  # minimum minority-class samples in the validation split
@@ -199,7 +202,11 @@ class _XGBHead(BaseEstimator):
 
         self.timing_ = {}
 
-        if profile.n_samples >= _VAL_MIN_ROWS:
+        if self._task == "regression":
+            final_booster, best_iter = self._fit_regression_preset(
+                X, y, profile, device
+            )
+        elif profile.n_samples >= _VAL_MIN_ROWS:
             if self.portfolio:
                 _t_ps = _time.perf_counter()
                 best_name, best_params, best_iter, scores = _portfolio_select(
@@ -253,14 +260,64 @@ class _XGBHead(BaseEstimator):
         self._bind_onnx()
         return profile
 
+    def _fit_regression_preset(self, X, y, profile, device):
+        """One preset, its round count set by early stopping on a held-out split.
+
+        Regression does not race presets: the benchmark behind
+        :func:`~lazyqsar.base.xgboost.presets.probst_regression_params` found one that
+        is within ~1% of the per-task best on average, and the race cost more fit time
+        than it won back. The held-out split is quantile-stratified on y (10%, or 20%
+        below 200 rows); under 50 rows there is nothing to hold out and a fixed round
+        count is used.
+        """
+        params = probst_regression_params(profile, device=device, nthread=self.nthread)
+        self.preset_name_ = "probst"
+        self.params_ = params
+        n = len(y)
+        t0 = _time.perf_counter()
+        if n >= _REGRESSION_MIN_ES_ROWS:
+            X_tr, X_val, y_tr, y_val = train_test_split(
+                X,
+                y,
+                test_size=_VAL_FRACTION if n >= _VAL_MIN_ROWS else 0.2,
+                random_state=_RANDOM_STATE,
+                # Two rows per stratum at least, or the split cannot place one on each
+                # side; tied targets merge strata rather than crash.
+                stratify=quantile_strata(y, 5, min_count=2),
+            )
+            _, best_iter, score = _train_phase1(
+                X_tr, y_tr, X_val, y_val, params, verbose=False
+            )
+            self.portfolio_scores_ = {"probst": float(score)}
+        else:
+            best_iter = _PHASE2_MIN_ROUNDS
+            self.portfolio_scores_ = {}
+        self.timing_["portfolio_select"] = _time.perf_counter() - t0
+        t0 = _time.perf_counter()
+        booster, best_iter = _train_phase2(
+            X, y, params, best_iter, max_rounds=self.max_rounds
+        )
+        self.timing_["phase2_refit"] = _time.perf_counter() - t0
+        return booster, best_iter
+
     def _oof(self, X, y, fold_splits) -> np.ndarray:
-        """Each fold trains the chosen preset for the full fit's round count."""
+        """Each fold trains the chosen preset for the full fit's round count.
+
+        The folds train concurrently, each with an equal share of the threads: XGBoost
+        on a few thousand rows scales poorly across all cores, and its result does not
+        depend on the thread count, so this changes only the wall time.
+        """
+        k = len(fold_splits)
+        total = int(self.params_.get("nthread", 0) or (os.cpu_count() or 1))
+        fold_params = dict(self.params_)
+        if "nthread" in fold_params:
+            fold_params["nthread"] = max(1, total // k)
 
         def fit_predict(train_idx, val_idx):
             fold_booster, fold_best_iter = _train_phase2(
                 X[train_idx],
                 y[train_idx],
-                self.params_,
+                fold_params,
                 self.best_iteration_,
                 max_rounds=self.max_rounds,
                 label=None,  # suppress banner; fold context logged by the caller
@@ -270,10 +327,9 @@ class _XGBHead(BaseEstimator):
             )
 
         logger.info(
-            f"{len(fold_splits)}-fold OOF  preset={self.preset_name_}  "
-            f"rounds={self.best_iteration_}"
+            f"{k}-fold OOF  preset={self.preset_name_}  rounds={self.best_iteration_}"
         )
-        return self._oof_loop(fold_splits, fit_predict)
+        return self._oof_loop(fold_splits, fit_predict, n_jobs=k if total >= k else 1)
 
     def _raw_native(self, X) -> np.ndarray:
         """Output of the booster itself, over the rounds ``predict`` uses."""
@@ -545,6 +601,16 @@ class _NumpyEncoder(json.JSONEncoder):
         return super().default(obj)
 
 
+def _dmatrix_threads(params: dict) -> int:
+    """Threads for building a DMatrix: the training thread count.
+
+    The default (-1) resolves to OpenMP's maximum, which is 1 under the
+    ``OMP_NUM_THREADS=1`` set on macOS, so the quantile sketch ran single-threaded.
+    The cuts and the trained booster are the same at any thread count.
+    """
+    return int(params.get("nthread", -1) or -1)
+
+
 def _train_phase1(X_train, y_train, X_val, y_val, params: dict, verbose: bool):
     """
     Phase 1: train on X_train/y_train with early stopping against X_val/y_val.
@@ -559,8 +625,13 @@ def _train_phase1(X_train, y_train, X_val, y_val, params: dict, verbose: bool):
 
     xgb_params = {k: v for k, v in params.items() if k not in _META_KEYS}
 
-    dtrain = xgb.QuantileDMatrix(X_train, label=y_train, max_bin=max_bin)
-    dval = xgb.QuantileDMatrix(X_val, label=y_val, ref=dtrain, max_bin=max_bin)
+    nthread = _dmatrix_threads(params)
+    dtrain = xgb.QuantileDMatrix(
+        X_train, label=y_train, max_bin=max_bin, nthread=nthread
+    )
+    dval = xgb.QuantileDMatrix(
+        X_val, label=y_val, ref=dtrain, max_bin=max_bin, nthread=nthread
+    )
 
     booster = xgb.train(
         xgb_params,
@@ -617,7 +688,9 @@ def _train_phase2(
         f"lr={params.get('learning_rate')} | max_bin={max_bin}"
     )
     _t0 = _time.perf_counter()
-    dfull = xgb.QuantileDMatrix(X_full, label=y_full, max_bin=max_bin)
+    dfull = xgb.QuantileDMatrix(
+        X_full, label=y_full, max_bin=max_bin, nthread=_dmatrix_threads(params)
+    )
     booster = xgb.train(
         xgb_params,
         dfull,
@@ -630,15 +703,12 @@ def _train_phase2(
 
 
 def _min_gain_threshold(profile: DatasetProfile, y_train: np.ndarray) -> float:
-    """Noise-adaptive margin a challenger preset must win by (see ``min_gain_threshold``).
+    """AUC margin a challenger preset must win by (see ``min_gain_threshold``).
 
-    The effective size is the minority-class count for classification (AUC noise) and
-    the training size for regression (relative RMSE noise).
+    The classifier's preset race only: the effective size is the minority-class count,
+    which sets the noise of an AUC. (Regression fits a single preset.)
     """
-    if profile.task == "classification":
-        n_eff = int(min(np.sum(y_train == 0), np.sum(y_train == 1)))
-    else:
-        n_eff = len(y_train)
+    n_eff = int(min(np.sum(y_train == 0), np.sum(y_train == 1)))
     return min_gain_threshold(n_eff, len(y_train))
 
 
@@ -684,8 +754,10 @@ def _eval_preset_rep(X_tr, y_tr, X_val, y_val, params: dict, nthread: int) -> in
     p["nthread"] = nthread
     max_bin = p.get("max_bin", 256)
     xgb_params = {k: v for k, v in p.items() if k not in _META_KEYS}
-    dtrain = xgb.QuantileDMatrix(X_tr, label=y_tr, max_bin=max_bin)
-    dval = xgb.QuantileDMatrix(X_val, label=y_val, ref=dtrain, max_bin=max_bin)
+    dtrain = xgb.QuantileDMatrix(X_tr, label=y_tr, max_bin=max_bin, nthread=nthread)
+    dval = xgb.QuantileDMatrix(
+        X_val, label=y_val, ref=dtrain, max_bin=max_bin, nthread=nthread
+    )
     booster = xgb.train(
         xgb_params,
         dtrain,
@@ -714,8 +786,10 @@ def _eval_preset_fast(X_tr, y_tr, X_val, y_val, params: dict, nthread: int) -> t
     p["nthread"] = nthread  # reduce threads so N parallel jobs ≈ 1 full core set
     max_bin = p.get("max_bin", 256)
     xgb_params = {k: v for k, v in p.items() if k not in _META_KEYS}
-    dtrain = xgb.QuantileDMatrix(X_tr, label=y_tr, max_bin=max_bin)
-    dval = xgb.QuantileDMatrix(X_val, label=y_val, ref=dtrain, max_bin=max_bin)
+    dtrain = xgb.QuantileDMatrix(X_tr, label=y_tr, max_bin=max_bin, nthread=nthread)
+    dval = xgb.QuantileDMatrix(
+        X_val, label=y_val, ref=dtrain, max_bin=max_bin, nthread=nthread
+    )
     booster = xgb.train(
         xgb_params,
         dtrain,
@@ -961,10 +1035,6 @@ def _portfolio_select(
     elif best_name != "default":
         threshold = _min_gain_threshold(profile, y)
         gain = best_score - default_score
-        if profile.task == "regression":
-            # RMSE carries the target's scale; compare relative improvement so the
-            # margin means the same for a z-scored target and for raw units.
-            gain = gain / max(abs(default_score), 1e-12)
         if gain < threshold:
             best_name = "default"
             best_score = default_score
@@ -1192,14 +1262,7 @@ def _validation_split(
             needed = _VAL_MIN_MINORITY / minority_count
             val_fraction = max(_VAL_FRACTION, min(0.25, needed))
 
-    if stratify:
-        strat = y
-    elif profile.task == "regression":
-        # Quantile bins of y, so the early-stopping fold spans the target's whole
-        # range instead of whatever a random 10% happens to cover.
-        strat = quantile_bins(np.asarray(y, dtype=float), 5)
-    else:
-        strat = None
+    strat = y if stratify else None
     X_train, X_val, y_train, y_val = train_test_split(
         X,
         y,

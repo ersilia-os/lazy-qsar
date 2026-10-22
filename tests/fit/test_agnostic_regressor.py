@@ -145,3 +145,21 @@ def test_multi_batch_fit_round_trips(tmp_path):
     np.testing.assert_allclose(
         loaded.predict(X), model.predict(X=X), rtol=0, atol=1e-4 * y.std()
     )
+
+
+def test_feature_level_intervals_cover_and_survive_the_export(tmp_path):
+    """Conformal intervals on the pooled OOF residuals: about `level` coverage on fresh
+    rows, identical after reload, wider at a higher level."""
+    X, y = _data(n=900, seed=3)
+    tr, te = np.arange(600), np.arange(600, 900)
+    model = LazyRegressor()
+    _quiet(model.fit, X=X[tr], y=y[tr])
+    lo, hi = model.predict_interval(X=X[te], level=0.9)
+    coverage = float(np.mean((y[te] >= lo) & (y[te] <= hi)))
+    assert 0.8 <= coverage <= 0.98, coverage
+    loaded = _quiet(LazyRegressor.load, _quiet(model.save, str(tmp_path / "m")))
+    la, ha = loaded.predict_interval(X[te], level=0.9)
+    scale = 1e-6 * float(np.std(y))
+    np.testing.assert_allclose(np.c_[la, ha], np.c_[lo, hi], rtol=0, atol=scale)
+    lo5, hi5 = model.predict_interval(X=X[te], level=0.5)
+    assert np.all(hi - lo >= hi5 - lo5)

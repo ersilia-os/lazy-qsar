@@ -90,7 +90,7 @@ def test_the_scan_finds_the_known_bindings():
         for n in _module_level_chem_bindings(p)
     }
     assert ("lazyqsar.qsar", "validate_smiles") in found
-    assert ("lazyqsar.api.classifier_fit", "validate_smiles") in found
+    assert ("lazyqsar.api.fit", "validate_smiles") in found
 
 
 def test_stub_list_has_no_stale_entries():

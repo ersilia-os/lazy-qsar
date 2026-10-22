@@ -400,3 +400,35 @@ def _scramble_global_rng(request):
     differing per test, which is the property actually wanted.
     """
     np.random.seed(zlib.crc32(request.node.nodeid.encode()))
+
+
+@pytest.fixture(scope="module")
+def regression_checkpoint(tmp_path_factory):
+    """Two regression tasks fitted in slow mode over stubbed descriptors.
+
+    Module-scoped: nothing writes to it. The stub registry stays open across the yield
+    because the tests featurize through it.
+    """
+    import contextlib
+    import io
+    import os
+
+    from _helpers.smiles import make_smiles
+
+    from lazyqsar.qsar import LazyQSAR
+    from lazyqsar.registry import get_descriptor_type
+
+    root = str(tmp_path_factory.mktemp("regression") / "models")
+    with stubbed_registry() as register:
+        register("cddd", "chemeleon", "clamp", "morgan", "rdkit")
+        smiles = make_smiles(90)
+        F = get_descriptor_type("morgan")().transform(smiles)
+        models = {}
+        for i, task in enumerate(("alpha", "beta")):
+            y = 5.0 + 2.0 * F[:, i] - F[:, i + 1] + 0.1 * np.sin(np.arange(len(F)))
+            model = LazyQSAR(task="regression", mode="slow")
+            with contextlib.redirect_stdout(io.StringIO()):
+                model.fit(smiles, y)
+                model.save_raw(os.path.join(root, task))
+            models[task] = model
+        yield {"root": root, "smiles": smiles, "models": models}

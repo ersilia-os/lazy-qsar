@@ -78,7 +78,10 @@ def test_regression_outputs_are_validated_per_task():
 
 def test_default_outputs_follow_the_task():
     res = combine(_values(), spec=_spec())
-    assert set(res.values) == set(REGRESSION_OUTPUT_NAMES)
+    # Without an interval model the regression default is `value` alone; `lower` and
+    # `upper` join it when the spec carries one.
+    assert set(res.values) == {"value"}
+    assert {"value", "lower", "upper"} == set(REGRESSION_OUTPUT_NAMES)
     # A classification spec without a reference refuses `rank`, so asking for every
     # output by default must fail on exactly that -- proving the default is the full
     # classification set, not the regression one.
@@ -202,3 +205,36 @@ def test_diagnostics_use_rho_keys():
     row = res.diagnostics[0]
     assert "oof_rho" in row and "oof_auc" not in row
     assert np.isnan(res.diagnostics[1]["oof_rho"])
+
+
+# --- descriptor stacking weights -------------------------------------------------------
+
+
+def test_stacking_weights_are_read_for_the_active_descriptors_and_renormalised():
+    meta = {"task": "regression", "descriptor_weights": {"a": 0.6, "b": 0.0, "c": 0.4}}
+    spec, _ = EnsembleSpec.from_metadata(meta, ["a", "c"])
+    assert spec.descriptor_weights == pytest.approx((0.6, 0.4))
+    spec, _ = EnsembleSpec.from_metadata(meta, ["b"])
+    assert spec.descriptor_weights is None  # no weight left: skill weighting
+    spec, _ = EnsembleSpec.from_metadata({"task": "regression"}, ["a", "b"])
+    assert spec.descriptor_weights is None  # a checkpoint from before stacking
+
+
+def test_stacking_weights_replace_skill_and_keep_the_ad_veto():
+    Y = _values(4, 3)
+    A = np.array([[1.0, 1.0, 1.0], [0.0, 1.0, 1.0], [0.0, 0.0, 0.0], [1.0, 1.0, 0.0]])
+    spec = _spec(
+        oof_aucs=(0.9, 0.1, 0.1),
+        ad_hard_cutoffs=(0.5, 0.5, 0.5),
+        descriptor_weights=(0.5, 0.3, 0.2),
+    )
+    W, base = build_weight_matrix(Y, None, A, spec)
+    np.testing.assert_allclose(base, [0.5, 0.3, 0.2])
+    np.testing.assert_allclose(W[0], [0.5, 0.3, 0.2])
+    np.testing.assert_allclose(W[1], [0.0, 0.6, 0.4])  # a vetoed, the rest renormalised
+    np.testing.assert_allclose(
+        W[2], [0.5, 0.3, 0.2]
+    )  # all vetoed: the stacking weights
+    np.testing.assert_allclose(W[3], [0.625, 0.375, 0.0])
+    value = combine(Y, None, None, A, spec=spec, outputs=("value",)).values["value"]
+    np.testing.assert_allclose(value, (W * Y).sum(axis=1))

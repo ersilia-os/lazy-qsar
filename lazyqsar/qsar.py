@@ -25,6 +25,7 @@ from .registry import (  # noqa: F401  (re-exported for backwards compatibility)
 )
 from .ensemble.combine import (
     DECISION_CUTOFF_SOURCE,
+    classification_skill,
     read_decision_cutoff,
     read_pooled_rank_knots,
     read_pooled_score_knots,
@@ -42,6 +43,7 @@ from .qsar_base import (  # noqa: F401  (re-exported: callers have always looked
     _smiles_md5,
     _stack_channels,
     _unpacked,
+    as_smiles_list,
     invalid_smiles_indices,
     validate_smiles,
 )
@@ -122,6 +124,19 @@ def _optional(fn, X):
             f"{type(exc).__name__}: {exc}"
         )
         return None
+
+
+def _rank_from_proba(model, p1, X):
+    """A descriptor model's out-of-fold percentile for probabilities *p1* it produced on X.
+
+    A lookup when the model keeps its out-of-fold reference -- bit-identical to
+    ``model._oof_percentile(X)``, without predicting X again -- else that call.
+    """
+    fast = getattr(model, "_oof_percentile_from_proba", None)
+    rank = fast(p1) if fast is not None else None
+    if rank is not None:
+        return np.asarray(rank, dtype=np.float64)
+    return _optional(model._oof_percentile, X)
 
 
 class _ClassifierPredictMixin(_EnsemblePredictMixin):
@@ -360,9 +375,7 @@ class ArtifactWrapper(_ClassifierPredictMixin, _ArtifactWrapperBase):
     def oof_aucs(self):
         """Per-descriptor skill the ensemble weights by (quality AUC), all descriptors."""
         meta = self.metadata
-        quality = meta.get("quality_aucs") or {}
-        oof = meta.get("oof_aucs") or {}
-        return [quality.get(d, oof.get(d, 1.0)) for d in self.descriptor_types]
+        return [classification_skill(meta, d) for d in self.descriptor_types]
 
     @property
     def population_prior(self):
@@ -442,7 +455,7 @@ class LazyClassifierQSAR(_ClassifierPredictMixin, _QSARBase):
         """
         try:
             _p = model.predict_proba(X=X)[:, 1]
-            _r = model._oof_percentile(X=X)[:, 1]
+            _r = _rank_from_proba(model, _p, X)
             _err = np.abs(_p - y.astype(float))
             _sidx = np.argsort(_r)
             _rs, _es = _r[_sidx], _err[_sidx]
@@ -483,6 +496,7 @@ class LazyClassifierQSAR(_ClassifierPredictMixin, _QSARBase):
             Parse-check the SMILES. Callers that have already validated a superset can
             skip the repeat work.
         """
+        smiles_list = as_smiles_list(smiles_list)
         # Clear any cached state from a previous fit.
         self._feature_cache.clear()
         self._ensemble_cache.clear()
@@ -941,12 +955,15 @@ class LazyClassifierQSAR(_ClassifierPredictMixin, _QSARBase):
             )
         y_hats, score_preds, rank_preds, ad_scores = [], [], [], []
         for i, X in zip(active_indices, matrices):
-            y_hats.append(self.models[i].predict_proba(X=X)[:, 1])
+            p1 = self.models[i].predict_proba(X=X)[:, 1]
+            y_hats.append(p1)
             if want_score:
                 score_preds.append(_optional(self.models[i].predict_score, X))
             if self.ad_models:
                 ad_scores.append(self.ad_models[i].score(X))
-            rank_preds.append(_optional(self.models[i]._oof_percentile, X))
+            # The rank is a lookup of the probability just computed; asking the model
+            # for it would run every head a second time for the identical number.
+            rank_preds.append(_rank_from_proba(self.models[i], p1, X))
         return _stack_channels(y_hats, rank_preds, score_preds, ad_scores)
 
     def _channels(self, smiles_list):
@@ -1171,6 +1188,13 @@ class LazyClassifierQSAR(_ClassifierPredictMixin, _QSARBase):
             _meta = read_json(meta_path)
             mode = _meta.get("mode")
             active_map = _meta.get("active_descriptors") or {}
+            # A directory this fit did not write (a leftover in a reused output path)
+            # is not part of the model.
+            listed = _meta.get("descriptor_types")
+            if listed:
+                descriptor_types = [
+                    d for d in descriptor_types if d in listed
+                ] or descriptor_types
         if mode is None:
             for k, v in DESCRIPTORS_MODE.items():
                 if set(v) == set(descriptor_types):
@@ -1199,10 +1223,8 @@ class LazyClassifierQSAR(_ClassifierPredictMixin, _QSARBase):
         obj.ad_models = ad_models if any(a is not None for a in ad_models) else []
         if os.path.isfile(meta_path):
             meta = read_json(meta_path)
-            oof_map = meta.get("oof_aucs", {})
             proxy_map = meta.get("proxy_aucs", {})
             train_map = meta.get("train_aucs", {})
-            quality_map = meta.get("quality_aucs", {})
             active_map = meta.get("active_descriptors", {})
             cutoff_map = meta.get("ad_hard_cutoffs", {})
             curve_map = meta.get("rank_error_curves", {})
@@ -1210,13 +1232,11 @@ class LazyClassifierQSAR(_ClassifierPredictMixin, _QSARBase):
             # Weighting uses quality (= 2*oof - train), which penalises descriptors
             # that overfit. load_onnx has always done this; load_raw used plain oof,
             # so the same checkpoint scored differently depending on which loader ran.
-            obj.oof_aucs_ = [
-                quality_map.get(d, oof_map.get(d, 1.0)) for d in descriptor_types
-            ]
+            obj.oof_aucs_ = [classification_skill(meta, d) for d in descriptor_types]
             obj.proxy_aucs_ = [proxy_map.get(d) for d in descriptor_types]
             obj.train_aucs_ = [train_map.get(d, 0.0) for d in descriptor_types]
             obj.quality_aucs_ = [
-                quality_map.get(d, oof_map.get(d, 1.0)) for d in descriptor_types
+                classification_skill(meta, d) for d in descriptor_types
             ]
             obj.active_descriptors_ = [
                 active_map.get(d, True) for d in descriptor_types

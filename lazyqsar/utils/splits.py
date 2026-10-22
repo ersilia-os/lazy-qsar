@@ -95,9 +95,17 @@ def check_trainable_regression(y, where="fit"):
         )
 
 
+# Above this many rows regression OOF uses 3 folds instead of 5: every head refits once
+# per fold, so the folds are most of a large fit's cost, and with thousands of rows three
+# folds already give the stacker and the interval model plenty of held-out predictions.
+_REGRESSION_FEW_FOLDS_N = 2_000
+
+
 def auto_regression_oof_n_splits(y: np.ndarray) -> int:
     """Auto-select k-fold count for regression from sample size (between 3 and 5)."""
     n = len(np.asarray(y))
+    if n > _REGRESSION_FEW_FOLDS_N:
+        return 3
     return max(2, min(5, max(3, n // 50), n // 2))
 
 
@@ -108,6 +116,22 @@ def quantile_bins(y: np.ndarray, n_bins: int) -> np.ndarray:
         return np.zeros(y_arr.size, dtype=int)
     edges = np.quantile(y_arr, np.linspace(0, 1, n_bins + 1)[1:-1])
     return np.searchsorted(edges, y_arr, side="right").astype(int)
+
+
+def quantile_strata(y: np.ndarray, n_bins: int, min_count: int) -> np.ndarray:
+    """Quantile bins of *y* with every bin holding at least *min_count* rows.
+
+    Tied targets (a censored value repeated many times, say) leave some quantile bins
+    nearly empty; bins are merged, from fewer bins down to one, until none is too small
+    to stratify on.
+    """
+    y_arr = np.asarray(y, dtype=float).ravel()
+    bins = quantile_bins(y_arr, n_bins)
+    while n_bins > 1 and np.bincount(bins).min() < min_count:
+        n_bins -= 1
+        bins = quantile_bins(y_arr, n_bins)
+    # quantile_bins can leave an empty label in the middle; relabel densely.
+    return np.unique(bins, return_inverse=True)[1]
 
 
 def make_quantile_oof_splits(

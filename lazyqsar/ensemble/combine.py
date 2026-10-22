@@ -53,7 +53,7 @@ from ..utils.ranking import (
 )
 
 OUTPUT_NAMES = ("proba", "logit", "rank", "score", "lift", "binary")
-REGRESSION_OUTPUT_NAMES = ("value",)
+REGRESSION_OUTPUT_NAMES = ("value", "lower", "upper")
 OUTPUT_NAMES_BY_TASK = {
     "classification": OUTPUT_NAMES,
     "regression": REGRESSION_OUTPUT_NAMES,
@@ -229,7 +229,17 @@ class EnsembleSpec:
         is written after the active set is settled and describes exactly that set.
     task : str
         ``"classification"`` (default) or ``"regression"``. Regression specs use only
-        the descriptor names, skill estimates, rank-error curves and AD cutoffs.
+        the descriptor names, skill estimates, rank-error curves, AD cutoffs and
+        ``intervals``.
+    intervals : dict, or None
+        Regression only: the conformal interval model of
+        :mod:`lazyqsar.ensemble.intervals`, behind the ``lower``/``upper`` outputs.
+        ``None`` on checkpoints fitted before intervals existed.
+    descriptor_weights : tuple of float, or None
+        Regression only: fixed stacking weights per active descriptor, fitted by
+        non-negative least squares on the descriptors' out-of-fold predictions. When
+        present they replace the skill/reliability weighting; the applicability-domain
+        veto still applies per sample.
     """
 
     descriptor_names: tuple[str, ...] = ()
@@ -243,6 +253,8 @@ class EnsembleSpec:
     pooled_rank_anchors: tuple | None = None
     pooled_score_knots: tuple[np.ndarray, np.ndarray] | None = None
     task: str = "classification"
+    intervals: dict | None = None
+    descriptor_weights: tuple[float, ...] | None = None
 
     @classmethod
     def from_metadata(
@@ -275,16 +287,12 @@ class EnsembleSpec:
         metadata = metadata or {}
         if read_task(metadata) == "regression":
             return cls._regression_from_metadata(metadata, descriptor_names)
-        quality_map = metadata.get("quality_aucs", {}) or {}
-        oof_map = metadata.get("oof_aucs", {}) or {}
         proxy_map = metadata.get("proxy_aucs", {}) or {}
         active_map = metadata.get("active_descriptors", {}) or {}
         cutoff_map = metadata.get("ad_hard_cutoffs", {}) or {}
         curve_map = metadata.get("rank_error_curves", {}) or {}
 
-        active_names = [d for d in descriptor_names if active_map.get(d, True)]
-        if not active_names:
-            active_names = list(descriptor_names)
+        active_names = _active_names(metadata, descriptor_names, active_map)
 
         curves = None
         if curve_map:
@@ -323,9 +331,7 @@ class EnsembleSpec:
         return (
             cls(
                 descriptor_names=tuple(active_names),
-                oof_aucs=tuple(
-                    quality_map.get(d, oof_map.get(d, 1.0)) for d in active_names
-                ),
+                oof_aucs=tuple(classification_skill(metadata, d) for d in active_names),
                 proxy_aucs=tuple(proxy_map.get(d) for d in active_names),
                 rank_error_curves=curves,
                 ad_hard_cutoffs=(
@@ -360,9 +366,7 @@ class EnsembleSpec:
         cutoff_map = metadata.get("ad_hard_cutoffs", {}) or {}
         curve_map = metadata.get("rank_error_curves", {}) or {}
 
-        active_names = [d for d in descriptor_names if active_map.get(d, True)]
-        if not active_names:
-            active_names = list(descriptor_names)
+        active_names = _active_names(metadata, descriptor_names, active_map)
 
         curves = None
         if curve_map:
@@ -387,9 +391,58 @@ class EnsembleSpec:
                     else None
                 ),
                 task="regression",
+                intervals=metadata.get("intervals"),
+                descriptor_weights=_descriptor_weights(metadata, active_names),
             ),
             active_names,
         )
+
+
+def _descriptor_weights(metadata: dict, active_names):
+    """The stored stacking weights of *active_names*, renormalised, or ``None``."""
+    stored = metadata.get("descriptor_weights") or {}
+    if not stored:
+        return None
+    w = np.array([float(stored.get(d, 0.0)) for d in active_names])
+    if w.sum() <= 0:
+        return None
+    return tuple((w / w.sum()).tolist())
+
+
+def classification_skill(metadata: dict, descriptor: str):
+    """The skill a classification checkpoint weights *descriptor* by: quality, else OOF AUC.
+
+    A descriptor whose AUCs could not be computed is saved without them. A checkpoint that
+    lists its descriptors (``descriptor_types``) records that as unknown, ``None`` -- which
+    is what the fitted model used, so loading must not invent a number. Older checkpoints
+    without the list keep the historical default of 1.0.
+    """
+    quality = (metadata.get("quality_aucs") or {}).get(descriptor)
+    if quality is not None:
+        return quality
+    oof = (metadata.get("oof_aucs") or {}).get(descriptor)
+    if oof is not None:
+        return oof
+    return None if metadata.get("descriptor_types") else 1.0
+
+
+def _active_names(metadata, descriptor_names, active_map):
+    """The descriptors to score: on disk, written by this fit, and marked active.
+
+    A descriptor directory the metadata does not list is a leftover -- a checkpoint
+    re-saved into a directory that held a different fit -- and is never scored: it would
+    otherwise join the ensemble with default skill. Checkpoints that predate the
+    ``descriptor_types`` key keep every directory. If the mask rejects everything, every
+    listed descriptor is scored rather than none.
+    """
+    listed = metadata.get("descriptor_types")
+    candidates = (
+        [d for d in descriptor_names if d in listed]
+        if listed
+        else list(descriptor_names)
+    )
+    active = [d for d in candidates if active_map.get(d, True)]
+    return active or candidates or list(descriptor_names)
 
 
 @dataclass
@@ -417,6 +470,7 @@ class CombineResult:
     base: np.ndarray | None = None
     oof_percentiles: np.ndarray | None = None
     diagnostics: list[dict] | None = None
+    ad_summary: np.ndarray | None = None
 
 
 def _skill_scores(spec: EnsembleSpec, D: int, task: str) -> np.ndarray:
@@ -477,6 +531,20 @@ def build_weight_matrix(Y, R, A, spec: EnsembleSpec):
     """
     B, D = Y.shape
     task = getattr(spec, "task", "classification")
+    stacked = getattr(spec, "descriptor_weights", None)
+    if stacked is not None:
+        # Fixed stacking weights; the AD veto below still applies per sample.
+        base = np.asarray(stacked, dtype=np.float64)
+        if A is None:
+            return np.tile(base, (B, 1)), base
+        W = np.tile(base, (B, 1))
+        if spec.ad_hard_cutoffs is not None:
+            for j, cutoff in enumerate(spec.ad_hard_cutoffs):
+                W[A[:, j] < cutoff, j] = 0.0
+        all_ood = W.sum(axis=1) == 0
+        if all_ood.any():
+            W[all_ood] = base
+        return W / W.sum(axis=1, keepdims=True), base
     base = _skill_scores(spec, D, task)
     if A is None:
         return np.full((B, D), 1.0 / D, dtype=np.float64), base
@@ -586,7 +654,7 @@ def _diagnostics(Y, A, W, spec, skill_name):
     ]
 
 
-def combine(Y, R=None, S=None, A=None, *, spec, outputs=None, cutoff=None):
+def combine(Y, R=None, S=None, A=None, *, spec, outputs=None, cutoff=None, level=None):
     """Combine per-descriptor predictions into a model's outputs.
 
     Parameters
@@ -608,6 +676,9 @@ def combine(Y, R=None, S=None, A=None, *, spec, outputs=None, cutoff=None):
         :data:`REGRESSION_OUTPUT_NAMES` for regression. Defaults to all of the task's.
     cutoff : float, optional
         Probability threshold for ``binary``. Defaults to ``spec.decision_cutoff``.
+    level : float, optional
+        Regression: coverage of the ``lower``/``upper`` interval, in (0, 1). Defaults to
+        :data:`lazyqsar.ensemble.intervals.DEFAULT_LEVEL` (0.9).
 
     Returns
     -------
@@ -629,6 +700,9 @@ def combine(Y, R=None, S=None, A=None, *, spec, outputs=None, cutoff=None):
     allowed = OUTPUT_NAMES_BY_TASK[task]
     if outputs is None:
         outputs = allowed
+        if task == "regression" and not getattr(spec, "intervals", None):
+            # Interval bounds by default only where the checkpoint can make them.
+            outputs = ("value",)
     unknown = set(outputs) - set(allowed)
     if unknown:
         raise ValueError(
@@ -636,7 +710,7 @@ def combine(Y, R=None, S=None, A=None, *, spec, outputs=None, cutoff=None):
             f"choose from {list(allowed)}"
         )
     if task == "regression":
-        return _combine_regression(Y, R, A, spec=spec, outputs=outputs)
+        return _combine_regression(Y, R, A, spec=spec, outputs=outputs, level=level)
 
     Y = _as_2d(Y, "Y")
     R = _as_2d(R, "R")
@@ -731,7 +805,7 @@ def combine(Y, R=None, S=None, A=None, *, spec, outputs=None, cutoff=None):
     )
 
 
-def _combine_regression(Y, R, A, *, spec, outputs):
+def _combine_regression(Y, R, A, *, spec, outputs, level=None):
     """Regression branch of :func:`combine`: weighted mean of per-descriptor values.
 
     ``Y`` holds predicted values in target units. ``value`` is ``(n_samples,)``. Row
@@ -744,13 +818,32 @@ def _combine_regression(Y, R, A, *, spec, outputs):
     W, base = build_weight_matrix(Y, R, A, spec)
     diagnostics = _diagnostics(Y, A, W, spec, "rho")
 
+    from .intervals import DEFAULT_LEVEL, ad_summary, interval_half_width
+
     values: dict[str, np.ndarray] = {}
+    value = (W * Y).sum(axis=1)
     if "value" in outputs:
-        values["value"] = (W * Y).sum(axis=1)
+        values["value"] = value
+    summary = ad_summary(A)
+    if {"lower", "upper"} & set(outputs):
+        if not spec.intervals:
+            raise ValueError(
+                "This checkpoint carries no prediction-interval model (fitted before "
+                "intervals existed); refit it to get `lower` and `upper`."
+            )
+        half = interval_half_width(
+            spec.intervals,
+            len(value),
+            summary,
+            DEFAULT_LEVEL if level is None else level,
+        )
+        values["lower"] = value - half
+        values["upper"] = value + half
     return CombineResult(
         values=values,
         weights=W,
         base=base,
         oof_percentiles=R,
         diagnostics=diagnostics,
+        ad_summary=summary,
     )

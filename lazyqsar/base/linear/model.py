@@ -88,13 +88,22 @@ def _linear_pipeline_onnx(model, last_step: str) -> bytes:
     from skl2onnx.common.data_types import FloatTensorType
     from sklearn.pipeline import Pipeline
 
+    from lazyqsar.base.preprocessing.reducer import (
+        _register_correlation_filter_onnx_converter,
+    )
+
+    # The Gather converter for VarianceThreshold (skl2onnx's own breaks on one column).
+    _register_correlation_filter_onnx_converter()
     steps = [("vt", model._vt)]
     if model._sfm is not None:
         steps.append(("sfm", model._sfm))
     steps.append((last_step, model._estimator))
     initial_types = [("float_input", FloatTensorType([None, model.n_features_in_]))]
+    est = model._estimator
+    # Probabilities as a plain tensor rather than ZipMap's per-row dicts (same values).
+    options = {id(est): {"zipmap": False}} if hasattr(est, "classes_") else None
     return convert_sklearn(
-        Pipeline(steps), initial_types=initial_types
+        Pipeline(steps), initial_types=initial_types, options=options
     ).SerializeToString()
 
 
@@ -275,7 +284,10 @@ class _LinearHead(BaseEstimator):
             X_val_vt = vt.transform(X[val_idx])
             return self._fit_predict_fold(X_tr_vt, y[train_idx], X_val_vt)
 
-        return self._oof_loop(fold_splits, fit_predict)
+        # Independent single-threaded solver runs (saga, coordinate descent, ridge),
+        # so the folds run concurrently; each fit is unchanged.
+        jobs = max(1, min(len(fold_splits), os.cpu_count() or 1))
+        return self._oof_loop(fold_splits, fit_predict, n_jobs=jobs)
 
     def get_feature_names_out(self) -> np.ndarray:
         check_is_fitted(self, attributes=["feature_mask_"])

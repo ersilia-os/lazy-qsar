@@ -39,7 +39,9 @@ CONFIG_URL = (
     "https://raw.githubusercontent.com/molML/MoleculeACE/main/MoleculeACE/Data/"
     "configures/benchmark/{dataset}/{method}.yml"
 )
-USER_AGENT = "lazyqsar-regression-benchmark/1.0 (+https://github.com/ersilia-os/lazy-qsar)"
+USER_AGENT = (
+    "lazyqsar-regression-benchmark/1.0 (+https://github.com/ersilia-os/lazy-qsar)"
+)
 REFERENCE_METHODS = ("SVM_ECFP", "RF_ECFP", "GBM_ECFP")
 
 

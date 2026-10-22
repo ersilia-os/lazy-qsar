@@ -123,3 +123,21 @@ def test_quantile_splits_partition_and_span_the_range():
 def test_check_trainable_regression_rejects(y, message):
     with pytest.raises(ValueError, match=message):
         check_trainable_regression(y)
+
+
+def test_oversized_svr_goes_straight_to_the_linear_model(monkeypatch):
+    """C does not shrink an SVR's support set, so the guard refits no kernel models."""
+    monkeypatch.setattr(BaseSVR, "_onnx_max_bytes", 1)
+    made = []
+    original = BaseSVR._make
+    monkeypatch.setattr(
+        BaseSVR, "_make", staticmethod(lambda p: made.append(dict(p)) or original(p))
+    )
+    rng = np.random.default_rng(0)
+    X = rng.normal(size=(200, 10))
+    y = X[:, 0] + 0.1 * rng.normal(size=200)
+    with contextlib.redirect_stdout(io.StringIO()):
+        model = BaseSVR(oof=False).fit(X, y)
+    assert model.preset_name_.endswith("+linear_guard")
+    assert [p.get("use_linear", False) for p in made] == [False, True]
+    assert model.params_["C"] == 1.25

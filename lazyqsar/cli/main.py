@@ -36,10 +36,11 @@ lazyqsar fit --task {classification,regression} --input DATA_DIR --output MODEL_
     (classification) or a numeric target (regression). One task type per run.
 
 lazyqsar predict --input INPUT_CSV --model MODEL_DIR --output OUTPUT_CSV [--models_txt FILE]
-                 [--predict_type TYPE]
+                 [--predict_type TYPE] [--interval_level LEVEL]
     Run predictions with a saved model. The task is read from the checkpoint.
-    --predict_type  Classification: proba, rank, logit, lift, score, binary (default:
-                    proba). Regression: value (the default).
+    --predict_type    Classification: proba, rank, logit, lift, score, binary (default:
+                      proba). Regression: value (the default), lower, upper.
+    --interval_level  Coverage of the regression lower/upper interval (default: 0.9).
 """
 
 import argparse
@@ -221,7 +222,7 @@ def _cmd_fit(args):
     if task not in ("classification", "regression"):
         print(f"Unknown task {args.task!r}.", file=sys.stderr)
         sys.exit(1)
-    from ..api.classifier_fit import fit
+    from ..api.fit import fit
 
     fit(
         data_dir=args.input,
@@ -238,7 +239,7 @@ def _cmd_fit(args):
 
 
 def _cmd_predict(args):
-    from ..api.classifier_predict import predict
+    from ..api.predict import predict
 
     try:
         predict(
@@ -247,12 +248,16 @@ def _cmd_predict(args):
             output_csv=args.output,
             models_txt=args.models_txt,
             predict_type=args.predict_type,
+            interval_level=args.interval_level,
         )
     except ValueError as exc:
         # A wrong predict_type for the checkpoint's task, or a mixed-task model directory:
         # both are the user's to fix, so a message rather than a traceback.
-        if "predict_type" in str(exc) or "mix classification and regression" in str(
-            exc
+        if (
+            "predict_type" in str(exc)
+            or "mix classification and regression" in str(exc)
+            or "Interval level" in str(exc)
+            or "prediction-interval" in str(exc)
         ):
             print(f"Error: {exc}", file=sys.stderr)
             sys.exit(1)
@@ -496,11 +501,28 @@ def main():
         type=str,
         default=None,
         metavar="TYPE",
-        choices=["proba", "rank", "logit", "lift", "score", "binary", "value"],
+        choices=[
+            "proba",
+            "rank",
+            "logit",
+            "lift",
+            "score",
+            "binary",
+            "value",
+            "lower",
+            "upper",
+        ],
         help=(
             "Type of prediction output. Classification: proba (default), rank, logit, "
-            "lift, score, binary. Regression: value (default)."
+            "lift, score, binary. Regression: value (default), lower, upper."
         ),
+    )
+    p_predict.add_argument(
+        "--interval_level",
+        type=float,
+        default=None,
+        metavar="LEVEL",
+        help="Coverage of the regression lower/upper interval, in (0, 1) (default 0.9).",
     )
 
     args = parser.parse_args()

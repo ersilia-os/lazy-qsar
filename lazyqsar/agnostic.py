@@ -388,6 +388,25 @@ class LazyClassifier(_AgnosticBase):
         X = _resolve_X(X, h5_file, h5_idxs)
         return self._model.predict_score(X)
 
+    def _oof_percentile_from_proba(self, p1):
+        """Out-of-fold percentile of probabilities already computed, or ``None``.
+
+        The same lookup :meth:`_oof_percentile` performs after re-running every
+        preprocessor, head and gate to get the probability back; callers that already
+        hold it skip that second pass. ``None`` when the model kept no out-of-fold
+        reference (the fallback then averages the batches' own percentiles).
+        """
+        from .utils.ranking import prepare_knots, rank_from_knots
+
+        model = self._model
+        prepared = getattr(model, "_oof_percentile_prepared_", None)
+        if prepared is None:
+            knots = getattr(model, "oof_percentile_knots_", None)
+            if knots is None or not len(knots):
+                return None
+            prepared = model._oof_percentile_prepared_ = prepare_knots(knots)
+        return rank_from_knots(np.asarray(p1, dtype=np.float64), prepared=prepared)
+
     def predict_rank(self, X=None, h5_file=None, h5_idxs=None) -> np.ndarray:
         """Position against the reference library given at fit, shape (n, 2).
 
@@ -459,11 +478,27 @@ class LazyRegressor(_AgnosticBase):
     def train_rho_(self):
         return self._model.train_rho_
 
+    @property
+    def oof_metrics_(self):
+        """Spearman, R², RMSE and MAE of the pooled out-of-fold predictions."""
+        return self._model.oof_metrics_
+
     def predict(self, X=None, h5_file=None, h5_idxs=None) -> np.ndarray:
         """Return predicted values, shape (n,)."""
         X = _resolve_X(X, h5_file, h5_idxs)
         logger.debug(f"predict: X={X.shape}")
         return self._model.predict(X)
+
+    def predict_interval(
+        self, X=None, h5_file=None, h5_idxs=None, level: float = 0.9
+    ) -> tuple:
+        """Prediction interval ``(lower, upper)`` at coverage *level*, each ``(n,)``.
+
+        Split-conformal on the ensemble's pooled out-of-fold residuals (see
+        :mod:`lazyqsar.ensemble.intervals`); about a fraction *level* of molecules like
+        the training set fall inside it.
+        """
+        return self._model.predict_interval(_resolve_X(X, h5_file, h5_idxs), level)
 
     def _oof_percentile_from_value(self, values):
         return self._model._oof_percentile_from_value(values)

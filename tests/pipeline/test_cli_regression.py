@@ -150,3 +150,50 @@ def test_non_numeric_target_is_reported_with_its_line(tmp_path):
     (tmp_path / "t.csv").write_text("smiles,value\nCCO,1.5\nCCC,high\n")
     with pytest.raises(ValueError, match="line 3: expected a numeric target"):
         get_task_data(str(tmp_path), "t", task="regression")
+
+
+def test_interval_bounds_through_the_cli(fitted, monkeypatch):
+    """`--predict_type lower/upper` brackets `value`; a wider level gives wider bounds."""
+
+    def run(predict_type, level=None):
+        out = fitted["tmp"] / f"{predict_type}_{level}.csv"
+        argv = [
+            "predict",
+            "--input",
+            str(fitted["query"]),
+            "--model",
+            str(fitted["models"]),
+            "--output",
+            str(out),
+            "--predict_type",
+            predict_type,
+        ]
+        if level is not None:
+            argv += ["--interval_level", str(level)]
+        _run(monkeypatch, *argv)
+        return pd.read_csv(out)["solubility"].to_numpy()
+
+    value, lower, upper = run("value"), run("lower"), run("upper")
+    assert np.all(lower <= value) and np.all(value <= upper)
+    lower99, upper99 = run("lower", 0.99), run("upper", 0.99)
+    assert np.all(upper99 - lower99 >= upper - lower)
+
+
+def test_an_impossible_interval_level_exits_one(fitted, monkeypatch, capsys):
+    with pytest.raises(SystemExit) as exc:
+        _run(
+            monkeypatch,
+            "predict",
+            "--input",
+            str(fitted["query"]),
+            "--model",
+            str(fitted["models"]),
+            "--output",
+            str(fitted["tmp"] / "x.csv"),
+            "--predict_type",
+            "lower",
+            "--interval_level",
+            "1.5",
+        )
+    assert exc.value.code == 1
+    assert "Interval level" in capsys.readouterr().err

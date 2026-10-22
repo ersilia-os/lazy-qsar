@@ -21,6 +21,19 @@ from lazyqsar.utils.logging import logger
 from lazyqsar.utils.ranking import prepare_knots, subsample_knots
 
 
+def _digest(X) -> bytes:
+    """A fingerprint of a feature matrix: its shape, dtype and bytes."""
+    import hashlib
+
+    if hasattr(X, "toarray"):
+        X = X.toarray()
+    arr = np.ascontiguousarray(X)
+    h = hashlib.blake2b(digest_size=16)
+    h.update(str((arr.shape, arr.dtype.str)).encode())
+    h.update(arr.view(np.uint8).ravel())
+    return h.digest()
+
+
 def timing_steps(t_prep, portfolio, heads, t_pooler) -> list:
     """Rows of the per-batch timing table: preprocessing, each head's stages, the gate."""
     steps = [("Preprocessing", t_prep, False)]
@@ -77,6 +90,7 @@ class _BatchBase:
 
     def _fit_batch(self, X, y) -> None:
         """Fit the preprocessor, every head, then the gate on the heads' OOF outputs."""
+        raw_digest = _digest(X)
         t0 = _time.perf_counter()
         self.prep.fit(X, y)
         X = self.prep.transform(X)
@@ -94,7 +108,24 @@ class _BatchBase:
         t0 = _time.perf_counter()
         self.pooler.fit(oof, y, X_prep=X)
         t_pooler = _time.perf_counter() - t0
+        # The gate's weights on the training rows, which the out-of-fold statistics ask
+        # for several times; kept with a digest of the rows they belong to.
+        self._train_weights_ = self.pooler.get_weights(X)
+        self._train_digest_ = raw_digest
         logger.timing_table(timing_steps(t_prep, self.portfolio, self.heads, t_pooler))
+
+    def training_weights(self, X) -> np.ndarray:
+        """Gate weights for rows *X*: the stored ones if *X* is exactly the training rows.
+
+        Bit-identical either way -- the stored weights came from the same preprocessor
+        and gate on the same rows -- but the training rows are not pushed through the
+        preprocessor and gate again for every out-of-fold statistic.
+        """
+        cached = getattr(self, "_train_weights_", None)
+        if cached is not None and len(cached) == X.shape[0]:
+            if _digest(X) == getattr(self, "_train_digest_", None):
+                return cached
+        return self.pooler.get_weights(self.prep.transform(X))
 
     def save(self, directory, batch_num):
         """Save this batch to ``{directory}/batch_{batch_num}/``."""

@@ -53,7 +53,10 @@ def offline() -> bool:
     The suite sets this so a test can never reach for 267 MB; a user can set it on an
     air-gapped node to get a clear refusal instead of a hang.
     """
-    return bool(os.environ.get("LAZYQSAR_REFERENCE_OFFLINE"))
+    value = os.environ.get("LAZYQSAR_REFERENCE_OFFLINE", "")
+    # "0", "false" and "no" switch it off: `bool("0")` is True, so the obvious way to
+    # unset it used to switch fetching *off*.
+    return value.strip().lower() not in ("", "0", "false", "no", "off")
 
 
 def eosvc_available() -> bool:

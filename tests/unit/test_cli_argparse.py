@@ -94,6 +94,7 @@ def test_predict_forwards_its_arguments_leaving_the_default_to_the_checkpoint(
             "output_csv": "o.csv",
             "models_txt": None,
             "predict_type": None,
+            "interval_level": None,
         }
     ]
 

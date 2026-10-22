@@ -15,8 +15,13 @@ partitions so every batch spans the full target range, averaged at inference.
 
 import numpy as np
 
+from lazyqsar.ensemble.intervals import (
+    DEFAULT_LEVEL,
+    fit_intervals,
+    interval_half_width,
+)
 from lazyqsar.utils.logging import logger
-from lazyqsar.utils.metrics import spearman_score
+from lazyqsar.utils.metrics import regression_metrics, spearman_score
 from lazyqsar.utils.ranking import rank_from_knots
 from lazyqsar.utils.splits import check_trainable_regression
 
@@ -156,8 +161,14 @@ class LazyRegressor(_AssemblerBase):
             P = np.column_stack([m.oof_preds_ for m in heads])
             if P.shape[0] != len(idx):
                 return None
-            W = batch.pooler.get_weights(batch.prep.transform(X[idx]))
-            out[idx] = (W * P).sum(axis=1) * self.y_std_ + self.y_mean_
+            # Fixed stacking weights need no features, so the training rows are not
+            # pushed through the preprocessor again just to be counted.
+            pooled = (
+                batch.pooler._pool(P)
+                if getattr(batch.pooler, "_head_weights", None) is not None
+                else (batch.training_weights(X[idx]) * P).sum(axis=1)
+            )
+            out[idx] = pooled * self.y_std_ + self.y_mean_
         if not np.isfinite(out).all():
             return None
         return out
@@ -165,6 +176,8 @@ class LazyRegressor(_AssemblerBase):
     def _build_oof_percentile(self, X, y):
         """OOF ECDF knots (the reliability rank) and the out-of-fold ρ."""
         self.oof_rho_ = None
+        self.oof_metrics_ = None
+        self.intervals_ = None
         pooled = self._oof_accumulate(X)
         self._set_oof_reference(pooled)
         if pooled is None:
@@ -175,6 +188,8 @@ class LazyRegressor(_AssemblerBase):
             return
         self.oof_preds_ = pooled
         self.oof_rho_ = spearman_score(y, pooled)
+        self.oof_metrics_ = regression_metrics(y, pooled)
+        self.intervals_ = fit_intervals(y, pooled)
 
     def oof_channels(self, X):
         """Out-of-fold ``(value, rank)`` per training row, or None. Fit-time only."""
@@ -193,6 +208,25 @@ class LazyRegressor(_AssemblerBase):
         logger.debug(f"predict: X={X.shape}  batches={len(self.models)}")
         Z = np.array([m.predict(X) for m in self.models])
         return Z.mean(axis=0) * self.y_std_ + self.y_mean_
+
+    def predict_interval(self, X, level: float = DEFAULT_LEVEL):
+        """Prediction interval ``(lower, upper)`` at coverage *level*, each ``(n,)``.
+
+        Split-conformal on the pooled out-of-fold residuals (one bin: this level has no
+        applicability domain). See :mod:`lazyqsar.ensemble.intervals`.
+        """
+        model = self._interval_model()
+        if not model:
+            raise ValueError(
+                "This model carries no prediction-interval model (fitted before "
+                "intervals existed); refit it to get intervals."
+            )
+        value = np.asarray(self.predict(X), dtype=np.float64)
+        half = interval_half_width(model, len(value), None, level)
+        return value - half, value + half
+
+    def _interval_model(self):
+        return getattr(self, "intervals_", None)
 
     def _oof_percentile_from_value(self, values):
         prepared = getattr(self, "_oof_percentile_prepared_", None)
@@ -224,4 +258,6 @@ class LazyRegressor(_AssemblerBase):
             "y_std": self.y_std_,
             "oof_rho": self.oof_rho_,
             "train_rho": self.train_rho_,
+            "oof_metrics": getattr(self, "oof_metrics_", None),
+            "intervals": getattr(self, "intervals_", None),
         }

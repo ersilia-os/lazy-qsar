@@ -39,7 +39,25 @@ AD_HARD_CUTOFF_PERCENTILE = 5
 
 
 def _smiles_md5(smiles_list):
-    return hashlib.md5("\x00".join(smiles_list).encode()).hexdigest()
+    # Non-strings (None, NaN from a dataframe) hash as an unprintable marker; they are
+    # reported as unparseable and predicted as NaN like any other bad row.
+    return hashlib.md5(
+        "\x00".join(s if isinstance(s, str) else "\x01" for s in smiles_list).encode()
+    ).hexdigest()
+
+
+def as_smiles_list(smiles) -> list:
+    """The SMILES input as a plain list: lists, tuples, numpy arrays and pandas Series.
+
+    A bare string is refused rather than iterated character by character.
+    """
+    if isinstance(smiles, str):
+        raise TypeError(
+            "Expected a list of SMILES, got a single string; wrap it in a list."
+        )
+    if hasattr(smiles, "tolist"):
+        smiles = smiles.tolist()
+    return list(smiles)
 
 
 def validate_smiles(smiles_list):
@@ -228,6 +246,7 @@ class _EnsemblePredictMixin:
         raise NotImplementedError
 
     def _combined(self, smiles_list):
+        smiles_list = as_smiles_list(smiles_list)
         cache_key = _smiles_md5(smiles_list)
         result = self._ensemble_cache.get(cache_key)
         if result is None:
