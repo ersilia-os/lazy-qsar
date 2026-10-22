@@ -229,6 +229,46 @@ def test_svc_kernel_and_linear(kind, tmp_path):
     )
 
 
+@pytest.mark.parametrize("kind", ["kernel", "linear"])
+def test_svc_graph_score_column_is_the_decision_function(kind, tmp_path):
+    """The bound score column is sklearn's decision_function, sign and all.
+
+    The two converters order the negated score columns differently (kernel: column 0,
+    LinearSVC: column 1), and reading the wrong one inverts every prediction. Pinned for
+    both flavours: the bound column equals decision_function, the other column is its
+    negation, the graph declares the (n, 2) it computes, the loaded artifact resolves the
+    same column, and the fitted and loaded outputs agree exactly.
+    """
+    import onnx
+    import onnxruntime as rt
+
+    from lazyqsar.base.svc import BaseSVCClassifier
+
+    X = _fingerprint() if kind == "linear" else _dense()
+    model = _quiet(BaseSVCClassifier(portfolio=False).fit, X, _labels(X))
+    assert model._use_linear_ == (kind == "linear")
+    assert model._onnx_column_ == (1 if kind == "linear" else 0)
+
+    Q = _queries(X)
+    session = rt.InferenceSession(model._onnx_bytes_, providers=["CPUExecutionProvider"])
+    labels, scores = session.run(None, {session.get_inputs()[0].name: Q.astype(np.float32)})
+    decision = model.svc_.decision_function(Q)
+    col = model._onnx_column_
+    scale = max(1.0, float(np.abs(decision).max()))
+    np.testing.assert_allclose(scores[:, col], decision, rtol=0, atol=1e-5 * scale)
+    np.testing.assert_allclose(scores[:, 1 - col], -decision, rtol=0, atol=1e-5 * scale)
+    np.testing.assert_array_equal(labels.ravel(), model.svc_.predict(Q))
+    np.testing.assert_array_equal(model._raw(Q), scores[:, col])
+
+    declared = onnx.load_from_string(model._onnx_bytes_).graph.output[1]
+    assert [d.dim_value for d in declared.type.tensor_type.shape.dim][1] == 2
+    assert scores.shape == (len(Q), 2)
+
+    art = _roundtrip(model, SVCArtifact, tmp_path)
+    assert art._score_col == col
+    np.testing.assert_array_equal(art.run(Q)[:, 1], model.predict_proba(Q)[:, 1])
+
+
 # ------------------------------------------------------------------ regressors
 
 
