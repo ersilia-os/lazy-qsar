@@ -227,14 +227,19 @@ In slow mode (all five descriptors), lipophilicity reaches 0.530 MAE, against 0.
 
 **Fit time** is measured as the ratio to a `LazyClassifier` fitted on the same rows. In this run the median ratio fell from 1.62 to 1.05. That run shared the machine with other studies, so its tail (p90 1.85) is not a reliable measurement.
 
-A timing pass run alone (`run.py --label timing2 --n-random 1 --clf-time`, 90 fits, with the 500-round XGBoost cap):
+A timing pass run alone (`run.py --label timing4 --n-random 1 --clf-time`, 90 fits) with the shipped configuration: 500-round XGBoost cap, 20 MB SVR budget, RBF SVR as matrix products:
 
 | Rows | Fits | Ratio to classification, median | p90 |
 |---|---|---|---|
-| ≤ 1,000 | 44 | 0.81 | 1.22 |
-| 1,000–2,000 | 18 | 1.16 | 1.52 |
-| 2,000–5,000 | 24 | 0.66 | 0.97 |
-| > 5,000 | 4 | 1.53 | 1.80 |
-| **All** | **90** | **0.88** | **1.47** |
+| ≤ 1,000 | 44 | 0.70 | 1.08 |
+| 1,000–2,000 | 18 | 1.38 | 1.62 |
+| 2,000–5,000 | 24 | 0.66 | 0.91 |
+| > 5,000 | 4 | 1.51 | 1.59 |
+| **All** | **90** | **0.85** | **1.50** |
 
-Without the cap, the same pass gave a median of 0.86 and a p90 of 1.54; test RMSE was identical on 79 of the 90 splits, and +0.02% on average.
+Each step towards this configuration, on the same 90 fits:
+- With the 5 MB SVR budget the ratio was 0.88 (median) / 1.47 (p90), but RMSE was 0.42% worse (1.0% worse at 1,000–2,000 rows).
+- Raising the budget to 20 MB with skl2onnx's `SVMRegressor` pushed the p90 to 2.17.
+- The matrix-product graph brought it back to 1.50.
+
+Against 3.8 on these splits: −6.1% RMSE (better on 83 of 90); Spearman 0.724 → 0.757.
