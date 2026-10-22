@@ -119,7 +119,7 @@ class BasePreprocessor(BaseEstimator, TransformerMixin):
             else:
                 raise
 
-        if self.task == "regression" and self.scaler_name_ == "robust":
+        if self.scaler_name_ == "robust":
             self._rescale_zero_iqr_columns(X, y)
 
         self._n_features_out: int = self.pipeline_.transform(
@@ -143,8 +143,7 @@ class BasePreprocessor(BaseEstimator, TransformerMixin):
         descriptors include such columns (a sentinel of 1e5 on 97% of rows), which then
         reach the heads at magnitude 1e5: a kernel's ``gamma="scale"`` collapses to
         ~1e-8 and its float32 graph loses precision to cancellation (a 3e-3 bind
-        failure). The reducer is refitted on the corrected scale. Regression only, to
-        keep classification outputs unchanged.
+        failure). The reducer is refitted on the corrected scale.
         """
         steps = self.pipeline_.named_steps
         scaler = steps["scaler"]
