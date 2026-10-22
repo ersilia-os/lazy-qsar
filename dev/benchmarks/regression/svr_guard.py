@@ -4,7 +4,7 @@
     python dev/benchmarks/regression/svr_guard.py score --label guard-v1
 
 The kernel SVR's ONNX graph stores every support vector densely (float32 x features), so
-the 5 MB cap (before 3.9) allowed about 600 support vectors on 2,048 Morgan bits; past it the head
+the 5 MB cap (before 3.8) allowed about 600 support vectors on 2,048 Morgan bits; past it the head
 halves C three times and then falls back to a LinearSVR. ``collect`` fits, through the
 real regression heads, on each (task, split) between ``--min-n`` and ``--max-n`` rows:
 

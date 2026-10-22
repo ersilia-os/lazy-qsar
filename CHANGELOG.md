@@ -5,121 +5,11 @@ All notable changes to this project are documented here. Versions follow
 against is versioned separately and its id is recorded in every checkpoint's
 `pooled_ranker.library`.
 
-## [Unreleased]
-
-### Changed
-
-- **Regression heads, pooling and head choice re-derived on a regression benchmark**
-  (TDC ADMET, Biogen ADME, 30 MoleculeACE sets; random and scaffold splits; see
-  `docs/regression.md`):
-  - one preset per head, no preset race: XGBoost on Probst et al. (2019) tuned defaults
-    (eta 0.08 / depth 8 above 2,000 rows), an RBF SVR with C=10 and epsilon=0.05,
-    a random forest with max_features=1/3 and min_samples_leaf=3, ridge with
-    leave-one-out alpha;
-  - heads blended by NNLS stacking of their out-of-fold predictions instead of the
-    Gaussian-likelihood gate (-2.6% test RMSE, better on 76 of 90 splits);
-  - heads chosen by size: lr + xgb + svr up to 2,000 rows, lr + xgb to 5,000, xgb + rf
-    above;
-  - 3 out-of-fold folds above 2,000 rows, and the forest's out-of-bag predictions above
-    5,000;
-  - in slow mode, descriptors blended by NNLS stacking of their out-of-fold predictions
-    (keeping the per-molecule applicability-domain veto) instead of skill x reliability
-    weighting: -0.63% RMSE, better on 59 of 90 splits.
-  Regression checkpoints from 3.8 still load and predict as before.
-- **One task-neutral core.** Heads, head artifacts, poolers, assemblers, the head selector,
-  the SMILES-level models, the feature-level API and `combine` each have one shared
-  implementation for classification and regression (about 1,850 fewer lines).
-  Classification outputs are bit-identical to before.
-- **`lazyqsar.api.fit` / `lazyqsar.api.predict`** hold the CLI entry points;
-  `api.classifier_fit` and `api.classifier_predict` are aliases of them.
-
-- **Every fitted head predicts through its own ONNX graph.** Like the preprocessor since
-  3.5, each head (XGBoost, linear, random forest, SVC, SVR) and the applicability domain
-  is converted to ONNX as soon as its final model is fitted, the graph is verified against
-  the native model, and every later prediction -- probabilities, scores, ranks, in-sample
-  metrics, the reference-library scan, AD scores and the hard cutoffs derived from them --
-  comes from that graph. A fitted model and its checkpoint therefore compute the same
-  function: bit-identically for linear, SVM, preprocessing and AD graphs, and to ~1e-6 for
-  tree ensembles, whose onnxruntime summation order depends on thread count. Out-of-fold
-  fold models stay native (their gap to ONNX is bounded by a test). Predictions move by
-  float32 rounding only (measured <= 2e-6).
-- **One artifact implementation per head.** `BaseXGBArtifact` and `BaseLinearArtifact`
-  are now aliases of `lazyqsar.artifacts.XGBoostArtifact` / `LinearArtifact` (which gained
-  the decision-cutoff attributes and `predict`); the calibrator formula and
-  `_correct_prior` each exist once.
-
-### Added
-
-- **Prediction intervals for regression**: `LazyRegressorQSAR.predict_interval(smiles,
-  level=0.9)`, `--predict_type lower|upper` and `--interval_level` on the CLI, and
-  `lower`/`upper` in `combine`. Split-conformal on the ensemble's out-of-fold residuals,
-  binned by applicability-domain score; the interval model travels in `metadata.json`.
-- **`lazyqsar.load(path)`** loads any checkpoint -- either task, SMILES- or feature-level,
-  directory or zip.
-- **Feature input contract.** The descriptor-agnostic `LazyClassifier` / `LazyRegressor`
-  refuse infinite values and finite values beyond the float32 range, at fit and at
-  predict, with a count. NaN is still accepted and imputed. Previously `inf` reached the
-  graphs unimputed and out-of-range values silently became `inf` in the float32 cast.
-- **ONNX parity matrix** (`tests/fit/test_onnx_parity_matrix.py`): every head x regime x
-  task with the regime forced -- all four XGBoost presets on dense and fingerprint data,
-  isotonic calibration on every classifier head, the three linear regimes, RF below and
-  above the OOB threshold, kernel and linear SVC/SVR, all eight scaler x reducer
-  combinations, XGBoost on missing values -- compared against the native model and the
-  fitted model on training rows, fresh rows and rows one float32 ULP either side.
-
-### Fixed
-
-- A fit with a single varying feature crashed (skl2onnx's VarianceThreshold converter
-  emits an invalid graph on one column) or silently fell back to the scikit-learn
-  preprocessor; column selectors now export as one exact Gather.
-- SMILES given as a numpy array or pandas Series, or containing `None`, now predict (a
-  `None` row is NaN); a bare string is refused instead of being iterated.
-- `LAZYQSAR_REFERENCE_OFFLINE=0` (or `false`, `no`) now means off.
-- A descriptor directory a checkpoint's metadata does not list (a leftover in a reused
-  output directory) is no longer loaded and scored with default skill.
-- Regression values keep float64 through the chunked inference runner; float32 rounded
-  targets with large offsets, so a loaded checkpoint could differ from the fitted model.
-- Regression descriptor screen: an undefined proxy rho is reported as unknown rather
-  than -1.0, which the ensemble read as real skill.
-- A loaded XGBoost or linear head's `predict()` thresholds the raw score at the raw
-  cutoff, as the fitted head does.
-- Kernel SVC/SVR graphs on wide-range descriptors (RDKit) could fail the bind check:
-  their float32 rounding reached 2.4e-4 against a 1e-4 tolerance. Measured on 15 real
-  datasets, the SVM tolerance is now 1e-3. Trees and linear heads stay at 1e-5 (their
-  largest gap was 1.1e-6).
-- An oversized kernel SVR no longer refits three times with a halved C before falling
-  back to the linear model; halving C does not shrink an SVR's support set. Outputs are
-  unchanged, and the fit is faster.
-- **The RBF SVR exports as matrix products.** skl2onnx's `SVMRegressor` operator
-  evaluates the kernel one support vector at a time; the SVR's graph is now
-  `exp(-gamma |x - sv|^2) @ dual + b` in standard ONNX ops. Predicting is about 100x
-  faster, loading about 12x, graphs are 20% smaller, and the gap to sklearn is no
-  larger. With the 20 MB budget below, a 1,291-row fit took 16.1 s on the old operator
-  and takes 9.6 s.
-- **ONNX size budgets for kernel SVMs.** The size estimate now counts the 5 bytes per
-  support-vector value that the graph actually takes; it was 4, so the budgets ran 25%
-  over. The SVR's budget is 20 MB, so the kernel SVR is no longer replaced by a LinearSVR
-  from ~700 rows on fingerprints: -0.9% stack RMSE on the 45 benchmark splits of
-  600-2,000 rows. The SVC's budget is 8 MB, up from an effective 6.25 MB; on 2,048-bit
-  fingerprints the kernel SVC is now considered up to ~780 rows, from ~610.
-- The regression XGBoost head early-stops within 500 rounds, not 3,000. Its validation
-  loss could creep down for 2,000 rounds; on 90 benchmark splits the cap bound 11 of them
-  and moved test RMSE by +0.002%.
-- NNLS stacking ignores rows with a missing out-of-fold prediction instead of raising.
-- Preprocessing (both tasks): a robust-scaled column with zero interquartile range kept its
-  raw units. RDKit writes a 1e5 sentinel on most rows of some descriptors, so values of 1e5
-  reached the heads; the kernel SVR's `gamma` collapsed to ~1e-8, and its float32 graph
-  could fail the bind check, crashing the fit. Such columns are now divided by their
-  standard deviation where it exceeds one. On the 40 benchmark splits where RDKit features
-  are robust-scaled, SVR test RMSE fell by 28% (better on 38). Ridge was unchanged
-  (-0.2%), and trees are unaffected. Classification gets the same scaling; its outputs
-  change on robust-scaled data, which is mostly RDKit descriptors.
-
 ## 3.8.0
 
 ### Added
 
-- **Regression.** Continuous targets are now supported end to end, alongside binary
+- **Regression.** Continuous targets are supported end to end, alongside binary
   classification:
   - `LazyRegressorQSAR` (SMILES) and `LazyRegressor` (bring your own descriptors);
     `LazyQSAR(task="regression")` constructs the former.
@@ -127,28 +17,57 @@ against is versioned separately and its id is recorded in every checkpoint's
   - `lazyqsar predict` reads the task from each checkpoint. A regression model writes
     `value`, the predicted target in its own units, which is also the default
     `--predict_type`.
-- **Regression heads** with the same zero-shot design as the classifiers:
-  - `BaseRFRegressor` (new): presets compared by out-of-bag Spearman ρ, with FLAML's RF
-    regression portfolio imported verbatim.
-  - `BaseSVR` (new): `SVR` or `LinearSVR`, with the target standardised internally.
-  - `BaseXGBRegressor` and `BaseLinearRegressor` now produce out-of-fold predictions, a
-    Spearman ρ and an ECDF ranker, which is what lets the ensemble gate them.
-- **Regression ensemble**:
-  - the target is standardised once in the assembler, and predictions are returned in
-    the original units;
-  - the head gate is trained on each head's Gaussian likelihood of its out-of-fold
-    residual, using a robust spread estimate (1.4826 × MAD);
-  - descriptors are screened, weighted (`2·ρ_oof − ρ_train`) and pruned by Spearman ρ;
-  - per-sample reliability comes from an out-of-fold rank-to-error curve, and the
-    applicability-domain veto is unchanged.
-- `LazyQSAR.load` opens a checkpoint of either task, dispatching on its metadata.
-- `lazyqsar.api.fit` and `lazyqsar.api.predict` as task-neutral names. The
-  `classifier_fit` and `classifier_predict` modules keep working.
+- **A regression ensemble chosen on a benchmark** (TDC ADMET, Biogen ADME, 30
+  MoleculeACE sets; random and scaffold splits; `docs/regression.md` has the evidence and
+  `dev/benchmarks/regression/` reproduces it):
+  - **Heads, one preset each, no preset race:**
+    - XGBoost on Probst et al. (2019) tuned defaults (η 0.08, depth 8 above 2,000 rows), early-stopped within 500 rounds;
+    - an RBF SVR, C=10, ε=0.05;
+    - a random forest, max_features=1/3, min_samples_leaf=3;
+    - ridge with leave-one-out α.
+
+    The target is standardised once in the assembler, and predictions come back in its own units.
+  - **Heads chosen by size:** linear + XGBoost + SVR up to 2,000 rows, linear + XGBoost to 5,000, XGBoost + random forest above.
+  - **Heads blended by NNLS stacking** of their out-of-fold predictions. In slow mode, descriptors are stacked the same way, after a Spearman-ρ screen, and the per-molecule applicability-domain veto still applies.
+  - **Out-of-fold predictions:** quantile-stratified, with 5 folds up to 2,000 rows and 3 above; above 5,000 rows the forest uses its out-of-bag predictions.
+  - **Against the first implementation (#54):** −6.1% test RMSE, better on 83 of 90 splits.
+  - **MoleculeACE:** 0.664 RMSE, against 0.671 for the best published method (SVR on ECFP).
+  - **Fit time:** median 0.85× classification's on the same rows.
+- **Prediction intervals for regression**: `predict_interval(smiles, level=0.9)` on
+  `LazyRegressorQSAR` and `LazyRegressor`, `--predict_type lower|upper` and
+  `--interval_level` on the CLI, and `lower`/`upper` in `combine`. Split-conformal on the
+  ensemble's out-of-fold residuals, binned by applicability-domain score; the interval
+  model travels in `metadata.json`. Coverage on random benchmark splits: 0.90 at 0.90.
+- **`lazyqsar.load(path)`** loads any checkpoint -- either task, SMILES- or feature-level,
+  directory or zip. `LazyQSAR.load` dispatches on the checkpoint's task too.
+- **`lazyqsar.api.fit` / `lazyqsar.api.predict`** are the task-neutral CLI entry points;
+  `api.classifier_fit` and `api.classifier_predict` are aliases of them.
+- **Feature input contract.** The descriptor-agnostic `LazyClassifier` / `LazyRegressor`
+  refuse infinite values and finite values beyond the float32 range, at fit and at
+  predict, with a count. NaN is still accepted and imputed. Previously `inf` reached the
+  graphs unimputed and out-of-range values silently became `inf` in the float32 cast.
+- **ONNX parity matrix** (`tests/fit/test_onnx_parity_matrix.py`): every head x regime x
+  task with the regime forced, compared against the native model and the fitted model on
+  training rows, fresh rows and rows one float32 ULP either side.
 - Test fixture `tests/data/reference_regression.csv`: 300 EGFR (CHEMBL203) compounds with
   pChEMBL values from ChEMBL. Built by `dev/tools/build_regression_fixture.py`.
 
 ### Changed
 
+- **Every fitted head predicts through its own ONNX graph.** Like the preprocessor since
+  3.5, each head (XGBoost, linear, random forest, SVC, SVR) and the applicability domain
+  is converted to ONNX as soon as its final model is fitted, the graph is verified against
+  the native model, and every later prediction comes from that graph. A fitted model and
+  its checkpoint therefore compute the same function: bit-identically for linear, SVM,
+  preprocessing and AD graphs, and to ~1e-6 for tree ensembles, whose onnxruntime
+  summation order depends on thread count. Bind tolerances are per family, from gaps
+  measured on 15 real datasets: 1e-5 for trees and linear heads, 1e-3 for kernel SVMs
+  (float32 kernel sums reach a few 1e-4 on RDKit descriptors).
+- **One task-neutral core.** Heads, head artifacts, poolers, assemblers, the head selector,
+  the SMILES-level models, the feature-level API and `combine` each have one shared
+  implementation for classification and regression (about 1,850 fewer lines);
+  `docs/architecture.md` describes it. `BaseXGBArtifact` and `BaseLinearArtifact` are
+  aliases of `lazyqsar.artifacts.XGBoostArtifact` / `LinearArtifact`.
 - **Checkpoints record their task.** A regression `metadata.json` carries
   `"task": "regression"`. A checkpoint without the key is a classifier, so every existing
   checkpoint loads and predicts exactly as before. Loading a checkpoint through the other
@@ -156,14 +75,33 @@ against is versioned separately and its id is recorded in every checkpoint's
 - `combine()` validates outputs per task. The classification arithmetic is untouched, and
   the frozen golden file is byte-identical. Regression has its own golden file,
   `golden/combine_regression.npz`.
-- `api.classifier_predict.predict` defaults to `predict_type=None`, resolved from the
-  checkpoints: `proba` for classification, `value` for regression. Two things are refused
-  before featurizing:
-  - a classification output asked of a regression model, or the reverse;
-  - a call mixing classification and regression models.
-- The CLI's `fit` now forwards `task=` to the API.
-- The Ridge gating network moved to `lazyqsar.poolers._gate`, shared by both poolers.
-  Classification weights are unchanged.
+- `api.predict` defaults to `predict_type=None`, resolved from the checkpoints: `proba`
+  for classification, `value` for regression. A classification output asked of a
+  regression model (or the reverse), or a call mixing both tasks, is refused before
+  featurizing.
+- **Classification: two deliberate output changes.** Everything else is bit-identical to
+  3.7.0.
+  - **Zero-IQR columns are scaled.** `RobustScaler` divided a column with zero
+    interquartile range by one, so RDKit's 1e5 sentinel reached the heads in raw units
+    on 21 of 45 benchmark tasks. The kernel SVM's `gamma` then collapsed to ~1e-8, and
+    its float32 graph could fail the bind check and abort the fit. Such columns are now
+    divided by their standard deviation where it exceeds one. On 20 benchmark splits,
+    SVC AUC rose by 0.096 (better on 18) and the linear head's by 0.130 (better on 18).
+    Regression gets the same scaling.
+  - **The SVC's ONNX budget is 8 MB, measured on disk.** The size estimate counted 4
+    bytes per support-vector value against the graph's actual 5, so the old 5 MB budget
+    was about 6.25 MB. On 2,048-bit fingerprints the kernel SVC is now considered up to
+    ~780 rows, from ~610. On 15 splits in that band it replaced LinearSVC on all 15:
+    AUC +0.023, better on 12, worse on none.
+- **The RBF SVR's ONNX graph is matrix products** (`exp(-gamma |x - sv|^2) @ dual + b` in
+  standard ops), not skl2onnx's `SVMRegressor`, which evaluates the kernel one support
+  vector at a time. Predicting is about 100x faster, loading about 12x, graphs are 20%
+  smaller, and the gap to sklearn is no larger. The SVR's ONNX budget is 20 MB, enough
+  for the kernel up to the 2,000-row ceiling where an SVR is fitted.
+- The LinearSVC graph declares the `(n, 2)` scores it computes; skl2onnx declared
+  `(n, 1)`, and onnxruntime warned on every load. Outputs are unchanged.
+- The Ridge gating network moved to `lazyqsar.poolers._gate`. Classification weights are
+  unchanged.
 - Source-dataset names removed from the comments on the FLAML preset tables.
 
 ### Fixed
@@ -187,25 +125,27 @@ against is versioned separately and its id is recorded in every checkpoint's
 - **XGBoost regressors with a link function export correctly.** The export wrapped the
   booster in a default regressor, and onnxmltools reads the objective from the wrapper,
   so a `reg:tweedie` model was exported without its log link and predicted wrong values.
-  The ensemble never selected Tweedie (it standardises the target), but `BaseXGBRegressor`
-  used directly on positive, skewed targets did.
 - **Early-stopped boosters with `num_parallel_tree > 1` export every tree.** The export now
-  writes exactly the boosting rounds `predict` uses, rather than letting onnxmltools count
-  trees as rounds. Not reachable through the shipped presets today.
-
-### Added (export safety)
-
-- **Every ONNX export checks itself.** Each head (XGBoost, linear, random forest, SVC,
-  SVR) and the applicability domain run a probe of real training rows -- plus rows with
-  missing values for the AD -- through both the fitted model and the graph just written,
-  and raise `OnnxExportMismatch` if they disagree beyond float32 rounding. A conversion
-  bug now fails the save instead of producing a wrong model. See
+  writes exactly the boosting rounds `predict` uses. Not reachable through the shipped
+  presets.
+- **Every ONNX export checks itself**: a conversion bug fails the save with
+  `OnnxExportMismatch` instead of producing a wrong model. See
   `lazyqsar/utils/onnx_check.py`.
+- A fit with a single varying feature crashed (skl2onnx's VarianceThreshold converter
+  emits an invalid graph on one column) or silently fell back to the scikit-learn
+  preprocessor; column selectors now export as one exact Gather.
+- SMILES given as a numpy array or pandas Series, or containing `None`, now predict (a
+  `None` row is NaN); a bare string is refused instead of being iterated.
+- `LAZYQSAR_REFERENCE_OFFLINE=0` (or `false`, `no`) now means off.
+- A descriptor directory a checkpoint's metadata does not list (a leftover in a reused
+  output directory) is no longer loaded and scored with default skill.
+- A loaded XGBoost or linear head's `predict()` thresholds the raw score at the raw
+  cutoff, as the fitted head does.
 
 ### Not supported (by design, for now)
 
-- Censored targets (`>10 µM`), automatic log transforms, multi-output models,
-  prediction intervals, and a `rank` for regression.
+- Censored targets (`>10 µM`), automatic log transforms, multi-output models, and a
+  `rank` for regression.
 
 ## 3.7.0
 

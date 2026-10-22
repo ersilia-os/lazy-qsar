@@ -29,7 +29,7 @@ changing anything: put it in the base unless it is meaningless for the other tas
   is guarded".
 - **Classification outputs are pinned.** A refactor must leave every classification
   prediction bit-identical; the parity tests and the golden files are the guard. A
-  deliberate change to classification behaviour is its own commit, with evidence. 3.9 has
+  deliberate change to classification behaviour is its own commit, with evidence. 3.8.0 has
   two: zero-IQR column scaling, and the SVC's ONNX budget.
 - **Regression choices are benchmark-backed.** `dev/benchmarks/regression/` reproduces
   every number in `docs/regression.md`; re-run the relevant study before changing a

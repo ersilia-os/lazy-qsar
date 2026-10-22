@@ -4,6 +4,9 @@ Every regression choice described here was made on a benchmark rather than carri
 from classification. This note records what was compared, what won, and by how much, so a
 future change can be judged against the same evidence.
 
+"The first implementation" below is regression as first merged (#54), before any of this
+work; it was never released. 3.8.0 ships what this note describes.
+
 ## The benchmark
 
 `dev/benchmarks/regression/` downloads every dataset into a git-ignored cache; it needs
@@ -40,10 +43,10 @@ above the best preset on each task and split.
 |---|---|---|---|---|
 | SVR | RBF, C=10, ε=0.05, γ='scale' | 0.29% | 50/86 | C=3 (0.49%), C=10 ε=0.1 (0.71%), Cherkassky–Ma analytic C/ε (1.86%), sklearn default C=1 (3.75%), LinearSVR (43.8%) |
 | XGBoost | Probst, Boulesteix & Bischl (2019) tuned defaults: η 0.052, depth 11, min_child_weight 2, subsample 0.87, colsample_bytree 0.71, colsample_bylevel 0.64 | 1.08% | 41/90 | depth 7 (1.49%), η 0.05 + colsample 0.5 (1.95%), AutoGluon (4.44%), xgboost defaults (6.79%) |
-| Random forest | max_features=1/3, min_samples_leaf=3 | 1.61% | 18/90 | sklearn default (1.46%, but trees 3.5× larger), Probst (1.67%), sqrt (2.62%), Breiman leaf 5 (4.18%), the 3.8 heuristic (5.48%) |
+| Random forest | max_features=1/3, min_samples_leaf=3 | 1.61% | 18/90 | sklearn default (1.46%, but trees 3.5× larger), Probst (1.67%), sqrt (2.62%), Breiman leaf 5 (4.18%), the first implementation's heuristic (5.48%) |
 | Linear | RidgeCV with leave-one-out over α = n·logspace(−4, 2, 13) | 0.51% | 68/90 | ElasticNetCV (6.55%) |
 
-**Why one preset and no race.** The 3.8 heads raced presets on holdout splits. The race
+**Why one preset and no race.** The first implementation's heads raced presets on holdout splits. The race
 cost more fit time than it recovered, and for the SVR it sometimes picked the LinearSVR,
 44% worse than the kernel. With one preset per head:
 - XGBoost's number of rounds comes from early stopping on a quantile-stratified held-out
@@ -61,11 +64,11 @@ preset is not worth it: on 54 splits of 600–2,000 rows it cost +0.59% (+1.47% 
 ## Pooling: stacking, not a gate
 
 Pooling rules were scored on the same heads' out-of-fold and test predictions, over 90
-task splits. "RMSE vs gate" is the test RMSE relative to the 3.8 gate.
+task splits. "RMSE vs gate" is the test RMSE relative to the first implementation's gate.
 
 | Rule | RMSE vs gate | Better on | Mean ρ |
 |---|---|---|---|
-| Gaussian-likelihood Ridge gate (3.8) | — | — | 0.742 |
+| Gaussian-likelihood Ridge gate (first implementation) | — | — | 0.742 |
 | Equal weights | −0.09% | 44/90 | 0.742 |
 | **NNLS stacking on OOF predictions** | **−2.61%** | **76/90** | **0.756** |
 | Best single head by OOF RMSE | −1.64% | 59/90 | 0.747 |
@@ -99,9 +102,9 @@ In slow mode a regression model fits one ensemble per descriptor and blends them
 molecule. `descriptors.py` fitted Morgan and RDKit models on all 45 tasks (random-0 and
 the structural split, 90 splits) and scored blending rules on the same predictions:
 
-| Rule | RMSE vs 3.8 rule | Better on |
+| Rule | RMSE vs the first implementation's rule | Better on |
 |---|---|---|
-| Skill × rank-error reliability, AD veto (3.8) | — | — |
+| Skill × rank-error reliability, AD veto (first implementation) | — | — |
 | The same without the reliability curve | −0.17% | 50/90 |
 | Plain mean | −0.14% | 53/90 |
 | Best descriptor by OOF RMSE | +0.57% | 34/90 |
@@ -111,8 +114,8 @@ Stacking won on random splits (−0.83%) and on structural ones (−0.44%). The 
 one non-negative weight per active descriptor on their out-of-fold predictions. The
 per-molecule applicability-domain veto still applies: a descriptor that finds a molecule
 out of domain is dropped for it, and the remaining weights are renormalised. The weights
-are saved in `metadata.json` as `descriptor_weights`. Checkpoints without them use the
-3.8 rule.
+are saved in `metadata.json` as `descriptor_weights`. A checkpoint without them falls back
+to skill × reliability weighting.
 
 ## Out-of-fold predictions and speed
 
@@ -190,12 +193,12 @@ applicability-domain binning of the SMILES-level model is there to soften exactl
 | SVR on ECFP, the best published method (our reproduction) | 0.671 | 0.751 |
 | GBM on ECFP (reproduction) | 0.698 | 0.787 |
 | RF on ECFP (reproduction) | 0.700 | 0.785 |
-| LazyQSAR 3.8 | 0.678 | 0.766 |
+| LazyQSAR, first implementation | 0.678 | 0.766 |
 | **LazyQSAR now** | **0.664** | **0.752** |
 
 **TDC ADMET group**, on the fixed test split with the leaderboard metrics (MAE ↓, or Spearman ↑ for the last four tasks). Fast mode, seed 0. Source: `tdc_official.py`.
 
-| Task | 3.8 | Now |
+| Task | First implementation | Now |
 |---|---|---|
 | Caco2 (MAE) | 0.363 | **0.355** |
 | Lipophilicity (MAE) | 0.644 | **0.634** |
@@ -207,15 +210,15 @@ applicability-domain binning of the SMILES-level model is there to soften exactl
 | Hepatocyte clearance (ρ) | 0.412 | **0.419** |
 | Microsomal clearance (ρ) | **0.574** | 0.547 |
 
-¹ Two test SMILES do not parse in RDKit. LazyQSAR returns NaN for them, and the harness now scores them at the training mean; the 3.8 run predates that, so it has no score.
+¹ Two test SMILES do not parse in RDKit. LazyQSAR returns NaN for them, and the harness now scores them at the training mean; the first implementation's run predates that, so it has no score.
 
-In slow mode (all five descriptors), lipophilicity reaches 0.530 MAE, against 0.535 with 3.8 and 0.539 for MapLight. Caco2 reaches 0.278, against 0.297 with 3.8.
+In slow mode (all five descriptors), lipophilicity reaches 0.530 MAE, against 0.535 for the first implementation and 0.539 for MapLight. Caco2 reaches 0.278, against 0.297.
 
-## Results against 3.8
+## Results against the first implementation
 
-`run.py --label v2 --n-random 3 --clf-time` against the 3.8 run, both in fast mode (Morgan). There are 45 tasks, each with 3 random splits and 1 structural split. "Better" counts the splits where test RMSE fell.
+`run.py --label v2 --n-random 3 --clf-time` against the first implementation's run, both in fast mode (Morgan). There are 45 tasks, each with 3 random splits and 1 structural split. "Better" counts the splits where test RMSE fell.
 
-| Source | Split | Fits | RMSE vs 3.8 | Better | ρ 3.8 → now | R² 3.8 → now |
+| Source | Split | Fits | RMSE vs first | Better | ρ first → now | R² first → now |
 |---|---|---|---|---|---|---|
 | Biogen ADME | random | 18 | −8.74% | 16/18 | 0.569 → 0.631 | 0.265 → 0.390 |
 | Biogen ADME | structural | 6 | −7.63% | 4/6 | 0.544 → 0.603 | 0.115 → 0.236 |
@@ -242,4 +245,4 @@ Each step towards this configuration, on the same 90 fits:
 - Raising the budget to 20 MB with skl2onnx's `SVMRegressor` pushed the p90 to 2.17.
 - The matrix-product graph brought it back to 1.50.
 
-Against 3.8 on these splits: −6.1% RMSE (better on 83 of 90); Spearman 0.724 → 0.757.
+Against the first implementation on these splits: −6.1% RMSE (better on 83 of 90); Spearman 0.724 → 0.757.

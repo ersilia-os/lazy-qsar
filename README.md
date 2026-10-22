@@ -366,7 +366,8 @@ computes what the fitted model computed. Several layers answer it:
   compare fitted models, loaded checkpoints and the inference runner for every head,
   regime and task. They cover multi-batch models, intervals, blocked and one-at-a-time
   scoring, and rows one float32 ULP either side of training values.
-- **Old checkpoints.** Checkpoints written by 3.8 load and predict identically.
+- **Old checkpoints.** A checkpoint written by 3.7.0 predicts bit-identically under 3.8.0
+  and under 3.7.0 (checked on a fast-mode classifier fitted on `reference_binary.csv`).
 
 ### What is not covered
 

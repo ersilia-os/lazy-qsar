@@ -1,6 +1,6 @@
 """Run the regression benchmark for the code currently checked out.
 
-    python dev/benchmarks/regression/run.py --label baseline-3.8.0
+    python dev/benchmarks/regression/run.py --label baseline
     python dev/benchmarks/regression/run.py --label candidate --tasks tdc_caco2 ace_CHEMBL204_Ki
     python dev/benchmarks/regression/run.py --label baseline --clf-time   # + classification time
 
