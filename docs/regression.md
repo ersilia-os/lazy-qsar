@@ -226,12 +226,14 @@ In slow mode (all five descriptors), lipophilicity reaches 0.530 MAE, against 0.
 
 **Fit time** is measured as the ratio to a `LazyClassifier` fitted on the same rows. In this run the median ratio fell from 1.62 to 1.05. That run shared the machine with other studies, so its tail (p90 1.85) is not a reliable measurement.
 
-A timing pass run alone (`run.py --label timing --n-random 1 --clf-time`, 90 fits):
+A timing pass run alone (`run.py --label timing2 --n-random 1 --clf-time`, 90 fits, with the 500-round XGBoost cap):
 
 | Rows | Fits | Ratio to classification, median | p90 |
 |---|---|---|---|
-| ≤ 1,000 | 44 | 0.83 | 1.24 |
-| 1,000–2,000 | 18 | 1.23 | 1.78 |
-| 2,000–5,000 | 24 | 0.69 | 0.92 |
-| > 5,000 | 4 | 1.58 | 1.79 |
-| **All** | **90** | **0.86** | **1.54** |
+| ≤ 1,000 | 44 | 0.81 | 1.22 |
+| 1,000–2,000 | 18 | 1.16 | 1.52 |
+| 2,000–5,000 | 24 | 0.66 | 0.97 |
+| > 5,000 | 4 | 1.53 | 1.80 |
+| **All** | **90** | **0.88** | **1.47** |
+
+Without the cap, the same pass gave a median of 0.86 and a p90 of 1.54; test RMSE was identical on 79 of the 90 splits, and +0.02% on average.
