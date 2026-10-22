@@ -53,7 +53,9 @@ cost more fit time than it recovered, and for the SVR it sometimes picked the Li
 
 **Above 2,000 rows**, XGBoost uses η 0.08 with depth 8. On the 32 benchmark splits of that
 size this costs 0.8% RMSE on the head and 31% of its fit time. It was the cheapest of the
-faster variants tried: η 0.1 cost 1.1% (0.58× time), depth 7 cost 0.9% (0.95×).
+faster variants tried: η 0.1 cost 1.1% (0.58× time), depth 7 cost 0.9% (0.95×). Below 2,000 rows the same
+preset is not worth it: on 54 splits of 600–2,000 rows it cost +0.59% (+1.47% between
+1,000 and 2,000, better on 4 of 14) for 0.64× the head's time.
 
 ## Pooling: stacking, not a gate
 
