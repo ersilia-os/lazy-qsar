@@ -131,6 +131,8 @@ rows (`xgb_stop.py`), the stopping rules tried all lost accuracy for little time
 - 1e-3 saved 20% of rounds and cost +0.28%;
 - a patience of 25 instead of 50 saved 22% and cost +0.42%.
 
+A **hard cap of 500 rounds** behaves differently, because it trims only the long tail. On all 90 splits it bound 11 of them and moved test RMSE by +0.002% on average, +0.41% at worst; caps of 800 and 1,000 bound 4 and 3. The preset now stops at 500. On MoleculeACE CHEMBL218 that took the head from 2,000 rounds to 491, and from 16 s to 4 s.
+
 **The SVR under its size cap.** The kernel SVR's ONNX graph stores every support vector
 densely. At ε=0.05 about 90% of rows become support vectors, so on 2,048 Morgan bits the
 5 MB cap is exceeded from about 700 rows, and the head falls back to a LinearSVR.

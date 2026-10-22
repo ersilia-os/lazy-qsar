@@ -38,7 +38,7 @@ RESULTS = os.path.join(CACHE, "results")
 RULES = [(50, 0.0), (50, 1e-4), (50, 3e-4), (50, 1e-3), (25, 0.0), (25, 3e-4), (25, 1e-3)]
 
 
-def collect(label, task_names, min_n):
+def collect(label, task_names, min_n, max_n=10**9):
     import xgboost as xgb
     from sklearn.model_selection import train_test_split
 
@@ -56,7 +56,7 @@ def collect(label, task_names, min_n):
     for task in task_names:
         smiles, y, X, provided = task_registry.load(task)
         for split, tr, te in task_registry.splits(task, smiles, provided, n_random=1):
-            if len(tr) < min_n or (task, split) in done:
+            if not min_n <= len(tr) <= max_n or (task, split) in done:
                 continue
             with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
                 io.StringIO()
@@ -166,9 +166,12 @@ def main():
     ap.add_argument("--label", required=True)
     ap.add_argument("--tasks", nargs="*", default=None)
     ap.add_argument("--min-n", type=int, default=500)
+    ap.add_argument("--max-n", type=int, default=10**9)
     args = ap.parse_args()
     if args.action == "collect":
-        collect(args.label, args.tasks or task_registry.task_names(), args.min_n)
+        collect(
+            args.label, args.tasks or task_registry.task_names(), args.min_n, args.max_n
+        )
     else:
         score(args.label)
 

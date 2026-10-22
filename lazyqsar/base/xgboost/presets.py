@@ -326,6 +326,9 @@ def rf_params(
     return params
 
 
+_REGRESSION_MAX_ROUNDS = 500
+
+
 def probst_regression_params(
     profile: DatasetProfile, device: str, nthread: int = -1
 ) -> Dict[str, Any]:
@@ -344,6 +347,10 @@ def probst_regression_params(
     32 benchmark splits of that size this costs 0.8% RMSE on the head and 31% of its fit
     time -- the cheapest of the faster variants tried (eta 0.1: +1.1%, 0.58x; depth 7:
     +0.9%, 0.95x) -- and keeps large regression fits near classification's fit time.
+
+    Early stopping runs to at most 500 rounds. Its validation loss can creep down for
+    thousands of rounds (MoleculeACE CHEMBL218: 2,000); on 90 benchmark splits the cap
+    bound 11 of them and moved test RMSE by +0.002% on average, at most +0.41%.
     """
     large = profile.n_samples > _FAST_PRESET_MIN_N
     params: Dict[str, Any] = {
@@ -358,7 +365,7 @@ def probst_regression_params(
         "reg_alpha": 0.0,
         "reg_lambda": 1.0,
         "max_bin": 128 if profile.n_samples > 100_000 else 256,
-        "n_estimators": 3000,
+        "n_estimators": _REGRESSION_MAX_ROUNDS,
         "early_stopping_rounds": 50,
     }
     if device == "cpu":

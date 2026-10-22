@@ -90,6 +90,9 @@ against is versioned separately and its id is recorded in every checkpoint's
 - An oversized kernel SVR no longer refits three times with a halved C before falling
   back to the linear model; halving C does not shrink an SVR's support set. Outputs are
   unchanged, and the fit is faster.
+- The regression XGBoost head early-stops within 500 rounds, not 3,000. Its validation
+  loss could creep down for 2,000 rounds; on 90 benchmark splits the cap bound 11 of them
+  and moved test RMSE by +0.002%.
 - NNLS stacking ignores rows with a missing out-of-fold prediction instead of raising.
 - Regression preprocessing: a robust-scaled column with zero interquartile range kept its
   raw units. RDKit writes a 1e5 sentinel on most rows of some descriptors, so values of 1e5
