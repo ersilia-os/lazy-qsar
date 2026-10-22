@@ -204,7 +204,7 @@ applicability-domain binning of the SMILES-level model is there to soften exactl
 
 ¹ Two test SMILES do not parse in RDKit. LazyQSAR returns NaN for them, and the harness now scores them at the training mean; the 3.8 run predates that, so it has no score.
 
-Slow mode (all five descriptors), measured with 3.8, reached 0.535 MAE on lipophilicity (MapLight: 0.539) and 0.297 on Caco2. It has not yet been rerun with the new portfolio.
+In slow mode (all five descriptors), lipophilicity reaches 0.530 MAE, against 0.535 with 3.8 and 0.539 for MapLight. Caco2 reaches 0.278, against 0.297 with 3.8.
 
 ## Results against 3.8
 
@@ -220,4 +220,14 @@ Slow mode (all five descriptors), measured with 3.8, reached 0.535 MAE on lipoph
 | TDC ADMET | structural | 9 | −4.42% | 8/9 | 0.529 → 0.581 | 0.278 → 0.341 |
 | **All** | | **180** | **−5.62%** | **166/180** | **0.735 → 0.762** | **0.544 → 0.595** |
 
-**Fit time** is measured as the ratio to a `LazyClassifier` fitted on the same rows. In this run the median ratio fell from 1.62 to 1.05. That run shared the machine with other studies, so its tail (p90 1.85) is not a reliable measurement; a timing pass run alone is reported below.
+**Fit time** is measured as the ratio to a `LazyClassifier` fitted on the same rows. In this run the median ratio fell from 1.62 to 1.05. That run shared the machine with other studies, so its tail (p90 1.85) is not a reliable measurement.
+
+A timing pass run alone (`run.py --label timing --n-random 1 --clf-time`, 90 fits):
+
+| Rows | Fits | Ratio to classification, median | p90 |
+|---|---|---|---|
+| ≤ 1,000 | 44 | 0.83 | 1.24 |
+| 1,000–2,000 | 18 | 1.23 | 1.78 |
+| 2,000–5,000 | 24 | 0.69 | 0.92 |
+| > 5,000 | 4 | 1.58 | 1.79 |
+| **All** | **90** | **0.86** | **1.54** |
