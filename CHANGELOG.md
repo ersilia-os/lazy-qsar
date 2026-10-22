@@ -90,6 +90,12 @@ against is versioned separately and its id is recorded in every checkpoint's
 - An oversized kernel SVR no longer refits three times with a halved C before falling
   back to the linear model; halving C does not shrink an SVR's support set. Outputs are
   unchanged, and the fit is faster.
+- **ONNX size budgets for kernel SVMs.** The size estimate now counts the 5 bytes per
+  support-vector value that the graph actually takes; it was 4, so the budgets ran 25%
+  over. The SVR's budget is 20 MB, so the kernel SVR is no longer replaced by a LinearSVR
+  from ~700 rows on fingerprints: -0.9% stack RMSE on the 45 benchmark splits of
+  600-2,000 rows. The SVC's budget is 8 MB, up from an effective 6.25 MB; on 2,048-bit
+  fingerprints the kernel SVC is now considered up to ~780 rows, from ~610.
 - The regression XGBoost head early-stops within 500 rounds, not 3,000. Its validation
   loss could creep down for 2,000 rounds; on 90 benchmark splits the cap bound 11 of them
   and moved test RMSE by +0.002%.

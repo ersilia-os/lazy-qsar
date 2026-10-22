@@ -127,9 +127,7 @@ def test_check_trainable_regression_rejects(y, message):
 
 def test_oversized_svr_goes_straight_to_the_linear_model(monkeypatch):
     """C does not shrink an SVR's support set, so the guard refits no kernel models."""
-    import lazyqsar.base.svc._common as svm_common
-
-    monkeypatch.setattr(svm_common, "_ONNX_MAX_BYTES", 1)
+    monkeypatch.setattr(BaseSVR, "_onnx_max_bytes", 1)
     made = []
     original = BaseSVR._make
     monkeypatch.setattr(

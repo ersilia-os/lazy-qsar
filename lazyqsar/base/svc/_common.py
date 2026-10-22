@@ -15,8 +15,14 @@ _VAL_MIN_ROWS = 200
 _RANDOM_STATE = 42
 # Skip a preset whose estimated cost exceeds this multiple of the default preset's.
 _MAX_COST_MULTIPLIER = 20
-# ONNX size budget for kernel models (5 MB); linear models are O(n_features).
-_ONNX_MAX_BYTES = 5_000_000
+# ONNX size budgets for kernel models; linear models are O(n_features). A kernel graph
+# stores every support vector densely (float32 x features).
+# SVC: 8 MB (5 MB before 3.9). Classification keeps far fewer support vectors.
+_SVC_ONNX_MAX_BYTES = 8_000_000
+# SVR: 20 MB. At epsilon=0.05 ~90% of rows are support vectors, so 5 MB forced a
+# LinearSVR from ~700 rows on Morgan bits; the kernel is -0.9% stack RMSE there, and the
+# largest graph on the benchmark (2,000 rows, the SVR's ceiling) was 17.7 MB.
+_SVR_ONNX_MAX_BYTES = 20_000_000
 _ONNX_MAX_RETRIES = 3
 
 
@@ -42,11 +48,17 @@ def svm_cost(params: dict, n_tr: int, n_features: int) -> float:
     return float(n_tr**2 * n_features)
 
 
+# Bytes per support-vector value in the serialised graph: ONNX keeps them in an attribute
+# float list, which protobuf does not pack -- a 1-byte tag plus 4 bytes per value
+# (871 x 2,048 support-vector values -> 8.91 MB on disk).
+_ONNX_BYTES_PER_VALUE = 5
+
+
 def onnx_size_bytes(model, n_features: int) -> int:
-    """ONNX size of a kernel model (support vectors x float32); 0 for linear models."""
+    """Serialised ONNX size of a kernel model's support vectors; 0 for linear models."""
     if not hasattr(model, "support_vectors_"):
         return 0
-    return model.support_vectors_.shape[0] * n_features * 4
+    return model.support_vectors_.shape[0] * n_features * _ONNX_BYTES_PER_VALUE
 
 
 class _SVMHead:
@@ -62,6 +74,8 @@ class _SVMHead:
     _onnx_tolerance = 1e-3
     # Halvings of C the size guard tries before the linear fallback.
     _size_guard_retries = _ONNX_MAX_RETRIES
+    # ONNX size budget of the kernel model.
+    _onnx_max_bytes = _SVC_ONNX_MAX_BYTES
 
     def _fit_final(self, X, target, profile) -> None:
         """Fit ``self.params_`` on all rows; shrink the model if its graph is too big."""
@@ -70,22 +84,22 @@ class _SVMHead:
         if not self._use_linear_:
             for _retry in range(self._size_guard_retries):
                 size = onnx_size_bytes(model, n_features)
-                if size <= _ONNX_MAX_BYTES:
+                if size <= self._onnx_max_bytes:
                     break
                 new_C = self.params_["C"] / 2.0
                 logger.warning(
                     f"ONNX size guard: {size / 1e6:.1f} MB > "
-                    f"{_ONNX_MAX_BYTES / 1e6:.0f} MB — halving C: "
+                    f"{self._onnx_max_bytes / 1e6:.0f} MB — halving C: "
                     f"{self.params_['C']:.4g} → {new_C:.4g}"
                 )
                 self.params_["C"] = new_C
                 model = self._make(self.params_).fit(X, target)
             else:
                 size = onnx_size_bytes(model, n_features)
-                if size > _ONNX_MAX_BYTES:
+                if size > self._onnx_max_bytes:
                     logger.warning(
                         f"ONNX size guard exhausted after {self._size_guard_retries} retries "
-                        f"({size / 1e6:.1f} MB > {_ONNX_MAX_BYTES / 1e6:.0f} MB); "
+                        f"({size / 1e6:.1f} MB > {self._onnx_max_bytes / 1e6:.0f} MB); "
                         "switching to the linear model."
                     )
                     self.params_ = self._linear_fallback_params(profile)

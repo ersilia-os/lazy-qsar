@@ -26,7 +26,7 @@ no package beyond LazyQSAR's own dependencies.
 | `heads.py` | Each candidate preset of each head, fitted alone |
 | `poolers.py` | Pooling rules and head subsets, scored offline on one set of head predictions |
 | `tdc_official.py` | TDC's fixed `admet_group` split, with the leaderboard metrics |
-| `svr_guard.py` | What the SVR slot is worth under its 5 MB ONNX cap, against an uncapped kernel |
+| `svr_guard.py` | What the SVR slot is worth under a 5 MB ONNX cap, against an uncapped kernel |
 | `xgb_stop.py` | Early-stopping rules for XGBoost, replayed on stored validation curves |
 | `ace_reference.py` | Reproduces MoleculeACE's best published method (SVR on ECFP with its per-dataset tuned hyperparameters: 0.671 RMSE / 0.751 on cliff compounds, as published) and runs LazyQSAR on the same splits |
 
@@ -49,7 +49,8 @@ cost more fit time than it recovered, and for the SVR it sometimes picked the Li
 - XGBoost's number of rounds comes from early stopping on a quantile-stratified held-out
   split: 10% of the rows, 20% below 200 rows, and a fixed 100 rounds below 50 rows.
 - The SVR's ONNX size guard falls back to a LinearSVR when the support vectors would
-  make the graph larger than 5 MB. On Morgan bits that happens from about 700 rows.
+  make the graph larger than 20 MB on disk. On Morgan bits that is about 1,950 rows, just
+  under the 2,000-row ceiling where an SVR is fitted at all.
 
 **Above 2,000 rows**, XGBoost uses η 0.08 with depth 8. On the 32 benchmark splits of that
 size this costs 0.8% RMSE on the head and 31% of its fit time. It was the cheapest of the
@@ -135,21 +136,21 @@ rows (`xgb_stop.py`), the stopping rules tried all lost accuracy for little time
 
 A **hard cap of 500 rounds** behaves differently, because it trims only the long tail. On all 90 splits it bound 11 of them and moved test RMSE by +0.002% on average, +0.41% at worst; caps of 800 and 1,000 bound 4 and 3. The preset now stops at 500. On MoleculeACE CHEMBL218 that took the head from 2,000 rounds to 491, and from 16 s to 4 s.
 
-**The SVR under its size cap.** The kernel SVR's ONNX graph stores every support vector
+**The SVR's size cap.** The kernel SVR's ONNX graph stores every support vector
 densely. At ε=0.05 about 90% of rows become support vectors, so on 2,048 Morgan bits the
-5 MB cap is exceeded from about 700 rows, and the head falls back to a LinearSVR.
+former 5 MB cap was exceeded from about 700 rows, and the head fell back to a LinearSVR.
 `svr_guard.py` measured that fallback on the 45 splits between 600 and 2,000 rows:
 
 | SVR in the stack | Stack RMSE vs shipped | Better on | Median ONNX size |
 |---|---|---|---|
-| LinearSVR fallback (shipped) | — | — | < 0.1 MB |
+| LinearSVR fallback (5 MB cap) | — | — | < 0.1 MB |
 | No SVR (lr + xgb) | +0.39% | 8/45 | — |
 | Kernel SVR, no cap | −0.89% | 33/45 | 8.5 MB (max 17.7) |
 | Kernel SVR, ε=0.2, no cap | −0.34% | 29/45 | 6.7 MB |
 | Random forest instead | +0.24% | 21/45 | 2.4 MB |
 
-The kernel is worth about 0.9% RMSE in this range. Getting it means raising the cap,
-which is a trade against checkpoint size.
+The kernel is worth about 0.9% RMSE in this range, so the SVR's cap is now 20 MB on
+disk, which admits the kernel across the whole range at a median of 8.5 MB per head.
 
 ## Prediction intervals
 

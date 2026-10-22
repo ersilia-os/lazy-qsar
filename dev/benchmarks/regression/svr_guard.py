@@ -4,7 +4,7 @@
     python dev/benchmarks/regression/svr_guard.py score --label guard-v1
 
 The kernel SVR's ONNX graph stores every support vector densely (float32 x features), so
-the 5 MB cap allows about 600 support vectors on 2,048 Morgan bits; past it the head
+the 5 MB cap (before 3.9) allowed about 600 support vectors on 2,048 Morgan bits; past it the head
 halves C three times and then falls back to a LinearSVR. ``collect`` fits, through the
 real regression heads, on each (task, split) between ``--min-n`` and ``--max-n`` rows:
 
@@ -43,13 +43,12 @@ EPSILONS = (0.2, 0.4)
 
 
 def _fit_head(name, Xtr, ytr, Xte, cap=True, epsilon=None):
-    import lazyqsar.base.svc._common as svm_common
     from lazyqsar.base.svc import regressor as svr_module
     from lazyqsar.heads import Head
 
-    old_cap, old_params = svm_common._ONNX_MAX_BYTES, svr_module.svr_rbf_params
+    old_cap, old_params = svr_module.BaseSVR._onnx_max_bytes, svr_module.svr_rbf_params
     if not cap:
-        svm_common._ONNX_MAX_BYTES = float("inf")
+        svr_module.BaseSVR._onnx_max_bytes = float("inf")
     if epsilon is not None:
         svr_module.svr_rbf_params = lambda profile: dict(
             old_params(profile), epsilon=epsilon
@@ -63,7 +62,7 @@ def _fit_head(name, Xtr, ytr, Xte, cap=True, epsilon=None):
         size = len(model._onnx_bytes_) if getattr(model, "_onnx_bytes_", None) else None
         return model.oof_preds_, model.predict(Xte), seconds, size, model.preset_name_ if hasattr(model, "preset_name_") else None
     finally:
-        svm_common._ONNX_MAX_BYTES = old_cap
+        svr_module.BaseSVR._onnx_max_bytes = old_cap
         svr_module.svr_rbf_params = old_params
 
 

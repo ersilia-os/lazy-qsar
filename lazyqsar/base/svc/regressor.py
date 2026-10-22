@@ -47,7 +47,7 @@ except ImportError:
     _FIT_DEPS_AVAILABLE = False
 
 from .inspector import inspect as _inspect, DatasetProfile
-from ._common import _SVMHead, _fold_jobs
+from ._common import _SVR_ONNX_MAX_BYTES, _SVMHead, _fold_jobs
 from lazyqsar.base._head import RegressorHead, require_fit_deps
 from lazyqsar.utils.logging import logger
 from lazyqsar.utils.onnx_check import probe_rows
@@ -185,6 +185,7 @@ class BaseSVR(_SVMHead, RegressorHead, BaseEstimator, RegressorMixin):
     # The epsilon tube, not C, sets an SVR's support-vector count: halving C changed it by
     # about 1% on the benchmark, so an oversized kernel goes straight to the linear model.
     _size_guard_retries = 0
+    _onnx_max_bytes = _SVR_ONNX_MAX_BYTES
 
     def __init__(
         self,

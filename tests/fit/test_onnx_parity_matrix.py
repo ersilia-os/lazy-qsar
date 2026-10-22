@@ -341,11 +341,10 @@ def test_rf_regressor(data, n, tmp_path):
 def test_svr_kernel_and_linear(kind, tmp_path, monkeypatch):
     """The kernel preset, and the LinearSVR the ONNX size guard falls back to."""
     from lazyqsar.base.svc import BaseSVR
-    from lazyqsar.base.svc import _common
 
     if kind == "linear":
         # No kernel model fits a zero-byte budget, so the guard ends on LinearSVR.
-        monkeypatch.setattr(_common, "_ONNX_MAX_BYTES", 0)
+        monkeypatch.setattr(BaseSVR, "_onnx_max_bytes", 0)
     X = _fingerprint() if kind == "linear" else _dense()
     model = _quiet(BaseSVR(portfolio=False).fit, X, _target(X))
     assert model._use_linear_ == (kind == "linear")
@@ -385,12 +384,11 @@ def test_preprocessor_binds_and_round_trips(scaler, reducer, monkeypatch, tmp_pa
 
 
 @pytest.mark.parametrize("task", ["regression", "classification"])
-def test_zero_iqr_column_is_scaled_for_regression(task, monkeypatch, tmp_path):
+def test_zero_iqr_column_is_scaled(task, monkeypatch, tmp_path):
     """A column constant on most rows (an RDKit sentinel) must not keep its raw units.
 
-    ``RobustScaler`` divides a zero-IQR column by one; the regression preprocessor
-    divides it by its standard deviation instead, in the bound graph and the checkpoint
-    too. Classification keeps scikit-learn's behaviour (its outputs are pinned).
+    ``RobustScaler`` divides a zero-IQR column by one; the preprocessor divides it by
+    its standard deviation instead, in the bound graph and the checkpoint too.
     """
     from lazyqsar.artifacts.preprocessor import PreprocessorArtifact
     from lazyqsar.base.preprocessing import (
@@ -408,11 +406,7 @@ def test_zero_iqr_column_is_scaled_for_regression(task, monkeypatch, tmp_path):
         prep = _quiet(BaseRegressorPreprocessor().fit, X, _target(X))
     else:
         prep = _quiet(BaseClassifierPreprocessor().fit, X, _labels(X))
-    out = prep.transform(X)
-    if task == "regression":
-        assert np.abs(out).max() < 100
-    else:
-        assert np.abs(out).max() > 9e4
+    assert np.abs(prep.transform(X)).max() < 100
     prep.save(str(tmp_path))
     Q = _queries(X)
     np.testing.assert_array_equal(

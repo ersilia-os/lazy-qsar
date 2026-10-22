@@ -27,10 +27,10 @@ is caught -- a guard that cannot fail is not a guard.
 Coverage is asserted, not hoped for
 -----------------------------------
 Which flavour a model gets is decided by the data, not requested. The heuristic in
-``base/svc/params.py`` proposes one, but the decision that actually sticks is the **5 MB
+``base/svc/params.py`` proposes one, but the decision that actually sticks is the **8 MB
 ONNX budget** in ``base/svc/model.py``: a kernel SVC is fitted first, its export size is
 estimated as ``n_support_vectors x n_features x 4`` bytes, and only if that exceeds
-``_ONNX_MAX_BYTES`` is it refitted as ``LinearSVC``. Sparse count features alone do *not*
+``_SVC_ONNX_MAX_BYTES`` is it refitted as ``LinearSVC``. Sparse count features alone do *not*
 force the linear branch -- verified: a 400x256 Morgan-like matrix profiles as
 ``is_sparse_counts=True`` and still selects kernel SVC.
 
@@ -78,11 +78,11 @@ def auroc(y, s):
     return (ranks[y == 1].sum() - n1 * (n1 + 1) / 2) / (n1 * n0)
 
 
-def budget_busting_data(n=1200, p=2048, rng=None):
+def budget_busting_data(n=1800, p=2048, rng=None):
     """Wide, sparse and deliberately hard, so nearly every point is a support vector.
 
-    ``n_sv x p x 4`` must exceed the 5 MB budget for the linear branch to be taken; at
-    p=2048 that needs more than ~610 support vectors. Heavy label noise is what supplies
+    ``n_sv x p x 4`` must exceed the 8 MB budget for the linear branch to be taken; at
+    p=2048 that needs more than ~980 support vectors. Heavy label noise is what supplies
     them -- a cleanly separable problem would keep only a handful and stay on kernel SVC.
     """
     rng = rng or np.random.default_rng(SEED)

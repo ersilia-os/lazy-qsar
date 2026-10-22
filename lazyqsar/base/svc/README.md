@@ -93,9 +93,11 @@ with the stored `y_mean` / `y_std`.
   [docs/regression.md](../../../docs/regression.md)): RBF kernel, `C=10`,
   `epsilon=0.05`, `gamma="scale"`. Within 0.3% of the per-task best RMSE on average;
   sklearn's defaults (`C=1`) were 3.8% worse and a `LinearSVR` 44% worse. No preset race.
-- **Size guard**: when the kernel's graph would exceed 5 MB (on 2,048 Morgan bits,
-  from about 700 rows, since ~90% of rows become support vectors at `epsilon=0.05`), fall
-  back to `LinearSVR` with `C=1.25` -- the only place a linear SVR is used. Unlike the
+- **Size guard**: the kernel graph may take up to 20 MB on disk (the SVC's budget is
+  8 MB). About 90% of rows become support vectors at `epsilon=0.05`, so on 2,048 Morgan
+  bits that admits the kernel up to about 1,950 rows, which covers the 2,000-row ceiling
+  where the head selector still fits an SVR. Beyond it, fall back to `LinearSVR` with
+  `C=1.25` -- the only place a linear SVR is used. Unlike the
   SVC, `C` is not halved first: the epsilon tube, not `C`, sets an SVR's support set.
 - **Out-of-fold threads**: kernel folds are fitted concurrently (libsvm draws no random
   numbers); `LinearSVR`/`LinearSVC` folds stay serial, because liblinear shuffles with the
@@ -113,3 +115,14 @@ converter reads `probA_`/`probB_` off the fitted estimator, and those attributes
 deprecated in scikit-learn 1.9 and scheduled for removal in 1.11. The pinned
 `scikit-learn==1.9.1` keeps this working; it is a known upgrade blocker rather than a
 current fault.
+
+## ONNX size budget
+
+A kernel graph stores every support vector in an attribute float list, which protobuf
+does not pack: 5 bytes per value (a tag and a float32). `onnx_size_bytes` estimates the
+graph's size on disk as `n_support_vectors x n_features x 5`; the SVC's portfolio
+pre-flight uses the same estimate, with every training row as a support vector. The
+budgets are 8 MB for the SVC (`_SVC_ONNX_MAX_BYTES`) and 20 MB for the SVR
+(`_SVR_ONNX_MAX_BYTES`). Until 3.9 the SVC's budget was 5 MB at 4 bytes per value, about
+6.25 MB on disk; on 2,048 Morgan bits the kernel SVC is now considered up to about 780
+training rows instead of about 610.
