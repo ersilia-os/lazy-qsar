@@ -134,7 +134,13 @@ def _make_svr(params: dict):
 
 
 def _svr_onnx_bytes(svr, n_features: int) -> bytes:
-    """SVR or LinearSVR as a serialised ONNX graph (standardised output)."""
+    """SVR or LinearSVR as a serialised ONNX graph (standardised output).
+
+    An RBF SVR is written as matrix products (:func:`_rbf_svr_onnx_bytes`); a LinearSVR
+    (or any other kernel) goes through skl2onnx.
+    """
+    if getattr(svr, "kernel", None) == "rbf" and hasattr(svr, "support_vectors_"):
+        return _rbf_svr_onnx_bytes(svr, n_features)
     from skl2onnx import convert_sklearn
     from skl2onnx.common.data_types import FloatTensorType
 
@@ -142,6 +148,67 @@ def _svr_onnx_bytes(svr, n_features: int) -> bytes:
     return convert_sklearn(
         svr, initial_types=initial_types, target_opset=15
     ).SerializeToString()
+
+
+def _rbf_svr_onnx_bytes(svr, n_features: int) -> bytes:
+    """An RBF SVR as standard ONNX ops: ``exp(-gamma * |x - sv|^2) @ dual + b``.
+
+    skl2onnx emits onnxruntime's ``SVMRegressor`` operator, which evaluates the kernel
+    support vector by support vector, without BLAS: ~2 ms per row at 1,200 support
+    vectors x 2,048 features, so a fit spent seconds predicting its own training rows
+    and every later prediction paid the same. Here the squared distance is expanded as
+    ``|x|^2 - 2 x.sv + |sv|^2`` around one ``MatMul`` -- about 100x faster on the
+    benchmark -- and the support vectors are a packed float32 initializer (4 bytes per
+    value against the attribute list's 5). Rounding can take a squared distance a hair
+    below zero, so it is clamped at 0. The output matches skl2onnx's: ``variable``,
+    float32, ``(n, 1)``; agreement with the native model is checked at bind time like
+    any graph (measured gap no larger than ``SVMRegressor``'s).
+    """
+    import onnx
+    from onnx import TensorProto, helper, numpy_helper
+
+    sv = np.asarray(svr.support_vectors_, dtype=np.float64)
+    dual = np.asarray(svr.dual_coef_, dtype=np.float64).ravel()
+
+    def const(name, values):
+        return numpy_helper.from_array(np.asarray(values, dtype=np.float32), name)
+
+    initializers = [
+        const("sv_t", sv.T),  # (p, m)
+        const("sv_sq", (sv**2).sum(axis=1)[None, :]),  # (1, m)
+        const("dual", dual[:, None]),  # (m, 1)
+        const("intercept", [float(np.ravel(svr.intercept_)[0])]),
+        const("neg_gamma", [-float(svr._gamma)]),
+        const("minus_two", [-2.0]),
+        const("zero", [0.0]),
+        numpy_helper.from_array(np.array([1], dtype=np.int64), "feature_axis"),
+    ]
+    nodes = [
+        helper.make_node("Mul", ["float_input", "float_input"], ["x_x"]),
+        helper.make_node("ReduceSum", ["x_x", "feature_axis"], ["x_sq"], keepdims=1),
+        helper.make_node("MatMul", ["float_input", "sv_t"], ["x_sv"]),
+        helper.make_node("Mul", ["x_sv", "minus_two"], ["minus_2x_sv"]),
+        helper.make_node("Add", ["minus_2x_sv", "x_sq"], ["partial"]),
+        helper.make_node("Add", ["partial", "sv_sq"], ["d2_raw"]),
+        helper.make_node("Max", ["d2_raw", "zero"], ["d2"]),
+        helper.make_node("Mul", ["d2", "neg_gamma"], ["exponent"]),
+        helper.make_node("Exp", ["exponent"], ["kernel"]),
+        helper.make_node("MatMul", ["kernel", "dual"], ["weighted"]),
+        helper.make_node("Add", ["weighted", "intercept"], ["variable"]),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        "rbf_svr",
+        [helper.make_tensor_value_info("float_input", TensorProto.FLOAT, [None, n_features])],
+        [helper.make_tensor_value_info("variable", TensorProto.FLOAT, [None, 1])],
+        initializers,
+    )
+    # IR 8 / opset 15: what skl2onnx writes, and what every supported onnxruntime reads.
+    model = helper.make_model(
+        graph, opset_imports=[helper.make_opsetid("", 15)], ir_version=8
+    )
+    onnx.checker.check_model(model)
+    return model.SerializeToString()
 
 
 # ---------------------------------------------------------------------------
@@ -186,6 +253,8 @@ class BaseSVR(_SVMHead, RegressorHead, BaseEstimator, RegressorMixin):
     # about 1% on the benchmark, so an oversized kernel goes straight to the linear model.
     _size_guard_retries = 0
     _onnx_max_bytes = _SVR_ONNX_MAX_BYTES
+    # The RBF graph stores support vectors as a packed float32 tensor.
+    _onnx_bytes_per_value = 4
 
     def __init__(
         self,

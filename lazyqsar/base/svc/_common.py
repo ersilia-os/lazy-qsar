@@ -54,11 +54,13 @@ def svm_cost(params: dict, n_tr: int, n_features: int) -> float:
 _ONNX_BYTES_PER_VALUE = 5
 
 
-def onnx_size_bytes(model, n_features: int) -> int:
+def onnx_size_bytes(
+    model, n_features: int, bytes_per_value: int = _ONNX_BYTES_PER_VALUE
+) -> int:
     """Serialised ONNX size of a kernel model's support vectors; 0 for linear models."""
     if not hasattr(model, "support_vectors_"):
         return 0
-    return model.support_vectors_.shape[0] * n_features * _ONNX_BYTES_PER_VALUE
+    return model.support_vectors_.shape[0] * n_features * bytes_per_value
 
 
 class _SVMHead:
@@ -74,8 +76,9 @@ class _SVMHead:
     _onnx_tolerance = 1e-3
     # Halvings of C the size guard tries before the linear fallback.
     _size_guard_retries = _ONNX_MAX_RETRIES
-    # ONNX size budget of the kernel model.
+    # ONNX size budget of the kernel model, and what one support-vector value costs in it.
     _onnx_max_bytes = _SVC_ONNX_MAX_BYTES
+    _onnx_bytes_per_value = _ONNX_BYTES_PER_VALUE
 
     def _fit_final(self, X, target, profile) -> None:
         """Fit ``self.params_`` on all rows; shrink the model if its graph is too big."""
@@ -83,7 +86,7 @@ class _SVMHead:
         model = self._make(self.params_).fit(X, target)
         if not self._use_linear_:
             for _retry in range(self._size_guard_retries):
-                size = onnx_size_bytes(model, n_features)
+                size = onnx_size_bytes(model, n_features, self._onnx_bytes_per_value)
                 if size <= self._onnx_max_bytes:
                     break
                 new_C = self.params_["C"] / 2.0
@@ -95,7 +98,7 @@ class _SVMHead:
                 self.params_["C"] = new_C
                 model = self._make(self.params_).fit(X, target)
             else:
-                size = onnx_size_bytes(model, n_features)
+                size = onnx_size_bytes(model, n_features, self._onnx_bytes_per_value)
                 if size > self._onnx_max_bytes:
                     logger.warning(
                         f"ONNX size guard exhausted after {self._size_guard_retries} retries "

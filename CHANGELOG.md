@@ -90,6 +90,12 @@ against is versioned separately and its id is recorded in every checkpoint's
 - An oversized kernel SVR no longer refits three times with a halved C before falling
   back to the linear model; halving C does not shrink an SVR's support set. Outputs are
   unchanged, and the fit is faster.
+- **The RBF SVR exports as matrix products.** skl2onnx's `SVMRegressor` operator
+  evaluates the kernel one support vector at a time; the SVR's graph is now
+  `exp(-gamma |x - sv|^2) @ dual + b` in standard ONNX ops. Predicting is about 100x
+  faster, loading about 12x, graphs are 20% smaller, and the gap to sklearn is no
+  larger. With the 20 MB budget below, a 1,291-row fit took 16.1 s on the old operator
+  and takes 9.6 s.
 - **ONNX size budgets for kernel SVMs.** The size estimate now counts the 5 bytes per
   support-vector value that the graph actually takes; it was 4, so the budgets ran 25%
   over. The SVR's budget is 20 MB, so the kernel SVR is no longer replaced by a LinearSVR

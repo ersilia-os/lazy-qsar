@@ -93,10 +93,17 @@ with the stored `y_mean` / `y_std`.
   [docs/regression.md](../../../docs/regression.md)): RBF kernel, `C=10`,
   `epsilon=0.05`, `gamma="scale"`. Within 0.3% of the per-task best RMSE on average;
   sklearn's defaults (`C=1`) were 3.8% worse and a `LinearSVR` 44% worse. No preset race.
+- **ONNX graph**: an RBF SVR is exported as standard ops (`MatMul`, `Exp`; see
+  `_rbf_svr_onnx_bytes`), not skl2onnx's `SVMRegressor`. That operator evaluates the
+  kernel one support vector at a time, without BLAS: ~2 ms per row at 1,200 support
+  vectors x 2,048 features. The MatMul graph is about 100x faster, loads about 12x
+  faster, and stores the support vectors packed (4 bytes per value). Its agreement with
+  sklearn is checked at bind time, and by a parity test against both sklearn and
+  `SVMRegressor`.
 - **Size guard**: the kernel graph may take up to 20 MB on disk (the SVC's budget is
   8 MB). About 90% of rows become support vectors at `epsilon=0.05`, so on 2,048 Morgan
-  bits that admits the kernel up to about 1,950 rows, which covers the 2,000-row ceiling
-  where the head selector still fits an SVR. Beyond it, fall back to `LinearSVR` with
+  bits that admits the kernel up to about 2,400 rows, past the 2,000-row ceiling where
+  the head selector still fits an SVR. Beyond it, fall back to `LinearSVR` with
   `C=1.25` -- the only place a linear SVR is used. Unlike the
   SVC, `C` is not halved first: the epsilon tube, not `C`, sets an SVR's support set.
 - **Out-of-fold threads**: kernel folds are fitted concurrently (libsvm draws no random
@@ -119,8 +126,9 @@ current fault.
 ## ONNX size budget
 
 A kernel graph stores every support vector in an attribute float list, which protobuf
-does not pack: 5 bytes per value (a tag and a float32). `onnx_size_bytes` estimates the
-graph's size on disk as `n_support_vectors x n_features x 5`; the SVC's portfolio
+does not pack: 5 bytes per value (a tag and a float32). The SVR's own RBF graph stores
+them as a packed tensor, 4 bytes per value. `onnx_size_bytes` estimates the graph's size
+on disk as `n_support_vectors x n_features x` that cost; the SVC's portfolio
 pre-flight uses the same estimate, with every training row as a support vector. The
 budgets are 8 MB for the SVC (`_SVC_ONNX_MAX_BYTES`) and 20 MB for the SVR
 (`_SVR_ONNX_MAX_BYTES`). Until 3.9 the SVC's budget was 5 MB at 4 bytes per value, about

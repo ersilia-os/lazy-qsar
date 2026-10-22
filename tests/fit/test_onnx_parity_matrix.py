@@ -269,6 +269,42 @@ def test_svc_graph_score_column_is_the_decision_function(kind, tmp_path):
     np.testing.assert_array_equal(art.run(Q)[:, 1], model.predict_proba(Q)[:, 1])
 
 
+@pytest.mark.parametrize("data", ["dense", "fingerprint"])
+def test_rbf_svr_graph_matches_sklearn_and_skl2onnx(data):
+    """The kernel SVR's MatMul graph computes what sklearn and skl2onnx's operator do.
+
+    The RBF graph is LazyQSAR's own (``_rbf_svr_onnx_bytes``), not a converter's: it is
+    held to sklearn's prediction directly, and to skl2onnx's ``SVMRegressor`` graph, on
+    training rows, fresh rows and ULP-nudged rows.
+    """
+    import onnx
+    import onnxruntime as rt
+    from skl2onnx import convert_sklearn
+    from skl2onnx.common.data_types import FloatTensorType
+    from sklearn.svm import SVR
+
+    from lazyqsar.base.svc.regressor import _svr_onnx_bytes
+
+    X = _fingerprint() if data == "fingerprint" else _dense()
+    svr = SVR(C=10.0, epsilon=0.05, gamma="scale").fit(X, _target(X))
+    Q = _queries(X).astype(np.float32)
+    ours = _svr_onnx_bytes(svr, X.shape[1])
+    assert "MatMul" in {n.op_type for n in onnx.load_from_string(ours).graph.node}
+    reference = convert_sklearn(
+        svr, initial_types=[("float_input", FloatTensorType([None, X.shape[1]]))],
+        target_opset=15,
+    ).SerializeToString()
+
+    def run(graph):
+        s = rt.InferenceSession(graph, providers=["CPUExecutionProvider"])
+        return s.run(None, {s.get_inputs()[0].name: Q})[0].ravel()
+
+    native = svr.predict(Q.astype(np.float64))
+    scale = max(1.0, float(np.abs(native).max()))
+    np.testing.assert_allclose(run(ours), native, rtol=0, atol=V_RTOL * scale)
+    np.testing.assert_allclose(run(ours), run(reference), rtol=0, atol=V_RTOL * scale)
+
+
 # ------------------------------------------------------------------ regressors
 
 
