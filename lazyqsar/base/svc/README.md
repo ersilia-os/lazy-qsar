@@ -131,6 +131,6 @@ them as a packed tensor, 4 bytes per value. `onnx_size_bytes` estimates the grap
 on disk as `n_support_vectors x n_features x` that cost; the SVC's portfolio
 pre-flight uses the same estimate, with every training row as a support vector. The
 budgets are 8 MB for the SVC (`_SVC_ONNX_MAX_BYTES`) and 20 MB for the SVR
-(`_SVR_ONNX_MAX_BYTES`). Until 3.9 the SVC's budget was 5 MB at 4 bytes per value, about
+(`_SVR_ONNX_MAX_BYTES`). Until 3.8 the SVC's budget was 5 MB at 4 bytes per value, about
 6.25 MB on disk; on 2,048 Morgan bits the kernel SVC is now considered up to about 780
 training rows instead of about 610.

@@ -127,7 +127,7 @@ PRESETS = {
         # Probst et al. 2019 (JMLR) tuned optimum for ranger: mtry ~ 0.26 p,
         # sample fraction ~ 0.7 (classification-derived; tested here for regression).
         "probst": _rf(max_features=0.26, max_samples=0.7, min_samples_leaf=1),
-        # The current 3.8.0 heuristic: p/3 dense, log2 on wide sparse fingerprints.
+        # The first implementation's heuristic (#54): p/3 dense, log2 on wide sparse fingerprints.
         "lazyqsar_3_8_heuristic": _rf(
             max_features=lambda n, p, s: "log2" if (s and p > 500) else 0.33,
             min_samples_leaf=1,

@@ -17,7 +17,7 @@ _RANDOM_STATE = 42
 _MAX_COST_MULTIPLIER = 20
 # ONNX size budgets for kernel models; linear models are O(n_features). A kernel graph
 # stores every support vector densely (float32 x features).
-# SVC: 8 MB (5 MB before 3.9). Classification keeps far fewer support vectors.
+# SVC: 8 MB (until 3.8, 5 MB at an under-counted 4 bytes per value). Classification keeps far fewer support vectors.
 _SVC_ONNX_MAX_BYTES = 8_000_000
 # SVR: 20 MB. At epsilon=0.05 ~90% of rows are support vectors, so 5 MB forced a
 # LinearSVR from ~700 rows on Morgan bits; the kernel is -0.9% stack RMSE there, and the
