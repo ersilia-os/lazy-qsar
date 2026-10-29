@@ -5,6 +5,24 @@ All notable changes to this project are documented here. Versions follow
 against is versioned separately and its id is recorded in every checkpoint's
 `pooled_ranker.library`.
 
+## 3.8.1
+
+### Fixed
+
+- **A correct logistic-regression graph was rejected at fit.** The bind-time export check
+  compared the classifier's float32 ONNX graph with the float64 model at 1e-5, but a sum over
+  thousands of weighted features rounds by more than that in float32: on 2,300 descriptors a
+  fit failed with `OnnxExportMismatch` at 2.99e-5, and the descriptor was lost from the
+  ensemble. The linear classifier now checks at 1e-4, as the SVMs and the save-time check
+  already did. A wrong graph (a dropped or sign-flipped coefficient, a lost intercept) still
+  raises; tests pin that.
+- **`rank` raised `IndexError` when the reference reached probability 1.0** (since 3.7.0, thanks
+  to @TiagoJanela, #63). With a score of exactly 1.0 in the reference library and the actives
+  anchor not used (the out-of-fold actives' p95 is 1.0), the smooth scale had no table point
+  above the reference maximum. A ZairaChem fit failed at the pool step after about 70 minutes.
+  The next point is now certainty, as the code's own comment says. A score of exactly 1.0 gets
+  the rank of the top of the reference curve; ranks stay monotone and finite.
+
 ## 3.8.0
 
 ### Added
