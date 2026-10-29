@@ -21,7 +21,7 @@ against is versioned separately and its id is recorded in every checkpoint's
   anchor not used (the out-of-fold actives' p95 is 1.0), the smooth scale had no table point
   above the reference maximum. A ZairaChem fit failed at the pool step after about 70 minutes.
   The next point is now certainty, as the code's own comment says. A score of exactly 1.0 gets
-  the rank of the top of the reference curve, which ranks are monotone and finite for.
+  the rank of the top of the reference curve; ranks stay monotone and finite.
 
 ## 3.8.0
 
