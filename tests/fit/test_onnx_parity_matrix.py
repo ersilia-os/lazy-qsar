@@ -608,3 +608,56 @@ def test_svc_artifact_refuses_a_score_column_that_disagrees_with_the_fit(tmp_pat
     meta_path.write_text(json.dumps(meta))
     with pytest.raises(OnnxExportMismatch):
         SVCArtifact.load(str(tmp_path))
+
+
+# ------------------------------------------------------------------ linear export check
+
+
+def _wide_cancelling_head(scale):
+    """A fitted linear classifier whose probe rows sit near p = 0.5 while the weighted features
+    are large, so the dot product loses float32 rounding that no fixed constant of 1e-5 allows.
+
+    Near-duplicate columns with alternating-sign weights are what an unregularised fit on
+    correlated descriptors produces: big terms that cancel.
+    """
+    from lazyqsar.base.linear import BaseLinearClassifier
+
+    rng = np.random.default_rng(0)
+    u = rng.normal(size=(700, 1))
+    X = (4 * u + 0.002 * rng.normal(size=(700, 2300))).astype(np.float32)
+    model = _quiet(BaseLinearClassifier().fit, X, (u[:, 0] > np.median(u)).astype(int))
+    est = model._estimator
+    sign = np.where(np.arange(est.coef_.shape[1]) % 2 == 0, 1.0, -1.0)
+    est.coef_ = (sign * scale)[None, :]
+    est.intercept_ = np.array([0.0])
+    return model
+
+
+def test_a_wide_linear_classifier_binds_despite_float32_rounding():
+    """Summing 2,300 large weighted features in float32 loses ~2e-5 of probability (measured on a
+    real fit: 1.6e-5 to 3e-5). That is rounding, not a conversion bug, and must not fail the fit."""
+    _wide_cancelling_head(scale=10.0)._bind_onnx()
+
+
+@pytest.mark.parametrize("fault", ["dropped", "sign", "intercept"])
+def test_the_linear_bind_check_still_catches_a_wrong_graph(fault):
+    from lazyqsar.utils.onnx_check import OnnxExportMismatch
+
+    X = _dense(n=300, p=40)
+    from lazyqsar.base.linear import BaseLinearClassifier
+
+    model = _quiet(BaseLinearClassifier().fit, X, _labels(X))
+    est = model._estimator
+    coef, intercept = est.coef_.copy(), est.intercept_.copy()
+    top = int(np.argmax(np.abs(coef)))
+    if fault == "dropped":
+        est.coef_[0, top] = 0.0
+    elif fault == "sign":
+        est.coef_[0, top] = -coef[0, top]
+    else:
+        est.intercept_ = intercept + 0.01  # a shift of 0.01 in the logit
+    data = model._onnx_bytes()
+    est.coef_, est.intercept_ = coef, intercept
+    model._onnx_bytes = lambda: data
+    with pytest.raises(OnnxExportMismatch):
+        model._bind_onnx()

@@ -375,6 +375,11 @@ class BaseLinearClassifier(_LinearHead, ClassifierHead):
 
     _task = "classification"
     _onnx_last_step = "clf"
+    # A float32 graph sums thousands of weighted features, and the rounding of that sum grows with
+    # their size: measured on 2,300 descriptors with large coefficients, 1.6e-5 to 3e-5 of
+    # probability against the float64 model, above the 1e-5 trees and linear models otherwise
+    # carry. 1e-4 is what the SVMs and the save-time check use; a wrong graph is off by tenths.
+    _onnx_tolerance = 1e-4
 
     def __init__(
         self,
