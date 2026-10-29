@@ -16,6 +16,12 @@ against is versioned separately and its id is recorded in every checkpoint's
   ensemble. The linear classifier now checks at 1e-4, as the SVMs and the save-time check
   already did. A wrong graph (a dropped or sign-flipped coefficient, a lost intercept) still
   raises; tests pin that.
+- **`rank` raised `IndexError` when the reference reached probability 1.0** (since 3.7.0, thanks
+  to @TiagoJanela, #63). With a score of exactly 1.0 in the reference library and the actives
+  anchor not used (the out-of-fold actives' p95 is 1.0), the smooth scale had no table point
+  above the reference maximum. A ZairaChem fit failed at the pool step after about 70 minutes.
+  The next point is now certainty, as the code's own comment says. A score of exactly 1.0 gets
+  the rank of the top of the reference curve, which ranks are monotone and finite for.
 
 ## 3.8.0
 
