@@ -318,7 +318,12 @@ def _smooth_scale(prepared, anchor_high):
         # tail, instead of flattening and piling the reference's top 0.1% onto one rank.
         # Capped at a third of the room left below the next point of the table (the actives
         # anchor, or certainty), so molecules beyond the reference keep room to spread.
-        y_next = float(ys[np.searchsorted(xs, vals[-1], side="right")])
+        # A reference that already reaches probability 1.0 has no point above it: the next
+        # point is certainty, the last one of the table. A score of exactly 1.0 then gets
+        # `r_top`, the rank of the reference maximum, not 1.0.
+        y_next = float(
+            ys[min(np.searchsorted(xs, vals[-1], side="right"), len(ys) - 1)]
+        )
         extra = t_top - t_anchors[-1]
         r_top = r_last + min(_TOP_PACE * extra, (y_next - r_last) / 3.0)
     if r_top <= r_nodes[-1]:
