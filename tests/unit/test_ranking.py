@@ -408,6 +408,38 @@ def test_the_actives_anchor_is_dropped_when_it_would_fold_the_table():
     assert used_ok
 
 
+@pytest.mark.parametrize("anchor_high", [None, 0.2, 1.0])
+def test_a_reference_that_reaches_certainty_does_not_break_the_smooth_scale(
+    anchor_high,
+):
+    """A reference with scores of exactly 1.0 and an actives anchor that is not used.
+
+    The anchor table then ends at 1.0 and the reference maximum sits on its last point, so
+    there is no table point above it. This used to raise IndexError in the smooth scale
+    (seen in a model whose out-of-fold actives scored 1.0 often enough for their p95 to be
+    1.0, so `reference_anchor_table` did not use the actives anchor).
+    """
+    rng = np.random.default_rng(0)
+    knots = np.sort(rng.beta(0.5, 3.0, 50_000))
+    knots[-20:] = 1.0
+    prep = prepare_knots(knots)
+    assert prep[0][-1] == 1.0
+
+    scores = np.array([0.0, 0.3, 0.99, 1.0])
+    ranks = rank_from_reference(scores, prepared=prep, anchors=(0.01, anchor_high))
+    assert np.all(np.isfinite(ranks))
+    assert np.all(np.diff(ranks) >= 0)
+    assert 0.0 <= ranks[0] and ranks[-1] <= 1.0
+
+    anchors = [rank for _, rank in TAIL_ANCHORS]
+    back = rank_from_reference(
+        proba_from_reference_rank(anchors, prepared=prep, anchor_high=anchor_high),
+        prepared=prep,
+        anchors=(0.01, anchor_high),
+    )
+    assert back == pytest.approx(anchors, abs=1e-9)
+
+
 def test_the_table_spends_its_resolution_on_the_tail():
     """The reason for tail anchors: the library's top 1% gets far more axis than its middle.
 
