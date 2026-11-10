@@ -2,7 +2,6 @@ import os
 import re
 import csv
 import json
-import pandas as pd
 import numpy as np
 import onnxruntime as ort
 from dataclasses import dataclass
@@ -58,7 +57,15 @@ class ChemblNearestNeighbour(object):
         self.fpe = FPSim2Engine(self.fp_database)
 
     def highest_similarity(self, smiles, metric="tanimoto"):
-        results = self.fpe.top_k(smiles, k=1, threshold=0.0, metric=metric, n_workers=1)
+        """Row of the most similar ChEMBL molecule, or ``None`` if none is similar enough.
+
+        A neighbour below ``similarity_threshold`` is not used: its embedding would stand
+        in for a molecule it does not resemble (Tanimoto down to 0.4 was seen). The row
+        then stays NaN and is median-imputed like any other missing descriptor value.
+        """
+        results = self.fpe.top_k(
+            smiles, k=1, threshold=self.similarity_threshold, metric=metric, n_workers=1
+        )
         # One return type: the caller tests `is None`, which a (None, None) tuple fails.
         if results is None or len(results) == 0:
             return None
@@ -261,11 +268,10 @@ class InputPipelineInferEncode:
             None
         """
         # Preprocess SMILES and filter invalid ones
-        processed_smiles = [preprocess_smiles(smi) for smi in seq_list]
-        valid_mask = [not pd.isna(smi) for smi in processed_smiles]
-        self.seq_list = [
-            smi for smi, valid in zip(processed_smiles, valid_mask) if valid
-        ]
+        # Takes SMILES already preprocessed by `InferenceModel.seq_to_emb`. cddd-onnx
+        # preprocessed them a second time here; a molecule dropped by that second pass
+        # would have misaligned every row of the call.
+        self.seq_list = list(seq_list)
 
         if not self.seq_list:
             raise ValueError("No valid SMILES found after preprocessing")
@@ -278,26 +284,28 @@ class InputPipelineInferEncode:
         """Function that defines the generator."""
         n = len(self.seq_list)
         for ndx in range(0, n, self.batch_size):
-            samples = self.seq_list[ndx : min(ndx + self.batch_size, n)]
-            samples = [self._seq_to_idx(seq) for seq in samples]
-            seq_len_batch = np.array([len(entry) for entry in samples])
-            max_length = seq_len_batch.max()
-            seq_batch = np.concatenate(
-                [
-                    np.expand_dims(
-                        np.append(
-                            seq,
-                            np.array(
-                                [self.encode_vocabulary["</s>"]]
-                                * (max_length - len(seq))
-                            ),
+            yield self.encode_batch(self.seq_list[ndx : min(ndx + self.batch_size, n)])
+
+    def encode_batch(self, samples):
+        """Token ids and lengths for one batch of preprocessed SMILES, padded with </s>."""
+        samples = [self._seq_to_idx(seq) for seq in samples]
+        seq_len_batch = np.array([len(entry) for entry in samples])
+        max_length = seq_len_batch.max()
+        seq_batch = np.concatenate(
+            [
+                np.expand_dims(
+                    np.append(
+                        seq,
+                        np.array(
+                            [self.encode_vocabulary["</s>"]] * (max_length - len(seq))
                         ),
-                        0,
-                    )
-                    for seq in samples
-                ]
-            ).astype(np.int32)
-            yield seq_batch, seq_len_batch
+                    ),
+                    0,
+                )
+                for seq in samples
+            ]
+        ).astype(np.int32)
+        return seq_batch, seq_len_batch
 
     def initialize(self):
         """Helper function to initialize the generator"""
@@ -408,27 +416,35 @@ class InferenceModel:
         if len(good_smiles) == 0:
             return X
 
-        try:
-            input_pipeline = InputPipelineInferEncode(good_smiles, self.hparams)
-            input_pipeline.initialize()
-            emb_list = []
-            while True:
-                try:
-                    input_seq, input_len = input_pipeline.get_next()
-                    outputs = self.encoder_session.run(
-                        None,
-                        {
-                            "Input/Placeholder:0": input_seq.astype(np.int32),
-                            "Input/Placeholder_1:0": input_len.astype(np.int32),
-                        },
-                    )
-                    emb_list.append(outputs[0])
-                except StopIteration:
-                    break
-            embeddings = np.vstack(emb_list)
-            X[accepted_idxs] = embeddings
-        except Exception:
-            pass  # X[accepted_idxs] stays NaN; ChEMBL fallback in transform() handles them
+        # Batch by batch, so an error leaves only that batch NaN. A single `except: pass`
+        # around everything used to turn the whole call NaN, and the ChEMBL fallback then
+        # silently replaced every molecule with a neighbour's embedding.
+        input_pipeline = InputPipelineInferEncode(good_smiles, self.hparams)
+        bs = self.hparams.batch_size
+        for start in range(0, len(good_smiles), bs):
+            rows = accepted_idxs[start : start + bs]
+            try:
+                input_seq, input_len = input_pipeline.encode_batch(
+                    good_smiles[start : start + bs]
+                )
+                emb = self.encoder_session.run(
+                    None,
+                    {
+                        "Input/Placeholder:0": input_seq.astype(np.int32),
+                        "Input/Placeholder_1:0": input_len.astype(np.int32),
+                    },
+                )[0]
+            except Exception as exc:
+                logger.warning(
+                    f"[cddd] encoding failed for a batch of {len(rows)} molecules "
+                    f"({type(exc).__name__}: {exc}); they are left NaN"
+                )
+                continue
+            if len(emb) != len(rows):
+                raise RuntimeError(
+                    f"CDDD returned {len(emb)} embeddings for {len(rows)} molecules"
+                )
+            X[rows] = emb
         return X
 
 
@@ -438,13 +454,22 @@ class ContinuousDataDrivenDescriptor(object):
         self.n_dim = 512
         self.model = InferenceModel()
         self.smiles_indexed = load_smiles_indexed()
+        self._chembl = None
+
+    def _neighbours(self):
+        # Loaded on first use and kept: building it takes ~0.5 s and was repeated for
+        # every predict chunk with an out-of-domain molecule. The ~570 MB it occupies was
+        # not returned to the OS after each use anyway, so keeping it costs no extra peak.
+        if self._chembl is None:
+            self._chembl = ChemblNearestNeighbour()
+        return self._chembl
 
     def transform(self, smiles_list):
         outputs = self.model.seq_to_emb(smiles_list)
         nan_rows = np.isnan(outputs).any(axis=1)
         n_rows_with_nan = int(nan_rows.sum())
         if n_rows_with_nan != 0:
-            chembl_sim = ChemblNearestNeighbour()
+            chembl_sim = self._neighbours()
             for i in np.where(nan_rows)[0]:
                 smi = smiles_list[i]
                 # The fallback cannot rescue a SMILES RDKit cannot parse: FPSim2 raises on
@@ -467,8 +492,9 @@ class ContinuousDataDrivenDescriptor(object):
         residual_nan = np.where(np.isnan(embeddings).any(axis=1))[0]
         if len(residual_nan):
             logger.warning(
-                f"[cddd] {len(residual_nan)} SMILES produced NaN descriptors after "
-                f"ChEMBL fallback and will be median-imputed (indices: {residual_nan.tolist()})"
+                f"[cddd] {len(residual_nan)} SMILES produced NaN descriptors after the "
+                "ChEMBL fallback (unparseable, or no neighbour with Tanimoto >= 0.7) and "
+                f"will be median-imputed (indices: {residual_nan.tolist()})"
             )
         return embeddings
 

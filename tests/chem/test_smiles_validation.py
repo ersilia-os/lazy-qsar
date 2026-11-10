@@ -201,6 +201,7 @@ def test_cddd_fallback_skips_unparseable_smiles(monkeypatch):
     )
     descriptor.model = _Model()
     descriptor.smiles_indexed = ["CCN"]
+    descriptor._chembl = None
 
     X = descriptor.transform(["CCO", "not_a_smiles", "", "C"])
     assert np.isnan(X).all(axis=1).tolist() == [False, True, True, False]
