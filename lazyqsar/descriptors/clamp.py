@@ -8,6 +8,7 @@ from rdkit.Chem import AllChem
 from rdkit.Chem.rdmolops import FastFindRings
 from rdkit import RDLogger
 
+from ._validate import parse_molecule
 from ..utils.checkpoints import CHECKPOINT_SHA256, checkpoint_dir, checkpoint_sources
 from ..utils.fetch import fetch
 from ..utils.logging import logger
@@ -104,6 +105,11 @@ class ClampDescriptor:
             chunk = smiles_list[chunk_start : chunk_start + chunk_size]
             fps, valid_idx = [], []
             for j, s in enumerate(chunk):
+                # Unparseable input stays NaN, as in every other descriptor. Without this
+                # it got the embedding of an all-zero fingerprint, the same plausible
+                # vector for every bad SMILES.
+                if parse_molecule(s) is None:
+                    continue
                 try:
                     fps.append(_smiles_to_fp(s))
                     valid_idx.append(chunk_start + j)

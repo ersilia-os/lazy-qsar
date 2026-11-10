@@ -10,6 +10,7 @@ from ..utils.checkpoints import (
     checkpoint_sources,
 )
 from ..utils.fetch import fetch
+from ._validate import parse_molecule
 from ..utils.logging import logger
 
 
@@ -38,7 +39,7 @@ except ImportError:
             "chemprop is required for ChemeleonDescriptor. "
             'Install the full descriptor extras: pip install -e ".[all]"'
         )
-from rdkit.Chem import MolFromSmiles, Mol
+from rdkit.Chem import Mol
 from rdkit import RDLogger
 
 RDLogger.DisableLog("rdApp.*")
@@ -73,7 +74,9 @@ class _CheMeleonFingerprint:
             self.model.to(device=device)
 
     def __call__(self, molecules: list[str | Mol]) -> np.ndarray:
-        mols = [MolFromSmiles(m) if isinstance(m, str) else m for m in molecules]
+        # parse_molecule rather than MolFromSmiles: it also rejects "", which would
+        # otherwise be featurized as an empty graph and get an embedding.
+        mols = [parse_molecule(m) if isinstance(m, str) else m for m in molecules]
         valid_idx = [i for i, m in enumerate(mols) if m is not None]
 
         if not valid_idx:

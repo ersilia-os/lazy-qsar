@@ -151,3 +151,57 @@ def test_every_descriptor_reports_its_width_the_same_way(name):
         assert n_dim == len(features), (
             f"{name}: n_dim {n_dim} disagrees with {len(features)} features"
         )
+
+
+@pytest.mark.parametrize("name", LOCAL_DESCRIPTORS)
+def test_unparseable_rows_and_only_those_are_nan(name, good):
+    """Every descriptor uses `parse_molecule`, so "" and junk are NaN and nothing else is.
+
+    RDKit used to compute a full row for "", which it parses to a zero-atom molecule.
+    """
+    import numpy as np
+
+    from lazyqsar.registry import get_descriptor_type
+
+    smiles = [good[0], "", "not_a_smiles", good[1], " "]
+    X = np.asarray(get_descriptor_type(name)().transform(smiles), dtype=float)
+    assert np.isnan(X).all(axis=1).tolist() == [False, True, True, False, True]
+
+
+def test_cddd_fallback_skips_unparseable_smiles(monkeypatch):
+    """lazy-qsar#51: one unparseable SMILES took the whole CDDD batch down.
+
+    The ChEMBL fallback handed the bad string to FPSim2, which raised. Now it is left NaN,
+    and a valid out-of-domain molecule still goes through the fallback. The encoder and
+    the ChEMBL index are stand-ins, so this needs neither FPSim2 nor the checkpoints.
+    """
+    import numpy as np
+
+    from lazyqsar.descriptors import cddd
+
+    queried = []
+
+    class _Neighbours:
+        def highest_similarity(self, smiles):
+            queried.append(smiles)
+            return 0
+
+    class _Model:
+        def seq_to_emb(self, smiles_list):
+            # "CCO" is in domain; everything else is NaN, as preprocessing would make it.
+            out = np.full((len(smiles_list), 512), np.nan, dtype=np.float32)
+            for i, s in enumerate(smiles_list):
+                if s in ("CCO", "CCN"):
+                    out[i] = 1.0
+            return out
+
+    monkeypatch.setattr(cddd, "ChemblNearestNeighbour", _Neighbours)
+    descriptor = cddd.ContinuousDataDrivenDescriptor.__new__(
+        cddd.ContinuousDataDrivenDescriptor
+    )
+    descriptor.model = _Model()
+    descriptor.smiles_indexed = ["CCN"]
+
+    X = descriptor.transform(["CCO", "not_a_smiles", "", "C"])
+    assert np.isnan(X).all(axis=1).tolist() == [False, True, True, False]
+    assert queried == ["C"]

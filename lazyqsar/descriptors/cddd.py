@@ -14,6 +14,7 @@ from rdkit import RDLogger
 from rdkit import __version__ as rdkit_version
 
 
+from ._validate import parse_molecule
 from ..utils.fetch import fetch, is_cached
 from ..utils.logging import logger
 from ..utils.checkpoints import (
@@ -58,10 +59,10 @@ class ChemblNearestNeighbour(object):
 
     def highest_similarity(self, smiles, metric="tanimoto"):
         results = self.fpe.top_k(smiles, k=1, threshold=0.0, metric=metric, n_workers=1)
+        # One return type: the caller tests `is None`, which a (None, None) tuple fails.
         if results is None or len(results) == 0:
-            return None, None
-        idx = results[0][0]
-        return idx
+            return None
+        return results[0][0]
 
 
 def load_smiles_indexed():
@@ -446,6 +447,10 @@ class ContinuousDataDrivenDescriptor(object):
             chembl_sim = ChemblNearestNeighbour()
             for i in np.where(nan_rows)[0]:
                 smi = smiles_list[i]
+                # The fallback cannot rescue a SMILES RDKit cannot parse: FPSim2 raises on
+                # it and takes the whole batch down (lazy-qsar#51). Leave it NaN.
+                if parse_molecule(smi) is None:
+                    continue
                 logger.debug(
                     "Finding nearest neighbor in ChEMBL for SMILES with NaN descriptor..."
                 )
