@@ -18,9 +18,10 @@ Every descriptor must therefore be computed before any file is final, which is w
 ``--all`` rewrites the molecule list at the end. Running one descriptor at a time is
 supported for parallelism, but the intersection still has to happen once they all exist.
 
-**CDDD is sharded.** ``seq_to_emb`` wraps its entire batch loop in a single ``try/except``
-(``cddd.py:403-423``), so one tokenizer failure nulls every remaining row rather than one.
-Shards of 1000 bound the blast radius and make a failure nameable.
+**CDDD is sharded.** Shards of 1000 make a failure nameable in the log. Until 3.9.0,
+``seq_to_emb`` wrapped its whole batch loop in one ``try/except``, so one tokenizer failure
+nulled every row of the call; it now handles each batch of 128 on its own, and sharding is
+kept for the progress log.
 """
 
 from __future__ import annotations
@@ -71,6 +72,7 @@ def main() -> int:
     ap.add_argument("--all", action="store_true")
     ap.add_argument("--n", type=int, default=config.DEFAULT_N)
     args = ap.parse_args()
+    config.require_repo_lazyqsar()
     if not args.descriptor and not args.all:
         ap.error("pass --descriptor NAME or --all")
 

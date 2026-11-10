@@ -27,7 +27,7 @@ def bundle(tmp_path, monkeypatch):
 def _manifest(**over):
     base = {
         "schema_version": 1,
-        "reference_id": "lazyqsar_reference_v1",
+        "reference_id": "lazyqsar_reference_v2",
         "files": {"morgan_n50000.h5": {"sha256": "a" * 64, "bytes": 10}},
         "checkpoints": {"chemeleon_mp.pt": {"sha256": "b" * 64}},
         "canary": {"file": "canary_n50000.h5", "n": 2, "smiles": ["CCO", "CCC"]},
@@ -44,7 +44,7 @@ def test_a_bundle_without_a_manifest_is_not_an_error(bundle):
 
 def test_a_manifest_round_trips(bundle):
     (bundle / "manifest.json").write_text(json.dumps(_manifest()))
-    assert mf.load(fetch_if_missing=False)["reference_id"] == "lazyqsar_reference_v1"
+    assert mf.load(fetch_if_missing=False)["reference_id"] == "lazyqsar_reference_v2"
 
 
 def test_a_corrupt_download_is_rejected(bundle):
