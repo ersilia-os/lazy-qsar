@@ -54,6 +54,31 @@ def test_a_missing_eosvc_says_how_to_get_it(monkeypatch, tmp_path):
     assert "lazyqsar[fit]" in str(exc.value)
 
 
+def test_a_manifest_that_cannot_be_fetched_is_not_reported_as_unpublished(
+    monkeypatch, tmp_path
+):
+    """Without eosvc the manifest cannot be fetched, which is not the same as "not
+    published". `ensure_manifest` returned None for both, so the bundle verifier reported a
+    published bundle as having no manifest."""
+    from lazyqsar.reference import manifest as mf
+
+    monkeypatch.delenv("LAZYQSAR_REFERENCE_OFFLINE", raising=False)
+    monkeypatch.setenv("LAZYQSAR_REFERENCE_DIR", str(tmp_path))
+    monkeypatch.setattr("shutil.which", lambda _: None)
+    with pytest.raises(ReferenceDownloadError, match="eosvc"):
+        mf.load()
+
+
+def test_a_cached_manifest_needs_no_eosvc(monkeypatch, tmp_path):
+    from lazyqsar.reference import manifest as mf
+
+    monkeypatch.delenv("LAZYQSAR_REFERENCE_OFFLINE", raising=False)
+    monkeypatch.setenv("LAZYQSAR_REFERENCE_DIR", str(tmp_path))
+    monkeypatch.setattr("shutil.which", lambda _: None)
+    (tmp_path / "manifest.json").write_text(json.dumps({"reference_id": "x"}))
+    assert mf.load()["reference_id"] == "x"
+
+
 def test_the_eosvc_contract(monkeypatch, tmp_path):
     """What is asked of eosvc: this repo, this path, and no credentials.
 
