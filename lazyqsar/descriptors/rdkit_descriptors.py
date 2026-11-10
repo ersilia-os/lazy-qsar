@@ -5,6 +5,7 @@ from rdkit import Chem
 from rdkit.ML.Descriptors import MoleculeDescriptors
 from rdkit.Chem import Descriptors
 from rdkit import RDLogger
+from ._validate import parse_molecule
 from ..utils.logging import logger
 
 RDLogger.DisableLog("rdApp.*")
@@ -33,10 +34,9 @@ class RDKitDescriptor(object):
         nan_row = np.full(n_desc, np.nan, dtype=np.float32)
         results = []
         for smi in smiles_list:
-            try:
-                mol = Chem.MolFromSmiles(smi)
-            except Exception:
-                mol = None
+            # The shared parser also rejects "", which RDKit parses to a zero-atom
+            # molecule that otherwise got a full row of descriptor values.
+            mol = parse_molecule(smi)
             if mol is None:
                 # Short-circuit rather than let the calculator see None. It would return a
                 # row of NaN either way, but MoleculeDescriptors catches each descriptor's

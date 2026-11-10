@@ -186,7 +186,16 @@ def ensure_smiles(n: int | None = None, force: bool = False) -> Path:
 
 
 def ensure_manifest(force: bool = False) -> Path | None:
-    """Fetch the manifest, or ``None`` if the published bundle has none yet."""
+    """Fetch the manifest, or ``None`` if the published bundle has none yet.
+
+    ``None`` means eosvc ran and found no manifest. When nothing can be fetched at all --
+    offline, or no ``eosvc`` on PATH -- this raises :class:`ReferenceDownloadError` with
+    the reason instead, unless the manifest is already cached. Returning ``None`` then made
+    ``verify_reference_bundle.py`` report "no manifest published" for a bundle that was
+    published, when the real problem was a missing ``eosvc``.
+    """
+    if offline() or not eosvc_available():
+        return download([MANIFEST_FILENAME], force=force)[0]
     try:
         return download([MANIFEST_FILENAME], force=force)[0]
     except ReferenceDownloadError as exc:

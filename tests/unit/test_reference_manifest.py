@@ -27,7 +27,7 @@ def bundle(tmp_path, monkeypatch):
 def _manifest(**over):
     base = {
         "schema_version": 1,
-        "reference_id": "lazyqsar_reference_v1",
+        "reference_id": "lazyqsar_reference_v2",
         "files": {"morgan_n50000.h5": {"sha256": "a" * 64, "bytes": 10}},
         "checkpoints": {"chemeleon_mp.pt": {"sha256": "b" * 64}},
         "canary": {"file": "canary_n50000.h5", "n": 2, "smiles": ["CCO", "CCC"]},
@@ -44,7 +44,7 @@ def test_a_bundle_without_a_manifest_is_not_an_error(bundle):
 
 def test_a_manifest_round_trips(bundle):
     (bundle / "manifest.json").write_text(json.dumps(_manifest()))
-    assert mf.load(fetch_if_missing=False)["reference_id"] == "lazyqsar_reference_v1"
+    assert mf.load(fetch_if_missing=False)["reference_id"] == "lazyqsar_reference_v2"
 
 
 def test_a_corrupt_download_is_rejected(bundle):
@@ -98,7 +98,7 @@ def test_a_checkpoint_that_is_not_installed_is_not_proven(bundle, monkeypatch):
     assert "not present" in reason
 
 
-def test_a_matching_checkpoint_is_proven_and_skips_the_recompute(bundle, monkeypatch):
+def test_a_matching_checkpoint_is_proven(bundle, monkeypatch):
     import hashlib
 
     home = bundle / "home"
@@ -155,3 +155,56 @@ def test_an_embedding_moved_by_a_changed_checkpoint_is_fatal():
 def test_a_changed_feature_count_is_fatal_for_any_descriptor():
     with pytest.raises(mf.ReferenceDriftError, match="features"):
         mf._compare("clamp", np.ones((2, 8)), np.ones((2, 9)))
+
+
+def test_a_clamp_sized_code_change_is_fatal():
+    """The CLAMP folding fix (eos3l5f#3) moved the canary rows to a min cosine of 0.99707
+    with the checkpoint unchanged. The old thresholds only warned about a drift that size."""
+    rng = np.random.default_rng(0)
+    stored = rng.normal(size=(4, 768))
+    fresh = stored + rng.normal(scale=0.08, size=stored.shape)
+    cosine = (
+        (stored * fresh).sum(1)
+        / np.linalg.norm(stored, axis=1)
+        / np.linalg.norm(fresh, axis=1)
+    ).min()
+    assert 0.99 < cosine < 0.999
+    with pytest.raises(mf.ReferenceDriftError, match="changed descriptor code"):
+        mf._compare("clamp", stored, fresh)
+
+
+def test_float16_storage_is_not_drift():
+    """The published matrices are float16; rounding to it must still pass."""
+    rng = np.random.default_rng(0)
+    fresh = rng.normal(size=(16, 768))
+    stored = fresh.astype(np.float16).astype(np.float64)
+    assert mf._compare("clamp", stored, fresh)["status"] == "pass"
+
+
+def test_an_unchanged_checkpoint_does_not_skip_the_recompute(bundle, monkeypatch):
+    """The gap the CLAMP fix exposed: a matching checkpoint hash used to skip the
+    comparison, so code changes around an unchanged checkpoint were never caught."""
+    import hashlib
+
+    h5py = pytest.importorskip("h5py")
+    home = bundle / "home"
+    home.mkdir()
+    (home / "clamp_encoder.onnx").write_bytes(b"pretend encoder")
+    digest = hashlib.sha256(b"pretend encoder").hexdigest()
+    monkeypatch.setenv("LAZYQSAR_HOME", str(home))
+    manifest = _manifest(checkpoints={"clamp_encoder.onnx": {"sha256": digest}})
+    assert mf._checkpoint_unchanged(manifest, "clamp")[0]
+
+    stored = np.random.default_rng(0).normal(size=(2, 8))
+    with h5py.File(bundle / "canary_n50000.h5", "w") as handle:
+        handle["clamp"] = stored
+
+    class _Moved:
+        def transform(self, smiles):
+            return -stored
+
+    import lazyqsar.registry as registry
+
+    monkeypatch.setattr(registry, "get_descriptor_type", lambda name: _Moved)
+    with pytest.raises(mf.ReferenceDriftError, match="checkpoint unchanged"):
+        mf.check_environment(["clamp"], manifest)

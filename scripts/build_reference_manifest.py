@@ -152,6 +152,7 @@ def build_canary(bundle: Path, n: int, smiles: list[str]) -> tuple[Path, list[in
 
 
 def main() -> int:
+    config.require_repo_lazyqsar()
     bundle = config.staging_dir()
     n = config.DEFAULT_N
     if not bundle.is_dir():

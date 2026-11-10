@@ -16,7 +16,7 @@ import pathlib
 
 # --- identity -------------------------------------------------------------------
 
-REFERENCE_ID = "lazyqsar_reference_v1"
+REFERENCE_ID = "lazyqsar_reference_v2"
 DEFAULT_N = 50_000
 
 # Headroom over DEFAULT_N. Stage D emits this many picks so the descriptor stage can
@@ -105,6 +105,25 @@ def source_index_dir() -> pathlib.Path:
 
 def repo_root() -> pathlib.Path:
     return pathlib.Path(__file__).resolve().parents[2]
+
+
+def require_repo_lazyqsar() -> None:
+    """Exit unless ``import lazyqsar`` resolves to this checkout.
+
+    ``python scripts/<name>.py`` puts ``scripts/`` on the path, not the repo root, so an
+    installed (non-editable) lazyqsar wins the import. The v2 build first ran against an
+    installed 3.6.1 that way and produced the old CLAMP values. Run with
+    ``PYTHONPATH=<repo root>`` or an editable install.
+    """
+    import lazyqsar
+
+    found = pathlib.Path(lazyqsar.__file__).resolve()
+    expected = repo_root() / "lazyqsar"
+    if expected not in found.parents:
+        raise SystemExit(
+            f"lazyqsar is imported from {found.parent}, not from this checkout "
+            f"({expected}). Run with PYTHONPATH={repo_root()} or `pip install -e .`."
+        )
 
 
 def staging_dir() -> pathlib.Path:

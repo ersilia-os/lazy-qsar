@@ -16,7 +16,7 @@ from pathlib import Path
 
 # Bumped whenever the molecule set or any published matrix changes. Published bundles are
 # immutable: clients cache by filename and cannot notice an object edited in place.
-REFERENCE_ID = "lazyqsar_reference_v1"
+REFERENCE_ID = "lazyqsar_reference_v2"
 _DEFAULT_N = 50_000
 
 

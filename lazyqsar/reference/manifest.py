@@ -38,11 +38,15 @@ EXACT = {"morgan"}
 RDKIT_RTOL, RDKIT_ATOL = 1e-4, 1e-6
 
 # The neural three run through ONNX Runtime or torch, where the BLAS backend, the CPU
-# architecture and the thread count move results at the 1e-4 level. That is not drift, and
-# failing a fit over it would be wrong. A *changed checkpoint* moves embeddings by O(1),
-# which cosine separates decisively -- the float16 storage floor is 0.9999999, three orders
-# of magnitude clear of the threshold below.
-COSINE_PASS, COSINE_WARN = 0.9999, 0.99
+# architecture and the thread count move results slightly. That is not drift, and failing a
+# fit over it would be wrong. Measured on the published canary rows (1 - min row cosine):
+#   float16 storage, same code (cddd, chemeleon)     ~3e-8
+#   Hub Docker image (Linux) vs macOS, cddd          ~1e-11 (max abs 2.5e-6)
+#   CLAMP fingerprint-folding bug (eos3l5f#3)         2.9e-3
+# The CLAMP bug is a code change with an unchanged checkpoint, and it is the smallest real
+# drift seen so far. The old thresholds (0.9999 / 0.99) only warned about it. These sit
+# about 300x above the noise and 300x below that bug.
+COSINE_PASS, COSINE_WARN = 1 - 1e-6, 1 - 1e-5
 
 
 class ReferenceDriftError(RuntimeError):
@@ -107,8 +111,9 @@ def verify_file(path, manifest: dict | None) -> None:
         )
 
 
-# Which checkpoint decides a descriptor's values. Morgan and RDKit have none -- they are a
-# pure function of the toolkit -- so they are always recomputed.
+# Which checkpoint a descriptor's values come from. Morgan and RDKit have none -- they are a
+# pure function of the toolkit. The hash is reported alongside the drift result, but it
+# never replaces the recompute: the code around a checkpoint can change its values too.
 DESCRIPTOR_CHECKPOINT = {
     "chemeleon": "chemeleon_mp.pt",
     "clamp": "clamp_encoder.onnx",
@@ -120,9 +125,8 @@ def _checkpoint_unchanged(manifest: dict, descriptor: str) -> tuple[bool, str]:
     """Whether *descriptor*'s checkpoint is provably the one the matrices came out of.
 
     Only a recorded hash that matches a local file counts. A missing record, a missing
-    file or a mismatch all mean "not proven", and the caller recomputes -- the expensive
-    answer, but the safe default. Returning "unchanged" for a manifest that simply says
-    nothing would skip the check exactly when it is least deserved.
+    file or a mismatch all mean "not proven". This is diagnostic only: it explains a
+    failed comparison, but :func:`check_environment` recomputes either way.
     """
     from ..utils.checkpoints import checkpoint_dir
     from ..utils.fetch import sha256_file
@@ -169,22 +173,22 @@ def check_environment(descriptors, manifest: dict | None = None) -> dict:
         for name in descriptors:
             if name not in handle:
                 continue
-            # A neural descriptor whose checkpoint is provably unchanged needs no
-            # recompute: hashing 100 MB is cheaper than an embedding pass, and a changed
-            # checkpoint is what actually moves the values. Anything not proven falls
-            # through to the numbers.
-            proven, reason = _checkpoint_unchanged(manifest, name)
-            if proven:
-                results[name] = {"status": "skip", "reason": reason}
-                continue
-            if name in DESCRIPTOR_CHECKPOINT:
-                logger.debug(f"{name}: recomputing canary rows ({reason})")
-
+            # Always recompute. This used to be skipped when the checkpoint hash matched,
+            # but an unchanged checkpoint does not prove unchanged values: the CLAMP
+            # folding fix (eos3l5f#3) changed the code around an identical encoder, and
+            # the stale matrices passed as "checkpoint unchanged". The canary is 16 rows,
+            # so the recompute is cheap.
+            _, reason = _checkpoint_unchanged(manifest, name)
             stored = np.asarray(handle[name], dtype=np.float64)
             fresh = np.asarray(
                 get_descriptor_type(name)().transform(smiles), dtype=np.float64
             )
-            results[name] = _compare(name, stored, fresh)
+            try:
+                results[name] = _compare(name, stored, fresh)
+            except ReferenceDriftError as exc:
+                raise ReferenceDriftError(f"{exc} (checkpoint: {reason})") from None
+            if name in DESCRIPTOR_CHECKPOINT:
+                results[name]["checkpoint"] = reason
 
     return results
 
@@ -224,13 +228,13 @@ def _compare(name: str, stored: np.ndarray, fresh: np.ndarray) -> dict:
     if cosine < COSINE_WARN:
         raise ReferenceDriftError(
             f"{name}: embeddings differ from the published reference (min row cosine "
-            f"{cosine:.6f}). That is the size of a changed checkpoint, not a numerical "
-            "difference between backends."
+            f"{cosine:.8f}). That is the size of a changed checkpoint or changed "
+            "descriptor code, not a numerical difference between backends."
         )
     if cosine < COSINE_PASS:
         logger.warning(
             f"{name}: embeddings differ slightly from the reference "
-            f"(min row cosine {cosine:.6f}). Within the range a different BLAS or CPU "
+            f"(min row cosine {cosine:.8f}). Within the range a different BLAS or CPU "
             "produces, so this is recorded rather than fatal."
         )
         return {"status": "warn", "cosine": cosine}

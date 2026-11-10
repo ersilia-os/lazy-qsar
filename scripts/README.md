@@ -74,14 +74,15 @@ still earns a slot and crowded regions stay crowded.
 ### Why the CDDD gate runs at pick time
 
 `ContinuousDataDrivenDescriptor.transform` substitutes *a different molecule's* embedding,
-found by FPSim2 nearest-neighbour search, for any molecule it cannot preprocess
-(`lazyqsar/descriptors/cddd.py:436-450`). A reference row carrying another molecule's
-embedding is a silently wrong ECDF point, so those molecules are excluded rather than
-substituted.
+found by FPSim2 nearest-neighbour search, for any molecule it cannot preprocess, provided
+that neighbour has Tanimoto similarity >= 0.7 (`ChemblNearestNeighbour.highest_similarity`);
+below that the row stays NaN. A reference row carrying another molecule's embedding is a
+silently wrong ECDF point, and a NaN row would be dropped, so those molecules are excluded
+rather than substituted.
 
 Measured reject rate on a random sample of the library: **1.88%** — above CDDD's own 0.1%
-applicability gate (`cddd.py:463-470`), so a *random* 50k slice would make CDDD inapplicable
-to the reference set.
+applicability gate (`ContinuousDataDrivenDescriptor.is_applicable`), so a *random* 50k slice
+would make CDDD inapplicable to the reference set.
 
 The gate is applied to chosen representatives, not to the library, and a rejected
 representative is replaced by another member of **its own BitBIRCH cluster**. Two
@@ -134,10 +135,14 @@ Writes `data/reference/<REFERENCE_ID>/` (gitignored):
 
 Then describe it, and check what was published:
 
+The build must use this checkout's descriptor code, not an installed lazyqsar, so run from
+the repo root with `export PYTHONPATH=$PWD` (or an editable install). Both build scripts
+exit if `import lazyqsar` resolves anywhere else.
+
 ```bash
 python scripts/compute_reference_descriptors.py --all   # the five matrices
 python scripts/build_reference_manifest.py              # manifest.json + canary rows
-eosvc upload --path data/reference/lazyqsar_reference_v1
+eosvc upload --path data/reference/lazyqsar_reference_v2
 python scripts/verify_reference_bundle.py               # the acceptance gate
 ```
 

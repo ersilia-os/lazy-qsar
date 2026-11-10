@@ -8,6 +8,7 @@ from rdkit.Chem import AllChem
 from rdkit.Chem.rdmolops import FastFindRings
 from rdkit import RDLogger
 
+from ._validate import parse_molecule
 from ..utils.checkpoints import CHECKPOINT_SHA256, checkpoint_dir, checkpoint_sources
 from ..utils.fetch import fetch
 from ..utils.logging import logger
@@ -20,6 +21,19 @@ _N_DIM = 768
 _RADIUS = 2
 
 
+def _fold_counts(counts: dict) -> np.ndarray:
+    """Fold a sparse count fingerprint into ``_FP_SIZE`` bits.
+
+    On a bit collision the last count is kept, not summed. This matches
+    ``mhnreact.molutils.convert_smiles_to_fp``, which CLAMP was trained with
+    (see ersilia-os/eos3l5f#3).
+    """
+    v = np.zeros(_FP_SIZE, dtype=np.float32)
+    for k, c in counts.items():
+        v[int(k) % _FP_SIZE] = float(c)
+    return v
+
+
 def _smiles_to_fp(smi: str) -> np.ndarray:
     """Compute the 'morganc+rdkc' fingerprint used by CLAMP (8192-dim, log1p)."""
     mol = Chem.MolFromSmiles(str(smi), sanitize=False)
@@ -29,10 +43,8 @@ def _smiles_to_fp(smi: str) -> np.ndarray:
     FastFindRings(mol)
     mol.UpdatePropertyCache(strict=False)
 
-    v = np.zeros(_FP_SIZE, dtype=np.float32)
-
     # morganc: count-based Morgan fingerprint (radius 2, with chirality/bond types/features)
-    counts = AllChem.GetMorganFingerprint(
+    morganc = AllChem.GetMorganFingerprint(
         mol,
         _RADIUS,
         useChirality=True,
@@ -40,16 +52,12 @@ def _smiles_to_fp(smi: str) -> np.ndarray:
         useFeatures=True,
         useCounts=True,
     ).GetNonzeroElements()
-    for k, c in counts.items():
-        v[int(k) % _FP_SIZE] += float(c)
 
     # rdkc: count-based RDKit path fingerprint (maxPath=6)
-    counts = AllChem.UnfoldedRDKFingerprintCountBased(
-        mol, maxPath=6
-    ).GetNonzeroElements()
-    for k, c in counts.items():
-        v[int(k) % _FP_SIZE] += float(c)
+    rdkc = AllChem.UnfoldedRDKFingerprintCountBased(mol, maxPath=6).GetNonzeroElements()
 
+    # Each fingerprint is folded on its own, and only then are the two added.
+    v = _fold_counts(morganc) + _fold_counts(rdkc)
     return np.log1p(v)
 
 
@@ -97,6 +105,11 @@ class ClampDescriptor:
             chunk = smiles_list[chunk_start : chunk_start + chunk_size]
             fps, valid_idx = [], []
             for j, s in enumerate(chunk):
+                # Unparseable input stays NaN, as in every other descriptor. Without this
+                # it got the embedding of an all-zero fingerprint, the same plausible
+                # vector for every bad SMILES.
+                if parse_molecule(s) is None:
+                    continue
                 try:
                     fps.append(_smiles_to_fp(s))
                     valid_idx.append(chunk_start + j)

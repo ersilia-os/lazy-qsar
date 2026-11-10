@@ -5,6 +5,48 @@ All notable changes to this project are documented here. Versions follow
 against is versioned separately and its id is recorded in every checkpoint's
 `pooled_ranker.library`.
 
+## 3.9.0
+
+Descriptor outputs change, and the reference library moves to `lazyqsar_reference_v2`.
+**Refit models trained with 3.8.x or earlier**, in particular any that use `clamp`. Their
+`rank` is calibrated against v1, which stays published for those versions.
+
+### Fixed
+
+- **CLAMP embeddings did not match the authors' CLAMP** (ersilia-os/eos3l5f#3, found by
+  @TiagoJanela; LazyQSAR's copy found by @arnaucoma24). When two count-fingerprint features
+  fell on the same bit, `clamp.py` added them; mhn-react, which CLAMP was trained with, keeps
+  the last one. Each fingerprint (`morganc`, `rdkc`) is now folded on its own, keeping the
+  last count, and the two are then added. Embeddings now match the fixed eos3l5f exactly; about
+  90% of molecules change.
+- **One unparseable SMILES took a whole CDDD batch down** (#51). The ChEMBL fallback passed
+  it to FPSim2, which raised. It now stays NaN. `highest_similarity` also returned
+  `(None, None)` on no hit, which the caller's `is None` check missed.
+- **One CDDD error could replace every molecule with a neighbour's embedding.** A single
+  `except: pass` around the whole batch loop turned the call NaN, and the fallback then filled
+  every row from ChEMBL. Each batch of 128 is now encoded on its own; a failure leaves only
+  that batch NaN, with a warning.
+- **The CDDD fallback used neighbours of any similarity.** `similarity_threshold=0.7` was
+  never applied; neighbours down to Tanimoto 0.42 donated their embedding. Below 0.7 the row
+  now stays NaN and is median-imputed. About 0.6% of library molecules are affected.
+- **Unparseable SMILES are NaN in every descriptor.** `clamp` gave every invalid SMILES the
+  same embedding of an all-zero fingerprint, and `rdkit`, `chemeleon` and `cddd` returned
+  values for `""`. All now use `parse_molecule`, as `morgan` did. Predictions were not
+  affected: fit rejects these inputs and predict blanks their outputs.
+- **The reference drift check skipped neural descriptors whose checkpoint was unchanged**, so
+  the stale CLAMP matrix passed as "checkpoint unchanged". `check_environment` now always
+  recomputes the 16 canary rows, and its cosine thresholds are tightened (fatal below
+  1 - 1e-5, warning below 1 - 1e-6): the CLAMP bug moved the canary to 0.99707, which the old
+  thresholds (0.99 / 0.9999) only warned about.
+
+### Changed
+
+- **Reference library `lazyqsar_reference_v2`**: the same 50,000 molecules, with the CLAMP
+  matrix and canary rows rebuilt with the fixed code.
+- **CDDD is faster**: preprocessing runs once instead of twice (cddd-onnx ran it twice), and
+  the ChEMBL index is loaded once per descriptor instead of once per predict chunk. About 19%
+  faster on 5,000 library molecules, with 7% lower peak memory.
+
 ## 3.8.1
 
 ### Fixed
