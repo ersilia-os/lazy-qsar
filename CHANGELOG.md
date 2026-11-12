@@ -5,7 +5,24 @@ All notable changes to this project are documented here. Versions follow
 against is versioned separately and its id is recorded in every checkpoint's
 `pooled_ranker.library`.
 
-## 3.9.0
+## 3.9.1
+
+The reference library is unchanged (`lazyqsar_reference_v2`). Only models whose
+power-scaled preprocessor has a fragile column (below) change; every other fit is
+identical to 3.9.0.
+
+### Fixed
+
+- **`OnnxExportMismatch` on Intel AVX-512 CPUs** (#66). Some datasets (e.g. TDC
+  `bioavailability-ma`, `pgp-broccatelli`) failed `slow` mode on Intel Xeon (AVX-512) and
+  passed on AMD with the same data and seeds. Yeo–Johnson with a strongly negative λ (the
+  RDKit `BCUT2D_*` columns reach −5) squeezes a column onto almost one value, so
+  standardizing amplifies a single float32 rounding step to 0.01–0.07; numpy's AVX-512
+  `log1p`/`expm1`, which scikit-learn's Yeo–Johnson uses, round some values differently,
+  and the fitted pipeline then disagreed with its own ONNX graph. A power-scaled column
+  whose standardized value one float32 step would move by more than 1e-4 std now keeps
+  λ = 1 (no transform, only standardized), as scikit-learn already does for constant
+  columns.
 
 Descriptor outputs change, and the reference library moves to `lazyqsar_reference_v2`.
 **Refit models trained with 3.8.x or earlier**, in particular any that use `clamp`. Their
