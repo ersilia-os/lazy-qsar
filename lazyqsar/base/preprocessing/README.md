@@ -30,7 +30,7 @@ Rules are applied in priority order (first match wins):
 | 2 | `binary_feature_fraction ≥ 0.8` | `MaxAbsScaler` | Effectively a no-op on binary features |
 | 3 | `sparsity > 0.5` | `MaxAbsScaler` | Avoids densification from RobustScaler/PowerTransformer |
 | 4 | `outlier_fraction > 0.3` | `RobustScaler` | Median/IQR-based; immune to extreme values |
-| 5 | `median_feature_skewness > 1.5` | `PowerTransformer` (Yeo-Johnson) | Handles skewed continuous features; falls back to `RobustScaler` on fit failure |
+| 5 | `median_feature_skewness > 1.5` | `PowerTransformer` (Yeo-Johnson) | Handles skewed continuous features; falls back to `RobustScaler` on fit failure. A column whose standardized value one float32 rounding step would move by more than 1e-4 std keeps λ = 1 (no transform, only standardized) |
 | 6 | default | `StandardScaler` | Zero mean, unit variance |
 
 ## Reducer selection rules

@@ -18,6 +18,13 @@ from .reducer import build_reducer, select_reducer
 from .scaler import build_scaler, select_scaler
 from lazyqsar.utils.logging import logger
 
+# A Yeo-Johnson column whose standardized value would move by more than this many
+# standard deviations when its transformed value moves by one float32 step is left
+# untransformed (lambda = 1). Same scale as the bind check's tolerance (1e-4): above it,
+# a single rounding step -- which numpy takes differently on different CPUs -- can fail
+# that check. See ``BasePreprocessor._relax_fragile_power_columns``.
+_FLOAT32_STEP_LIMIT = 1e-4
+
 
 def _fit_session_options(rt):
     """onnxruntime options for the session a fitted preprocessor keeps for the whole fit.
@@ -64,7 +71,9 @@ class BasePreprocessor(BaseEstimator, TransformerMixin):
 
         Profiles the dataset, selects scaler and reducer, builds and fits the
         sklearn Pipeline. If ``PowerTransformer`` fails, falls back to
-        ``RobustScaler`` automatically.
+        ``RobustScaler`` automatically. Power-transformed columns that a single float32
+        rounding step would visibly move keep lambda = 1
+        (:meth:`_relax_fragile_power_columns`).
 
         Sets ``pipeline_``, ``scaler_name_``, ``reducer_name_``,
         ``n_features_in_``, ``n_features_out_``, and ``kept_feature_indices_``.
@@ -121,6 +130,8 @@ class BasePreprocessor(BaseEstimator, TransformerMixin):
 
         if self.scaler_name_ == "robust":
             self._rescale_zero_iqr_columns(X, y)
+        elif self.scaler_name_ == "power":
+            self._relax_fragile_power_columns(X, y)
 
         self._n_features_out: int = self.pipeline_.transform(
             np.zeros((1, self.n_features_in_))
@@ -163,6 +174,42 @@ class BasePreprocessor(BaseEstimator, TransformerMixin):
         )
         steps["reducer"].fit(scaler.transform(Xs), y)
 
+    def _relax_fragile_power_columns(self, X, y) -> None:
+        """Leave untransformed (lambda = 1) the power columns that rounding can move.
+
+        A strongly negative Yeo-Johnson lambda (RDKit's ``BCUT2D_*`` reach -5) maps a
+        whole column onto almost one value, e.g. 0.2631 +- 2.5e-06, and standardizing
+        then divides by that tiny spread. One float32 step of the transformed value
+        (3e-08 at 0.26) becomes ~0.01 standard deviations, and numpy's ``log1p`` and
+        ``expm1``, which scikit-learn's Yeo-Johnson uses, round differently on different
+        CPUs (AVX-512 kernels): the fitted pipeline then disagrees with its own ONNX
+        graph on one machine and not another (ersilia-os/lazy-qsar#66).
+
+        Such a column is flagged when one float32 step at its transformed mean exceeds
+        :data:`_FLOAT32_STEP_LIMIT` of its standard deviation. It gets lambda = 1, the
+        identity, as scikit-learn already does for constant columns, and is only
+        standardized. Every other column is untouched, and when none is flagged the
+        pipeline is exactly the one fitted above. The reducer is refitted on the
+        corrected scale.
+        """
+        steps = self.pipeline_.named_steps
+        pt = steps["scaler"]
+        sc = pt._scaler
+        step = np.spacing(np.abs(sc.mean_).astype(np.float32)).astype(np.float64)
+        fragile = step > _FLOAT32_STEP_LIMIT * sc.scale_
+        if not fragile.any():
+            return
+        Xv = np.asarray(self.pipeline_[:2].transform(X), dtype=np.float64)[:, fragile]
+        pt.lambdas_[fragile] = 1.0
+        sc.mean_[fragile] = Xv.mean(axis=0)
+        sc.var_[fragile] = Xv.var(axis=0)
+        sc.scale_[fragile] = np.sqrt(sc.var_[fragile])
+        logger.debug(
+            f"power scaler: {int(fragile.sum())} column(s) left untransformed "
+            f"(lambda = 1) at indices {np.where(fragile)[0].tolist()}"
+        )
+        steps["reducer"].fit(self.pipeline_[:3].transform(X), y)
+
     def _bind_onnx_runtime(self, X=None) -> None:
         """Make the fitted preprocessor compute the way the exported one will.
 
@@ -187,7 +234,9 @@ class BasePreprocessor(BaseEstimator, TransformerMixin):
         before it is used, and the bytes are kept so that ``save`` writes exactly the graph
         the heads were fitted against. A failure raises :class:`OnnxExportMismatch`: it
         used to fall back to the scikit-learn path with a warning, which produced a model
-        whose checkpoint could compute something else.
+        whose checkpoint could compute something else. Power-transformed columns that would
+        amplify rounding past this check are handled at fit time, by
+        :meth:`_relax_fragile_power_columns`.
         """
         import onnxruntime as rt
 
