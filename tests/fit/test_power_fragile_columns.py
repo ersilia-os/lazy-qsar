@@ -37,13 +37,42 @@ def _bcut_like(rng, n):
     return np.where(rng.random(n) < 0.7, tight, wide)
 
 
-def _matrix(with_fragile: bool, seed: int = 0):
+def _mrhi_like(rng, n):
+    """The column traced in review of #67: ``BCUT2D_MRHI`` on the ``all`` deck, raw range
+    4.7-14.1, lambda ~ -5.2, transformed to ~0.192 with a spread of a few 1e-6.
+
+    Here: lambda -5.22, transformed mean 0.1914, and one float32 step is 2.8e-3 SD.
+    """
+    bulk = 4.7 + rng.gamma(2, 0.37, n)
+    tail = rng.uniform(6, 14.1, n)
+    x = np.where(rng.random(n) < 0.85, bulk, tail).clip(4.7, 14.1)
+    x[:2] = 4.7, 14.1
+    return x
+
+
+def _matrix(first=None, seed: int = 0):
+    """Column 0 drawn by *first*, or one more skewed column like the rest when None."""
     rng = np.random.default_rng(seed)
     cols = [rng.gamma(1.5, 2.0, N) for _ in range(P_SKEWED)]
-    first = _bcut_like(rng, N) if with_fragile else rng.gamma(1.5, 2.0, N)
-    X = np.column_stack([first, *cols])
+    col0 = first(rng, N) if first else rng.gamma(1.5, 2.0, N)
+    X = np.column_stack([col0, *cols])
     y = (rng.random(N) < 0.4).astype(int)
     return X, y
+
+
+def _round_like_avx512(monkeypatch):
+    """Make scikit-learn's Yeo-Johnson land one float32 step up, as numpy's AVX-512
+    ``log1p``/``expm1`` did on the Intel nodes. The ONNX graph is left alone, so the bind
+    check then compares the two sides the way it did on the failing machines."""
+    from scipy import stats
+
+    real = stats.yeojohnson
+
+    def one_step_up(x, lmbda=None, *args, **kwargs):
+        out = real(x, lmbda, *args, **kwargs)
+        return np.nextafter(out, np.asarray(np.inf, dtype=out.dtype))
+
+    monkeypatch.setattr(stats, "yeojohnson", one_step_up)
 
 
 def _amplification(power_transformer) -> np.ndarray:
@@ -64,7 +93,7 @@ def _fit(X, y, monkeypatch, guard=True):
 
 
 def test_the_synthetic_column_is_fragile_without_the_guard():
-    X, _ = _matrix(with_fragile=True)
+    X, _ = _matrix(_bcut_like)
     plain = PowerTransformer(method="yeo-johnson").fit(X)
     amp = _amplification(plain)
     assert plain.lambdas_[FRAGILE] < -2
@@ -73,7 +102,7 @@ def test_the_synthetic_column_is_fragile_without_the_guard():
 
 
 def test_only_the_fragile_column_keeps_lambda_one(monkeypatch):
-    X, y = _matrix(with_fragile=True)
+    X, y = _matrix(_bcut_like)
     prep = _fit(X, y, monkeypatch)
     pt = prep.pipeline_.named_steps["scaler"]
     plain = PowerTransformer(method="yeo-johnson").fit(X)
@@ -90,7 +119,7 @@ def test_only_the_fragile_column_keeps_lambda_one(monkeypatch):
 
 
 def test_no_column_amplifies_a_rounding_step_past_the_limit(monkeypatch):
-    X, y = _matrix(with_fragile=True)
+    X, y = _matrix(_bcut_like)
     prep = _fit(X, y, monkeypatch)
     amp = _amplification(prep.pipeline_.named_steps["scaler"])
     assert np.all(amp <= pp._FLOAT32_STEP_LIMIT)
@@ -98,7 +127,7 @@ def test_no_column_amplifies_a_rounding_step_past_the_limit(monkeypatch):
 
 
 def test_a_fit_without_fragile_columns_is_unchanged(monkeypatch):
-    X, y = _matrix(with_fragile=False)
+    X, y = _matrix()
     guarded = _fit(X, y, monkeypatch)
     plain = _fit(X, y, monkeypatch, guard=False)
     np.testing.assert_array_equal(
@@ -116,3 +145,33 @@ def _graph_without_name(prep) -> bytes:
     model = onnx.load_from_string(prep._onnx_bytes_)
     model.graph.name = ""
     return model.SerializeToString()
+
+
+def test_the_column_from_the_review_is_real_shaped():
+    X, _ = _matrix(_mrhi_like)
+    assert X[:, FRAGILE].min() == 4.7 and X[:, FRAGILE].max() == 14.1
+    plain = PowerTransformer(method="yeo-johnson").fit(X)
+    assert -5.5 < plain.lambdas_[FRAGILE] < -5.0
+    assert _amplification(plain)[FRAGILE] > 10 * pp._FLOAT32_STEP_LIMIT
+
+
+def test_the_column_from_the_review_fails_the_bind_check_without_the_guard(monkeypatch):
+    """The #66 failure through the real bind check. Whether the fit's own bind already
+    fails depends on how this CPU rounds; shifting scikit-learn's side by one float32
+    step afterwards makes the failure certain on any CPU."""
+    from lazyqsar.utils.onnx_check import OnnxExportMismatch
+
+    X, y = _matrix(_mrhi_like)
+    with pytest.raises(OnnxExportMismatch):
+        prep = _fit(X, y, monkeypatch, guard=False)
+        _round_like_avx512(monkeypatch)
+        prep._bind_onnx_runtime(X)
+
+
+def test_the_column_from_the_review_passes_the_bind_check_with_the_guard(monkeypatch):
+    X, y = _matrix(_mrhi_like)
+    prep = _fit(X, y, monkeypatch)
+    assert prep.pipeline_.named_steps["scaler"].lambdas_[FRAGILE] == 1.0
+    _round_like_avx512(monkeypatch)
+    prep._bind_onnx_runtime(X)
+    assert prep._onnx_session_ is not None
