@@ -80,14 +80,18 @@ MARGIN = [pytest.param(4e-4, False, id="lambda=+4e-4 (margin)")]
 
 
 @pytest.mark.parametrize("lam, negative", FAILING)
-def test_an_edge_lambda_fails_the_bind_check_without_the_guard(monkeypatch, lam, negative):
+def test_an_edge_lambda_fails_the_bind_check_without_the_guard(
+    monkeypatch, lam, negative
+):
     X, y = _matrix(negative)
     with pytest.raises(OnnxExportMismatch):
         _fit(X, y, monkeypatch, lam=lam, guard=False)
 
 
 @pytest.mark.parametrize("lam, negative", FAILING + MARGIN)
-def test_the_guard_leaves_an_edge_lambda_column_untransformed(monkeypatch, lam, negative):
+def test_the_guard_leaves_an_edge_lambda_column_untransformed(
+    monkeypatch, lam, negative
+):
     X, y = _matrix(negative)
     prep = _fit(X, y, monkeypatch, lam=lam)
     pt = prep.pipeline_.named_steps["scaler"]
