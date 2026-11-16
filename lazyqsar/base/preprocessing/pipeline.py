@@ -25,6 +25,14 @@ from lazyqsar.utils.logging import logger
 # that check. See ``BasePreprocessor._relax_fragile_power_columns``.
 _FLOAT32_STEP_LIMIT = 1e-4
 
+# A Yeo-Johnson column whose lambda is within this distance of 0 (or of 2, for negative
+# inputs) is also left untransformed (lambda = 1). skl2onnx's float32 graph computes
+# ``((x + 1)**lambda - 1) / lambda``, which cancels catastrophically as lambda nears 0
+# (lambda = -1e-6 loses ~1.4% of the value), and its exact ``lambda == 0`` branch divides
+# 0 by 0 and returns 0 for every row. scikit-learn switches to ``log1p`` in float64, so the
+# two disagree; see ``BasePreprocessor._relax_fragile_power_columns``.
+_LAMBDA_EDGE = 1e-3
+
 
 def _fit_session_options(rt):
     """onnxruntime options for the session a fitted preprocessor keeps for the whole fit.
@@ -175,7 +183,7 @@ class BasePreprocessor(BaseEstimator, TransformerMixin):
         steps["reducer"].fit(scaler.transform(Xs), y)
 
     def _relax_fragile_power_columns(self, X, y) -> None:
-        """Leave untransformed (lambda = 1) the power columns that rounding can move.
+        """Leave untransformed (lambda = 1) the power columns the ONNX graph cannot follow.
 
         A strongly negative Yeo-Johnson lambda (RDKit's ``BCUT2D_*`` reach -5) maps a
         whole column onto almost one value, e.g. 0.2631 +- 2.5e-06, and standardizing
@@ -186,7 +194,17 @@ class BasePreprocessor(BaseEstimator, TransformerMixin):
         graph on one machine and not another (ersilia-os/lazy-qsar#66).
 
         Such a column is flagged when one float32 step at its transformed mean exceeds
-        :data:`_FLOAT32_STEP_LIMIT` of its standard deviation. It gets lambda = 1, the
+        :data:`_FLOAT32_STEP_LIMIT` of its standard deviation.
+
+        A column is also flagged when its lambda is within :data:`_LAMBDA_EDGE` of 0, or
+        of 2 (the special value of the negative-input branch). There scikit-learn takes
+        ``log1p`` in float64, while skl2onnx's float32 graph computes
+        ``((x + 1)**lambda - 1) / lambda``: with lambda = -9.8e-7 (an RDKit column of a
+        *P. falciparum* dataset) the subtraction keeps too few bits and the value comes
+        out 1.4% low, and at exactly 0 the graph's own ``lambda == 0`` branch computes
+        0 / 0 and returns 0 for every row. The bind check then fails on any CPU.
+
+        A flagged column gets lambda = 1, the
         identity, as scikit-learn already does for constant columns, and is only
         standardized. Every other column is untouched, and when none is flagged the
         pipeline is exactly the one fitted above. The reducer is refitted on the
@@ -197,6 +215,9 @@ class BasePreprocessor(BaseEstimator, TransformerMixin):
         sc = pt._scaler
         step = np.spacing(np.abs(sc.mean_).astype(np.float32)).astype(np.float64)
         fragile = step > _FLOAT32_STEP_LIMIT * sc.scale_
+        lambdas = np.asarray(pt.lambdas_, dtype=np.float64)
+        fragile |= np.abs(lambdas) < _LAMBDA_EDGE
+        fragile |= np.abs(lambdas - 2.0) < _LAMBDA_EDGE
         if not fragile.any():
             return
         Xv = np.asarray(self.pipeline_[:2].transform(X), dtype=np.float64)[:, fragile]
