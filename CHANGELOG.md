@@ -5,6 +5,23 @@ All notable changes to this project are documented here. Versions follow
 against is versioned separately and its id is recorded in every checkpoint's
 `pooled_ranker.library`.
 
+## 3.9.2
+
+The reference library is unchanged (`lazyqsar_reference_v2`). Only models whose
+power-scaled preprocessor has a column with λ within 1e-3 of 0 or 2 change; every other
+fit is identical to 3.9.1.
+
+### Fixed
+
+- **`OnnxExportMismatch` on every CPU when a Yeo–Johnson λ sits at 0 or 2** (#68).
+  scikit-learn switches to `log1p` in float64 there; skl2onnx's float32 graph computes
+  `((x + 1)^λ − 1) / λ`, which cancels catastrophically as λ nears 0 (an RDKit column of a
+  *P. falciparum* ChEMBL dataset had λ = −9.8e-7 and came out 1.4% low), and its exact
+  `λ == 0` branch divides 0 by 0 and returns 0 for every row. The same holds for the
+  negative-input branch at λ = 2. Such a column now keeps λ = 1 (no transform, only
+  standardized), the same treatment as the fragile columns of 3.9.1. Six datasets of the
+  ChEMBL antimicrobial models failed `slow` mode this way, on both Intel and AMD.
+
 ## 3.9.1
 
 The reference library is unchanged (`lazyqsar_reference_v2`). Only models whose
