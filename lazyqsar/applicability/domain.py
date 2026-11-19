@@ -142,7 +142,7 @@ class ApplicabilityDomain(OnnxBoundHead):
     ----------
     n_components : int or None
         Number of PCA components to retain. None (default) → min(max(1, int(sqrt(p))),
-        100, p, (n - 1) // 3), for p features and n training rows.
+        100, p, max(1, (n - 1) // 3)), for p features and n training rows.
     """
 
     def __init__(self, n_components: int | None = None):
