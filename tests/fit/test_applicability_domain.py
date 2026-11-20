@@ -219,12 +219,30 @@ def test_fit_leaves_a_float64_input_untouched(ragged_X, order):
     np.testing.assert_array_equal(X, before)
 
 
+@pytest.mark.parametrize("n", [1, 3, 400, 50_000])
+@pytest.mark.parametrize("width", [2, 3, 7, 60])
+def test_no_column_block_is_a_single_column(n, width, monkeypatch):
+    """numpy sums an (n, 1) slice along the rows pairwise but a wider one row by row, so a
+    one-column block would give a float64 standard deviation that differs in the last bit
+    from the whole-matrix one. The blocks cover every column once, in order, and none is a
+    single column unless the matrix is."""
+    from lazyqsar.applicability import domain
+
+    monkeypatch.setattr(domain, "_BLOCK_BYTES", 8 * n * width)
+    for p in range(1, 4 * width + 3):
+        blocks = domain._column_blocks(n, p)
+        assert blocks[0][0] == 0 and blocks[-1][1] == p, (p, blocks)
+        assert all(a[1] == b[0] for a, b in zip(blocks, blocks[1:])), (p, blocks)
+        assert all(stop - start >= min(2, p) for start, stop in blocks), (p, blocks)
+
+
 @pytest.mark.parametrize("width", [2, 7, 60])
 def test_column_blocks_do_not_change_the_fit(ragged_X, query_X, width, monkeypatch):
     """The medians and standard deviations are taken one column block at a time. The
-    result must not depend on the block width, to the last bit -- including a width that
-    leaves a single trailing column (61 = 8 * 7 + 5 = 30 * 2 + 1), which numpy would sum
-    in a different order if it were a block of its own."""
+    fitted model must not depend on the block width, to the last bit, including widths
+    that would leave a single trailing column (61 = 30 * 2 + 1 = 60 + 1). That case
+    alone is not caught here: its float64 difference does not survive the float32 cast
+    of the stored statistics, so test_no_column_block_is_a_single_column guards it."""
     from lazyqsar.applicability import domain
 
     whole = ApplicabilityDomain().fit(ragged_X)
