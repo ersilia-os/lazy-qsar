@@ -5,6 +5,19 @@ All notable changes to this project are documented here. Versions follow
 against is versioned separately and its id is recorded in every checkpoint's
 `pooled_ranker.library`.
 
+## 3.9.3
+
+The reference library is unchanged (`lazyqsar_reference_v2`). Every fitted model, saved
+file and score is identical to 3.9.2; only the memory `ApplicabilityDomain.fit` needs
+changes.
+
+### Fixed
+
+- **`ApplicabilityDomain.fit` held about five float64 copies of X** (#70). It now copies X
+  once to float64 and imputes, scales and centres that copy in place, one column block
+  (about 128 MiB) at a time, and PCA no longer makes its own copy. The result is
+  bit-identical. At 80,000 × 3,200 the peak during `fit` falls from 11.4 GiB to 3.6 GiB.
+
 ## 3.9.2
 
 The reference library is unchanged (`lazyqsar_reference_v2`). Only models whose

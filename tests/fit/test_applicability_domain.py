@@ -177,3 +177,113 @@ def test_small_training_sets_fit_and_export(kind, n, tmp_path):
     ad.save(str(tmp_path))
     art = ApplicabilityDomainArtifact.load(str(tmp_path))
     np.testing.assert_allclose(art.score(X), ad.score(X), rtol=0, atol=1e-6)
+
+
+# --------------------------------------------------------------------------- memory
+
+
+def _fitted_state(ad):
+    """Every fitted array the scores and the ONNX graph are built from."""
+    return {
+        "medians": ad.imputer_.statistics_,
+        "scaler_mean": ad.scaler_mean_,
+        "scaler_scale": ad.scaler_scale_,
+        "pca_components": ad.pca_.components_,
+        "pca_mean": ad.pca_.mean_,
+        "centroid": ad.centroid_,
+        "precision": ad.precision_,
+        "cal_knots": ad.cal_knots_,
+    }
+
+
+@pytest.fixture(scope="module")
+def ragged_X():
+    """Missing values, ties, a constant and an all-NaN column: every imputation case."""
+    rng = np.random.default_rng(5)
+    X = rng.normal(size=(400, 61)) * rng.uniform(0.5, 20, size=61)
+    X[:, 3:6] = np.round(X[:, 3:6])
+    X[:, 7] = 2.5
+    X[:, 8] = np.nan
+    X[rng.random(X.shape) < 0.05] = np.nan
+    return X.astype(np.float32)
+
+
+@pytest.mark.parametrize("order", ["C", "F"])
+def test_fit_leaves_a_float64_input_untouched(ragged_X, order):
+    """``fit`` imputes, scales and centres its own copy in place; a float64 array is
+    the one input ``np.asarray`` would hand over without copying, so it is the one a
+    missing copy would corrupt."""
+    X = np.array(ragged_X, dtype=np.float64, order=order)
+    before = X.copy(order="K")
+    ApplicabilityDomain().fit(X)
+    np.testing.assert_array_equal(X, before)
+
+
+@pytest.mark.parametrize("n", [1, 3, 400, 50_000])
+@pytest.mark.parametrize("width", [2, 3, 7, 60])
+def test_no_column_block_is_a_single_column(n, width, monkeypatch):
+    """numpy sums an (n, 1) slice along the rows pairwise but a wider one row by row, so a
+    one-column block would give a float64 standard deviation that differs in the last bit
+    from the whole-matrix one. The blocks cover every column once, in order, and none is a
+    single column unless the matrix is."""
+    from lazyqsar.applicability import domain
+
+    monkeypatch.setattr(domain, "_BLOCK_BYTES", 8 * n * width)
+    for p in range(1, 4 * width + 3):
+        blocks = domain._column_blocks(n, p)
+        assert blocks[0][0] == 0 and blocks[-1][1] == p, (p, blocks)
+        assert all(a[1] == b[0] for a, b in zip(blocks, blocks[1:])), (p, blocks)
+        assert all(stop - start >= min(2, p) for start, stop in blocks), (p, blocks)
+
+
+@pytest.mark.parametrize("width", [2, 7, 60])
+def test_column_blocks_do_not_change_the_fit(ragged_X, query_X, width, monkeypatch):
+    """The medians and standard deviations are taken one column block at a time. The
+    fitted model must not depend on the block width, to the last bit, including widths
+    that would leave a single trailing column (61 = 30 * 2 + 1 = 60 + 1). That case
+    alone is not caught here: its float64 difference does not survive the float32 cast
+    of the stored statistics, so test_no_column_block_is_a_single_column guards it."""
+    from lazyqsar.applicability import domain
+
+    whole = ApplicabilityDomain().fit(ragged_X)
+    monkeypatch.setattr(domain, "_BLOCK_BYTES", 8 * ragged_X.shape[0] * width)
+    blocked = ApplicabilityDomain().fit(ragged_X)
+
+    for name, value in _fitted_state(whole).items():
+        assert np.array_equal(value, _fitted_state(blocked)[name]), name
+    query = query_X[:, : ragged_X.shape[1]].copy()
+    query[0, ::2] = np.nan
+    assert np.array_equal(whole.score(query), blocked.score(query))
+
+
+@pytest.mark.parametrize(
+    "shape, solver",
+    [((20_000, 300), "covariance_eigh"), ((3_000, 1_200), "randomized")],
+)
+def test_fit_peaks_near_one_copy_of_the_matrix(monkeypatch, shape, solver):
+    """The AD used to hold several float64 copies of X at once -- the converted input,
+    the imputed one, the standard-deviation temporary, the scaled one and PCA's centred
+    copy -- which ran a 3,200-column descriptor over ~320,000 rows out of memory. Fit now
+    works on one copy in place, so its traced peak stays near that one copy (plus small
+    column blocks); the old code peaked at about five.
+
+    Both PCA solvers are covered: covariance_eigh (tall, narrow X) never centres X, so
+    only the randomized one (wide X, as for that descriptor) shows PCA's own copy -- the
+    one ``copy=False`` saves."""
+    import tracemalloc
+
+    from lazyqsar.applicability import domain
+
+    rng = np.random.default_rng(2)
+    X = rng.normal(size=shape).astype(np.float32)
+    one_copy = X.shape[0] * X.shape[1] * 8
+    monkeypatch.setattr(domain, "_BLOCK_BYTES", one_copy // 16)
+
+    tracemalloc.start()
+    try:
+        ad = ApplicabilityDomain().fit(X)
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    assert ad.pca_._fit_svd_solver == solver
+    assert peak < 1.6 * one_copy, f"fit peaked at {peak / one_copy:.2f} copies of X"

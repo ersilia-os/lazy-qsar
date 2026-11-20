@@ -61,6 +61,12 @@ _N_CAL_KNOTS = 200
 # Matches the seed used throughout the package (assemblers, portfolios, base estimators).
 _RANDOM_STATE = 42
 
+# Column-block size for the per-column statistics in ``fit`` (medians, standard deviations):
+# their temporaries are block-sized instead of matrix-sized. Each block makes about five of them
+# (the imputer's checked copy, the NaN mask, the sorted copy for the median, the deviations and
+# their squares), so the statistics add about 5 x _BLOCK_BYTES whatever the size of X.
+_BLOCK_BYTES = 128 * 2**20
+
 
 def _max_components(n: int) -> int:
     """At most a third of the training rows: the PCA must not fill the sample's span.
@@ -97,6 +103,34 @@ def _to_dense(X) -> np.ndarray:
     return np.asarray(X, dtype=np.float64)
 
 
+def _owned_dense(X) -> np.ndarray:
+    """A float64 copy of X that ``fit`` may overwrite: one copy, never the caller's array.
+
+    ``np.asarray`` would hand back the caller's own array when it is already float64, and
+    ``fit`` imputes, scales and centres in place. The memory order is kept ("K"), as the
+    old out-of-place path kept it, because it decides the summation order of the column
+    means and standard deviations, and so their last bits.
+    """
+    if hasattr(X, "toarray"):
+        return X.toarray().astype(np.float64, copy=False)
+    return np.array(X, dtype=np.float64, order="K", copy=True)
+
+
+def _column_blocks(n: int, p: int):
+    """``(start, stop)`` column ranges of about ``_BLOCK_BYTES`` of float64 each.
+
+    No block is a single column unless the matrix is: numpy sums an (n, 1) slice along
+    the rows pairwise but a wider one row by row, so a one-column block would give a
+    standard deviation that differs in the last bit from the whole-matrix one.
+    """
+    width = max(2, _BLOCK_BYTES // (8 * max(n, 1)))
+    starts = list(range(0, p, width))
+    if len(starts) > 1 and p - starts[-1] == 1:
+        starts.pop()  # fold a trailing single column into the block before it
+    stops = starts[1:] + [p]
+    return list(zip(starts, stops))
+
+
 class ApplicabilityDomain(OnnxBoundHead):
     """
     Fits an applicability domain estimator on a training feature matrix.
@@ -107,7 +141,8 @@ class ApplicabilityDomain(OnnxBoundHead):
     Parameters
     ----------
     n_components : int or None
-        Number of PCA components to retain.  None (default) → min(50, p, n-1).
+        Number of PCA components to retain. None (default) → min(max(1, int(sqrt(p))),
+        100, p, max(1, (n - 1) // 3)), for p features and n training rows.
     """
 
     def __init__(self, n_components: int | None = None):
@@ -118,24 +153,52 @@ class ApplicabilityDomain(OnnxBoundHead):
     # ------------------------------------------------------------------
 
     def fit(self, X) -> "ApplicabilityDomain":
-        X = _to_dense(X)
+        # Memory: X is copied once to float64 and every later step works on that copy in
+        # place -- imputation, scaling and the PCA centring -- with the per-column
+        # statistics taken over column blocks. Each step computes exactly what the
+        # out-of-place version did (same float64 operations, same order), so the fitted
+        # model is bit-identical; the peak is one float64 copy of X plus a few
+        # block-sized temporaries (see _BLOCK_BYTES) instead of about five copies, which is
+        # what decides whether a wide descriptor over a few hundred thousand rows fits at
+        # all. On a large X the blocks are negligible (~1.1 copies); on a moderate one
+        # they are not (~1.6 copies at 40,000 x 3,200).
+        X = _owned_dense(X)
         n, p = X.shape
         if n < 2:
             raise ValueError(f"Need at least 2 training samples, got {n}.")
         self._onnx_probe_ = _ad_probe(X)
 
-        # keep_empty_features: a column that is NaN for every training row is kept
-        # (imputed as 0) rather than dropped, so the fitted estimator -- and the ONNX
-        # graph built from it -- takes the descriptor's full width.
+        # Median imputation and the standard deviations, one column block at a time.
+        # Each block's medians come from the same SimpleImputer the model keeps, and a
+        # median depends on its own column only. keep_empty_features: a column that is NaN
+        # for every training row is kept (imputed as 0) rather than dropped, so the fitted
+        # estimator -- and the ONNX graph built from it -- takes the descriptor's full width.
+        medians = np.empty(p, dtype=np.float64)
+        std = np.empty(p, dtype=np.float64)
+        for start, stop in _column_blocks(n, p):
+            block = X[:, start:stop]  # a view: imputed in place
+            medians[start:stop] = (
+                SimpleImputer(strategy="median", keep_empty_features=True)
+                .fit(block)
+                .statistics_
+            )
+            missing = np.isnan(block)
+            if missing.any():
+                np.copyto(block, medians[None, start:stop], where=missing)
+            del missing
+            std[start:stop] = block.std(axis=0)
+        # The imputer the model keeps (inference and the ONNX graph read its medians),
+        # fitted on one row holding them: the median of a single value is that value, and
+        # an all-NaN column stays the 0 that keep_empty_features gave it above.
         self.imputer_ = SimpleImputer(strategy="median", keep_empty_features=True)
-        X = self.imputer_.fit_transform(X)
+        self.imputer_.fit(medians[None, :])
 
         # StandardScaler — fitted independently, not shared with any model
         self.scaler_mean_ = X.mean(axis=0).astype(np.float32)  # (p,)
-        std = X.std(axis=0)
         std[std < 1e-12] = 1.0  # avoid /0
         self.scaler_scale_ = std.astype(np.float32)  # (p,)
-        X = (X - self.scaler_mean_) / self.scaler_scale_
+        X -= self.scaler_mean_
+        X /= self.scaler_scale_
 
         k = (
             self.n_components
@@ -153,8 +216,14 @@ class ApplicabilityDomain(OnnxBoundHead):
         # effect is invisible on held-out folds -- the veto only fires out of domain --
         # and surfaces as a model that ranks a screening library differently each time
         # it is trained.
-        self.pca_ = PCA(n_components=k, whiten=False, random_state=_RANDOM_STATE)
+        # copy=False: PCA centres X in place (it is ours to overwrite) instead of copying
+        # it. Set back afterwards, so the fitted PCA's parameters are the default ones.
+        self.pca_ = PCA(
+            n_components=k, whiten=False, random_state=_RANDOM_STATE, copy=False
+        )
         X_pca = self.pca_.fit_transform(X)  # (n, k)
+        self.pca_.set_params(copy=True)
+        del X
 
         self.centroid_ = X_pca.mean(axis=0)  # (k,)
 
