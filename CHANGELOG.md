@@ -18,7 +18,8 @@ complete.
   w.x + b, which grows with sum |w_j x_j| + |b|: an SGD head with |w| in the hundreds and an
   intercept in the thousands was 2e-4 to 9e-4 away from the float64 model on a probe row
   near the boundary, on Intel and AMD CPUs alike. Each row's tolerance is now at least its
-  rounding bound, 16 u S p(1 - p) with u = 2**-24; for an ordinary fit that stays below a
+  rounding bound: the largest move of P(y=1) that a logit error of 16 u S can cause, with
+  u = 2**-24, computed exactly from the sigmoid. For an ordinary fit that stays below a
   tenth of 1e-4, and a structurally wrong graph is still refused.
 
 ## 3.9.3

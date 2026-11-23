@@ -525,29 +525,31 @@ class BaseLinearClassifier(_LinearHead, ClassifierHead):
         small alpha) reaches |w| in the hundreds and an intercept in the thousands, so on
         a row near the boundary (z ~ 0, S ~ 1e5) the float32 logit is off by ~5e-3 and
         P(y=1) by ~1e-3 -- ten times the fixed tolerance, on every CPU, with a correct
-        graph. A logit error dz moves P(y=1) by at most p(1 - p) dz, which is what this
-        returns for dz = _onnx_rounding_factor * u * S. For an ordinary model S is small
+        graph. This returns the largest move of P(y=1) that a logit error of
+        dz = _onnx_rounding_factor * u * S can cause, computed exactly from the native
+        logit, max |sigmoid(z +/- dz) - p|: the slope p(1 - p) alone would understate it,
+        since the sigmoid steepens towards the boundary. For an ordinary model S is small
         and this stays far below the fixed tolerance; a structurally wrong graph (a lost
         intercept, a swapped column, a missing link) is off by far more than either.
         """
         coef = getattr(self._estimator, "coef_", None)
         if coef is None:
             return np.zeros_like(native)
-        X = check_array(probe, dtype="numeric", accept_sparse="csr")
-        Xt = self._transform(X)
-        Xt = (
-            abs(Xt)
-            if hasattr(Xt, "toarray")
-            else np.abs(np.asarray(Xt, dtype=np.float64))
-        )
+        # probe_rows always hands over dense float32 rows.
+        Xt = np.abs(np.asarray(self._transform(probe), dtype=np.float64))
         w = np.abs(np.asarray(coef, dtype=np.float64)).ravel()
         b = float(
             np.abs(np.asarray(getattr(self._estimator, "intercept_", 0.0))).ravel()[0]
         )
-        magnitude = np.asarray(Xt @ w, dtype=np.float64).ravel() + b
         u = float(np.finfo(np.float32).eps) / 2
+        dz = self._onnx_rounding_factor * u * (Xt @ w + b)
         p = np.asarray(native, dtype=np.float64)
-        return self._onnx_rounding_factor * u * magnitude * p * (1.0 - p)
+        with np.errstate(divide="ignore", over="ignore"):
+            # +/-inf for a saturated row, whose bound is then 0
+            z = np.log(p) - np.log1p(-p)
+            up = 1.0 / (1.0 + np.exp(-(z + dz)))
+            down = 1.0 / (1.0 + np.exp(-(z - dz)))
+        return np.maximum(np.abs(up - p), np.abs(down - p))
 
     def calibrate(
         self, X, y, n_splits: int | None = None, random_state: int = 42
