@@ -14,7 +14,7 @@ complete.
 ### Fixed
 
 - **The linear classifier's bind check rejected correct graphs of heavily weighted
-  models** (#ISSUE). Its fixed 1e-4 tolerance on P(y=1) cannot hold the float32 rounding of
+  models** (#71). Its fixed 1e-4 tolerance on P(y=1) cannot hold the float32 rounding of
   w.x + b, which grows with sum |w_j x_j| + |b|: an SGD head with |w| in the hundreds and an
   intercept in the thousands was 2e-4 to 9e-4 away from the float64 model on a probe row
   near the boundary, on Intel and AMD CPUs alike. Each row's tolerance is now at least its
