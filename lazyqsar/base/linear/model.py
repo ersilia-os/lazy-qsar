@@ -380,6 +380,13 @@ class BaseLinearClassifier(_LinearHead, ClassifierHead):
     # probability against the float64 model, above the 1e-5 trees and linear models otherwise
     # carry. 1e-4 is what the SVMs and the save-time check use; a wrong graph is off by tenths.
     _onnx_tolerance = 1e-4
+    # A fixed tolerance is not enough on its own: the float32 error of w.x + b grows with the
+    # model's own magnitude, sum_j |w_j x_j| + |b|, and a weakly regularised fit can make
+    # that magnitude enormous (see _rounding_atol). Multiple of float32's unit roundoff
+    # (2**-24) times that magnitude allowed on the logit. Measured on the three fits that
+    # failed (SGD heads, 767-1,778 features, on AMD Zen3 and Intel Sapphire Rapids): the
+    # error was 0.63 to 2.1 units, so 16 leaves a margin of about 8.
+    _onnx_rounding_factor = 16.0
 
     def __init__(
         self,
@@ -502,6 +509,45 @@ class BaseLinearClassifier(_LinearHead, ClassifierHead):
         """Raw P(y=1) from the scikit-learn pipeline itself."""
         X = check_array(X, dtype="numeric", accept_sparse="csr")
         return self._estimator.predict_proba(self._transform(X))[:, 1]
+
+    def _bind_comparison(self, probe, native):
+        """The default comparison, with each row's tolerance widened to its rounding bound."""
+        got, native, atol = super()._bind_comparison(probe, native)
+        return got, native, np.maximum(atol, self._rounding_atol(probe, native))
+
+    def _rounding_atol(self, probe, native) -> np.ndarray:
+        """Per probe row, how far float32 rounding alone can move the graph's P(y=1).
+
+        The graph computes the logit z = w.x + b in float32. Its rounding error is a few
+        units of float32's roundoff u = 2**-24 times the magnitude of the terms summed,
+        S = sum_j |w_j x_j| + |b|, however small z itself is: the terms cancel, their
+        rounding does not. A weakly regularised fit on nearly separable data (SGD with a
+        small alpha) reaches |w| in the hundreds and an intercept in the thousands, so on
+        a row near the boundary (z ~ 0, S ~ 1e5) the float32 logit is off by ~5e-3 and
+        P(y=1) by ~1e-3 -- ten times the fixed tolerance, on every CPU, with a correct
+        graph. A logit error dz moves P(y=1) by at most p(1 - p) dz, which is what this
+        returns for dz = _onnx_rounding_factor * u * S. For an ordinary model S is small
+        and this stays far below the fixed tolerance; a structurally wrong graph (a lost
+        intercept, a swapped column, a missing link) is off by far more than either.
+        """
+        coef = getattr(self._estimator, "coef_", None)
+        if coef is None:
+            return np.zeros_like(native)
+        X = check_array(probe, dtype="numeric", accept_sparse="csr")
+        Xt = self._transform(X)
+        Xt = (
+            abs(Xt)
+            if hasattr(Xt, "toarray")
+            else np.abs(np.asarray(Xt, dtype=np.float64))
+        )
+        w = np.abs(np.asarray(coef, dtype=np.float64)).ravel()
+        b = float(
+            np.abs(np.asarray(getattr(self._estimator, "intercept_", 0.0))).ravel()[0]
+        )
+        magnitude = np.asarray(Xt @ w, dtype=np.float64).ravel() + b
+        u = float(np.finfo(np.float32).eps) / 2
+        p = np.asarray(native, dtype=np.float64)
+        return self._onnx_rounding_factor * u * magnitude * p * (1.0 - p)
 
     def calibrate(
         self, X, y, n_splits: int | None = None, random_state: int = 42
