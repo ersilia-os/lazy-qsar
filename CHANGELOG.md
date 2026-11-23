@@ -5,6 +5,23 @@ All notable changes to this project are documented here. Versions follow
 against is versioned separately and its id is recorded in every checkpoint's
 `pooled_ranker.library`.
 
+## 3.9.4
+
+The reference library is unchanged (`lazyqsar_reference_v2`). Every fit that binds in 3.9.3
+binds identically; only fits that raised `OnnxExportMismatch` in the linear classifier now
+complete.
+
+### Fixed
+
+- **The linear classifier's bind check rejected correct graphs of heavily weighted
+  models** (#71). Its fixed 1e-4 tolerance on P(y=1) cannot hold the float32 rounding of
+  w.x + b, which grows with sum |w_j x_j| + |b|: an SGD head with |w| in the hundreds and an
+  intercept in the thousands was 2e-4 to 9e-4 away from the float64 model on a probe row
+  near the boundary, on Intel and AMD CPUs alike. Each row's tolerance is now at least its
+  rounding bound: the largest move of P(y=1) that a logit error of 16 u S can cause, with
+  u = 2**-24, computed exactly from the sigmoid. For an ordinary fit that stays below a
+  tenth of 1e-4, and a structurally wrong graph is still refused.
+
 ## 3.9.3
 
 The reference library is unchanged (`lazyqsar_reference_v2`). Every fitted model, saved
