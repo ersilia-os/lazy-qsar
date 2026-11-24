@@ -5,6 +5,18 @@ All notable changes to this project are documented here. Versions follow
 against is versioned separately and its id is recorded in every checkpoint's
 `pooled_ranker.library`.
 
+## Unreleased
+
+Descriptors and fits are unchanged.
+
+### Removed
+
+- **The `chemeleon` PyPI package is no longer a dependency of the `descriptors` extra.**
+  `chemeleon==0.1.3` on PyPI is an unrelated text-guided crystal structure generation
+  model, not CheMeleon. The CheMeleon descriptor is built from `chemprop` and the
+  `chemeleon_mp.pt` weights, and only imported the package without using it. The package
+  pulled in pymatgen, streamlit, dash, jupyterlab, ase, smact, transformers and wandb.
+
 ## 3.9.4
 
 The reference library is unchanged (`lazyqsar_reference_v2`). Every fit that binds in 3.9.3
