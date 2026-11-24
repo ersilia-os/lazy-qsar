@@ -24,7 +24,8 @@ class HeadSelector:
     svm = ""  # the SVM head's name for this task
     selector_version = ""
 
-    def __init__(self):
+    def __init__(self, allow_kernel_svm: bool = True):
+        self.allow_kernel_svm = bool(allow_kernel_svm)
         self.portfolio = ["xgb", "rf"]
         self.selector_version_ = self.selector_version
         self.selector_scores_ = self._zero_scores()
@@ -33,6 +34,19 @@ class HeadSelector:
 
     def _zero_scores(self) -> dict:
         return {"lr": 0, "xgb": 0, "rf": 0, self.svm: 0}
+
+    def _apply_svm_policy(self, portfolio: list, reasons: list) -> list:
+        """Drop the SVM head unless ``allow_kernel_svm`` is set.
+
+        A kernel SVM's ONNX graph stores its support vectors, which are training rows, so a
+        checkpoint with one exposes part of its training data. The whole head goes, not
+        just the kernel: the linear fallback mostly duplicates the ``lr`` head. Applied
+        after the rules, so the scores and reasons still show what would have been chosen.
+        """
+        if self.allow_kernel_svm or self.svm not in portfolio:
+            return portfolio
+        reasons.append(f"policy -> skip {self.svm} (allow_kernel_svm=False)")
+        return [head for head in portfolio if head != self.svm]
 
     # ------------------------------------------------------------------ hooks
 
@@ -179,8 +193,8 @@ class HeadSelector:
         )
         if portfolio is not None:
             self.selector_scores_ = self._zero_scores()
+            self.portfolio = self._apply_svm_policy(portfolio, hard_reasons)
             self.selector_reasons_ = hard_reasons
-            self.portfolio = portfolio
             self._log(profile)
             return
 
@@ -217,8 +231,8 @@ class HeadSelector:
             portfolio = ["lr"] + portfolio
         if include_svm:
             portfolio = portfolio + [self.svm]
+        self.portfolio = self._apply_svm_policy(portfolio, reasons)
         self.selector_reasons_ = reasons
-        self.portfolio = portfolio
         self._log(profile)
 
     def _log(self, profile):
@@ -252,6 +266,7 @@ class HeadSelector:
             "scores": getattr(self, "selector_scores_", self._zero_scores()),
             "reasons": getattr(self, "selector_reasons_", []),
             "profile": profile_payload,
+            "allow_kernel_svm": getattr(self, "allow_kernel_svm", True),
         }
         with open(f"{directory}/portfolio.json", "w") as f:
             json.dump(payload, f, indent=4)
@@ -286,6 +301,8 @@ class HeadSelector:
             instance.selector_scores_ = scores
             instance.selector_reasons_ = payload.get("reasons", [])
             instance.profile_ = payload.get("profile")
+            # Saves before 3.10 predate the flag; they could always fit an SVM head.
+            instance.allow_kernel_svm = bool(payload.get("allow_kernel_svm", True))
         logger.debug(f"Portfolio loaded from {directory}: {instance.portfolio}")
         return instance
 

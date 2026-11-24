@@ -157,6 +157,9 @@ class LazyClassifier(_AssemblerBase):
         XGBoost round cap passed to each batch.
     max_imbalance_ratio : int
         Negative-to-positive ratio above which imbalanced batching is used.
+    allow_kernel_svm : bool
+        Whether the head selector may include the SVM head. A kernel SVM stores
+        training rows (its support vectors) in its ONNX graph.
 
     Attributes (after fit)
     ----------------------
@@ -182,11 +185,13 @@ class LazyClassifier(_AssemblerBase):
         calibrated=True,
         max_rounds=None,
         max_imbalance_ratio=100,
+        allow_kernel_svm=True,
     ):
         self.max_batch_size = max_batch_size
         self.max_imbalance_ratio = max_imbalance_ratio
         self.calibrated = calibrated
         self.max_rounds = max_rounds
+        self.allow_kernel_svm = allow_kernel_svm
 
     def fit(self, X, y):
         """
@@ -199,7 +204,7 @@ class LazyClassifier(_AssemblerBase):
         check_trainable(y, where="LazyClassifier.fit")
         self.population_prior_ = float(np.mean(y == 1))
 
-        p = Portfolio()
+        p = Portfolio(allow_kernel_svm=self.allow_kernel_svm)
         p.fit(X, y)
         self.portfolio = p.get()
         logger.dataset_table(X.shape, y=y, portfolio=self.portfolio)
@@ -502,6 +507,7 @@ class LazyClassifier(_AssemblerBase):
             "portfolio": self.portfolio,
             "max_batch_size": self.max_batch_size,
             "max_imbalance_ratio": self.max_imbalance_ratio,
+            "allow_kernel_svm": getattr(self, "allow_kernel_svm", True),
             "num_batches": len(self.models),
             "population_prior": self.population_prior_,
             "batch_priors": self.batch_priors_,

@@ -101,6 +101,7 @@ def fit(
     models_txt: str = None,
     mode: str = "slow",
     task: str = "classification",
+    allow_kernel_svm: bool = True,
 ):
     """Fit and save one model per CSV in *data_dir*.
 
@@ -119,6 +120,9 @@ def fit(
         portfolio).
     task : str
         ``"classification"`` (default) or ``"regression"``; applies to every CSV.
+    allow_kernel_svm : bool
+        Whether the SVM head may be fitted. A kernel SVM stores its support vectors,
+        which are training rows, in the checkpoint. When False, no SVM head is fitted.
     """
     data_dir = os.path.abspath(data_dir)
     model_dir = os.path.abspath(model_dir)
@@ -134,7 +138,8 @@ def fit(
         )
 
     logger.info(
-        f"Fitting {task} models in mode '{mode}' | data: {data_dir} | "
+        f"Fitting {task} models in mode '{mode}' | "
+        f"allow_kernel_svm={allow_kernel_svm} | data: {data_dir} | "
         f"output: {model_dir}"
     )
 
@@ -199,7 +204,7 @@ def fit(
                 d: np.load(os.path.join(scratch, f"{d}.npy"), mmap_mode="r")[rows]
                 for d in descriptor_types
             }
-            model = LazyQSAR(task=task, mode=mode)
+            model = LazyQSAR(task=task, mode=mode, allow_kernel_svm=allow_kernel_svm)
             model.fit(smiles_list, y, precomputed=precomputed, validate=False)
             # Both tasks write the same layout: metadata.json plus one directory per
             # descriptor, every graph already ONNX.

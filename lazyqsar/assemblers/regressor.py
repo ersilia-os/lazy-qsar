@@ -79,6 +79,9 @@ class LazyRegressor(_AssemblerBase):
         batches whose predictions are averaged.
     max_rounds : int or None
         XGBoost round cap passed to each batch.
+    allow_kernel_svm : bool
+        Whether the head selector may include the SVR head. A kernel SVR stores
+        training rows (its support vectors) in its ONNX graph.
 
     Attributes (after fit)
     ----------------------
@@ -94,9 +97,10 @@ class LazyRegressor(_AssemblerBase):
 
     task = "regression"
 
-    def __init__(self, max_batch_size=100_000, max_rounds=None):
+    def __init__(self, max_batch_size=100_000, max_rounds=None, allow_kernel_svm=True):
         self.max_batch_size = max_batch_size
         self.max_rounds = max_rounds
+        self.allow_kernel_svm = allow_kernel_svm
 
     def fit(self, X, y):
         logger.rule("LazyRegressor — fit")
@@ -106,7 +110,7 @@ class LazyRegressor(_AssemblerBase):
         self.y_std_ = float(y.std()) or 1.0
         z = (y - self.y_mean_) / self.y_std_
 
-        p = Portfolio()
+        p = Portfolio(allow_kernel_svm=self.allow_kernel_svm)
         p.fit(X, y)
         self.portfolio = p.get()
         logger.dataset_table(X.shape, y=y, portfolio=self.portfolio, task="regression")
@@ -253,6 +257,7 @@ class LazyRegressor(_AssemblerBase):
         return {
             "portfolio": self.portfolio,
             "max_batch_size": self.max_batch_size,
+            "allow_kernel_svm": getattr(self, "allow_kernel_svm", True),
             "num_batches": len(self.models),
             "y_mean": self.y_mean_,
             "y_std": self.y_std_,

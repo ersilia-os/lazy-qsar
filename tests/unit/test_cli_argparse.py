@@ -70,6 +70,18 @@ def test_fit_forwards_its_arguments_with_slow_as_the_default(monkeypatch, record
     ]
 
 
+def test_fit_forwards_allow_kernel_svm_only_when_given(monkeypatch, recorder):
+    # Absent, the library's default decides; the CLI keeps no second copy of it.
+    import lazyqsar.api.classifier_fit as fit_api
+
+    monkeypatch.setattr(fit_api, "fit", recorder)
+    base = ("fit", "--task", "classification", "--input", "d", "--output", "m")
+    run(monkeypatch, *base)
+    run(monkeypatch, *base, "--allow_kernel_svm")
+    assert "allow_kernel_svm" not in recorder.calls[0]
+    assert recorder.calls[1]["allow_kernel_svm"] is True
+
+
 def test_regression_fit_forwards_the_task(monkeypatch, recorder):
     import lazyqsar.api.classifier_fit as fit_api
 

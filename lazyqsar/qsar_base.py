@@ -351,11 +351,24 @@ class _QSARBase(_EnsemblePredictMixin):
     _prune_floor = 0.0
     _prune_gap = 0.0
 
-    def __init__(self, mode: str = "slow"):
+    def __init__(self, mode: str = "slow", allow_kernel_svm: bool = True):
+        """Set the descriptor mode and the SVM head policy.
+
+        Parameters
+        ----------
+        mode : str
+            ``"fast"`` (Morgan only) or ``"slow"`` (all five descriptors, pruned).
+        allow_kernel_svm : bool
+            Whether the SVM head may be fitted. A kernel SVM stores its support vectors,
+            which are training rows, in the saved ONNX graph, so a shared checkpoint
+            would expose part of the training data. When False, no SVM head is fitted
+            at all (neither kernel nor linear).
+        """
         assert mode in ("fast", "slow"), (
             f"Mode '{mode}' not recognized. Choose from 'fast' or 'slow'."
         )
         self.mode = mode
+        self.allow_kernel_svm = bool(allow_kernel_svm)
         self.descriptor_types = DESCRIPTORS_MODE[mode]
         self.descriptors = []  # populated in fit() after the descriptor screen
         self._feature_cache = {}
@@ -454,7 +467,7 @@ class _QSARBase(_EnsemblePredictMixin):
                 f"feat_time={feat_time:.1f}s"
             )
 
-            model = model_cls()
+            model = model_cls(allow_kernel_svm=self.allow_kernel_svm)
             model.fit(X=X, y=y)
             self.models.append(model)
             channels = model.oof_channels(X=X)
