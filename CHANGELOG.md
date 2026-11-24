@@ -5,7 +5,7 @@ All notable changes to this project are documented here. Versions follow
 against is versioned separately and its id is recorded in every checkpoint's
 `pooled_ranker.library`.
 
-## Unreleased
+## 3.9.5
 
 Descriptors and fits are unchanged.
 
