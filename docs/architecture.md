@@ -34,5 +34,10 @@ changing anything: put it in the base unless it is meaningless for the other tas
 - **Regression choices are benchmark-backed.** `dev/benchmarks/regression/` reproduces
   every number in `docs/regression.md`; re-run the relevant study before changing a
   preset, the pooler or the head selection.
+- **A default checkpoint stores no training rows.** Only a kernel SVM's graph does (its
+  support vectors), so the SVM head is fitted only with `allow_kernel_svm=True`. A new
+  component that stores rows must be opt-in too. `tests/fit/test_allow_kernel_svm.py`
+  and `tests/chem/test_allow_kernel_svm_qsar.py` search every saved graph for training
+  rows.
 - **Out-of-fold everything.** Pooler weights, descriptor weights, ranks and intervals are
   learned on out-of-fold predictions, never on in-sample ones.

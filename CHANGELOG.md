@@ -5,6 +5,45 @@ All notable changes to this project are documented here. Versions follow
 against is versioned separately and its id is recorded in every checkpoint's
 `pooled_ranker.library`.
 
+## 3.10.0
+
+The reference library is unchanged (`lazyqsar_reference_v2`). Predictions change only for
+models whose portfolio included an SVM head; every other fit is identical to 3.9.4.
+Checkpoints from earlier versions load and predict as before.
+
+### Changed
+
+- **The SVM head is off by default, for both tasks.** A kernel SVM predicts by comparing
+  each molecule with its support vectors, which are rows of the (preprocessed) training
+  matrix, so its ONNX graph stores them: a shared checkpoint with an `svc` or `svr` head
+  exposed part of its training data. Across the 196 ChEMBL antimicrobial models (fitted
+  with 3.9.x), 132 carried at least one kernel SVC, storing about 400 training
+  rows per head (median; up to about 2,800). With the new default a checkpoint stores no
+  training rows. The whole head is dropped, kernel and linear alike, since the linear SVM
+  mostly duplicates the linear head.
+  - Classification: where the selector chose `svc` (only up to 5,000 compounds), that head
+    is dropped and the other heads are chosen as before. A sanity check on three ChEMBL
+    antimicrobial datasets whose models used a kernel SVC (308, 1,007 and 4,640
+    compounds; RDKit descriptors; two stratified 80/20 splits each) found no consistent
+    change: held-out AUROC moved by −0.005 to +0.007 (better on 3 of 6), out-of-fold
+    AUROC was higher without the SVM on 5 of 6, and the largest fit was about 22% faster.
+    This is a sanity check, not a benchmark.
+  - Regression: up to 2,000 rows the portfolio is `lr + xgb` instead of `lr + xgb + svr`.
+    `docs/regression.md` measured this subset at +0.39% RMSE between 600 and 2,000 rows
+    (45 splits).
+
+### Added
+
+- **`allow_kernel_svm`** on `LazyQSAR`, `LazyClassifierQSAR`, `LazyRegressorQSAR`,
+  `LazyClassifier`, `LazyRegressor` and `lazyqsar.api.fit`, and **`--allow_kernel_svm`** on
+  `lazyqsar fit`. Set it only when the training data can be shared. The setting is recorded
+  in every `metadata.json` and `portfolio.json`; checkpoints written before 3.10.0 read as
+  `True`.
+- README section "What a checkpoint contains", including how to tell whether an older
+  checkpoint stores training rows.
+- Tests that search every saved ONNX graph for training rows, at feature and SMILES level.
+- `dev/benchmarks/regression/run.py --allow-kernel-svm / --no-allow-kernel-svm`.
+
 ## 3.9.4
 
 The reference library is unchanged (`lazyqsar_reference_v2`). Every fit that binds in 3.9.3
