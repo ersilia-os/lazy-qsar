@@ -20,6 +20,7 @@ A Python library for building supervised QSAR models quickly, with minimal confi
   - [LazyClassifier (custom descriptors)](#lazyclassifier-custom-descriptors)
   - [Regression](#regression)
   - [Saving and loading](#saving-and-loading)
+  - [What a checkpoint contains](#what-a-checkpoint-contains)
 - [CLI](#cli)
 - [Running the tests](#running-the-tests)
 - [How It Works](#how-it-works)
@@ -216,7 +217,7 @@ y_hat = reg.predict(X=X_test)
 
 What differs from classification:
 
-- **Heads** are linear (ridge), XGBoost, random forest and SVR, each with one preset chosen on a regression benchmark (TDC ADMET, Biogen ADME, MoleculeACE; random and scaffold splits). Which heads are fitted depends on dataset size: linear + XGBoost + SVR up to 2,000 compounds, linear + XGBoost up to 5,000, XGBoost + random forest above. The target is standardised internally and predictions come back in the original units.
+- **Heads** are linear (ridge), XGBoost, random forest and SVR, each with one preset chosen on a regression benchmark (TDC ADMET, Biogen ADME, MoleculeACE; random and scaffold splits). Which heads are fitted depends on dataset size: linear + XGBoost up to 5,000 compounds, XGBoost + random forest above. The SVR is added up to 2,000 compounds only with `allow_kernel_svm=True` (see [What a checkpoint contains](#what-a-checkpoint-contains)). The target is standardised internally and predictions come back in the original units.
 - **Heads are blended by stacking**: one non-negative weight per head, fitted by least squares on the heads' out-of-fold predictions.
 - **Prediction intervals** are split-conformal, from the ensemble's out-of-fold residuals, binned by applicability-domain score: about `level` of molecules like the training set fall inside, and molecules far from it get wider intervals.
 - **Skill** is Spearman ρ wherever classification uses AUC: descriptor screening, descriptor weighting (`2·ρ_oof − ρ_train`), and pruning (a descriptor is dropped below ρ 0.10 or more than 0.20 below the best).
@@ -252,6 +253,42 @@ y_hat = model.predict_proba(X=X_test)[:, 1]
 
 For multi-endpoint prediction across multiple model directories, see [Ersilia Model Hub integration](#ersilia-model-hub-integration).
 
+### What a checkpoint contains
+
+A checkpoint holds model parameters and summary statistics: tree splits, coefficients,
+scaler and applicability-domain parameters, calibration and cutoff values, and
+out-of-fold metrics. By default it holds **no training rows**, so it can be shared without
+sharing the training data.
+
+The exception is a **kernel support vector machine** (SVM). A kernel SVM predicts by
+comparing each new molecule with its *support vectors*, which are rows of the training
+descriptor matrix, so its ONNX graph has to store them. They are preprocessed (scaled,
+some columns dropped), but the scaling is stored next to them and can be undone, and with
+Morgan fingerprints the stored bits are the fingerprints themselves.
+
+For that reason the SVM head is **off by default** since 3.10.0, for both tasks. Turn it
+on only when the training data can be shared, for example public ChEMBL data:
+
+```python
+model = LazyQSAR(task="classification", allow_kernel_svm=True)
+model = LazyClassifier(allow_kernel_svm=True)        # or LazyRegressor
+```
+
+```bash
+lazyqsar fit --task classification --input $DATA_DIR --output $MODEL_DIR --allow_kernel_svm
+```
+
+With it on, LazyQSAR fits the SVM head where the head selector would have chosen it
+(datasets up to 5,000 compounds for classification and up to 2,000 for regression), and
+the head may be a kernel SVM storing hundreds of training rows. With it off, no SVM head
+is fitted at all, linear or kernel: the linear SVM mostly duplicates the linear head. The
+setting is recorded as `allow_kernel_svm` in every `metadata.json`.
+
+**Checkpoints fitted before 3.10.0** could include a kernel SVM. A checkpoint stores
+training rows if it contains an `svc.onnx` whose `svc.json` has `"use_linear": false`, or
+any `svr.onnx` whose `svr.json` has `"use_linear": false`. Refit such a model with 3.10.0
+before sharing it if its training data is not public.
+
 ## CLI
 
 All commands are available through the `lazyqsar` entry point.
@@ -265,7 +302,7 @@ lazyqsar fit --task classification --input $DATA_DIR --output $MODEL_DIR --mode 
 lazyqsar fit --task regression     --input $DATA_DIR --output $MODEL_DIR --mode slow
 ```
 
-Pass `--models_txt` to train a subset of tasks (one CSV stem per line); without it, all CSVs in the directory are used.
+Pass `--models_txt` to train a subset of tasks (one CSV stem per line); without it, all CSVs in the directory are used. Pass `--allow_kernel_svm` to allow the SVM head, which stores training rows in the checkpoint (see [What a checkpoint contains](#what-a-checkpoint-contains)).
 
 **Predict:**
 
@@ -295,7 +332,7 @@ order. Checkpoints fitted before v3.5.0 carry no map and keep the older behaviou
 
 LazyQSAR builds an ensemble for each descriptor set through four steps:
 
-1. **Portfolio selection**: the dataset is profiled (sample count, dimensionality, sparsity, class imbalance) and a rule-based selector decides which heads to train. The default portfolio is XGBoost + Random Forest; Linear Models and Support Vector Machines are added automatically for small, high-dimensional, or low-prevalence datasets.
+1. **Portfolio selection**: the dataset is profiled (sample count, dimensionality, sparsity, class imbalance) and a rule-based selector decides which heads to train. The default portfolio is XGBoost + Random Forest; Linear Models are added automatically for small, high-dimensional, or low-prevalence datasets. Support Vector Machines are added under the same rules only with `allow_kernel_svm=True`, because a kernel SVM stores training rows (see [What a checkpoint contains](#what-a-checkpoint-contains)).
 
 2. **Preprocessing**: a scaler (`StandardScaler`, `RobustScaler`, `MaxAbsScaler`, or `PowerTransformer`) and an optional correlation-based feature reducer are selected automatically from dataset statistics.
 
@@ -317,7 +354,7 @@ The components under `lazyqsar/base/` can be used independently of the full pipe
 | [`lazyqsar.base.xgboost`](lazyqsar/base/xgboost/README.md) | Automatic XGBoost hyperparameter selection with portfolio comparison (classifier and regressor) |
 | [`lazyqsar.base.linear`](lazyqsar/base/linear/README.md) | Automatic linear model selection (logistic/ridge/SGD) |
 | [`lazyqsar.base.randomforest`](lazyqsar/base/randomforest/README.md) | Random Forest classifier and regressor with zero-shot hyperparameter selection |
-| [`lazyqsar.base.svc`](lazyqsar/base/svc/README.md) | Support Vector Classifier and Regressor with automatic kernel and C selection |
+| [`lazyqsar.base.svc`](lazyqsar/base/svc/README.md) | Support Vector Classifier and Regressor with automatic kernel and C selection. Used by the pipeline only with `allow_kernel_svm=True` |
 
 ## Running the tests
 

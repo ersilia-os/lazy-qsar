@@ -3,6 +3,7 @@
     python dev/benchmarks/regression/run.py --label baseline
     python dev/benchmarks/regression/run.py --label candidate --tasks tdc_caco2 ace_CHEMBL204_Ki
     python dev/benchmarks/regression/run.py --label baseline --clf-time   # + classification time
+    python dev/benchmarks/regression/run.py --label no_svm --no-allow-kernel-svm
 
 Each (task, split) fit is one JSON line in ``.cache/results/<label>.jsonl``: metrics on
 the held-out rows in the target's units (RMSE, MAE, Spearman, R²), fit seconds, and what
@@ -72,7 +73,7 @@ def _git_sha():
         return None
 
 
-def run(label, task_names, n_random, clf_time, descriptor):
+def run(label, task_names, n_random, clf_time, descriptor, allow_kernel_svm=None):
     from lazyqsar.agnostic import LazyClassifier, LazyRegressor
 
     os.makedirs(RESULTS, exist_ok=True)
@@ -97,11 +98,19 @@ def run(label, task_names, n_random, clf_time, descriptor):
                 "descriptor": descriptor,
                 "n_train": int(len(tr)),
                 "n_test": int(len(te)),
+                "allow_kernel_svm": allow_kernel_svm,
             }
+            # None leaves the library's default in force, so a label run before the flag
+            # existed and one run without it mean the same thing.
+            svm_kwargs = (
+                {}
+                if allow_kernel_svm is None
+                else {"allow_kernel_svm": allow_kernel_svm}
+            )
             sink = io.StringIO()
             with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
                 t0 = time.perf_counter()
-                model = LazyRegressor()
+                model = LazyRegressor(**svm_kwargs)
                 model.fit(X=X[tr], y=y[tr])
                 record["fit_seconds"] = time.perf_counter() - t0
                 record["test"] = _metrics(y[te], model.predict(X=X[te]))
@@ -109,7 +118,7 @@ def run(label, task_names, n_random, clf_time, descriptor):
                 if clf_time:
                     yb = (y[tr] > np.median(y[tr])).astype(int)
                     t0 = time.perf_counter()
-                    LazyClassifier().fit(X=X[tr], y=yb)
+                    LazyClassifier(**svm_kwargs).fit(X=X[tr], y=yb)
                     record["clf_fit_seconds"] = time.perf_counter() - t0
             with open(out_path, "a") as f:
                 f.write(json.dumps(record) + "\n")
@@ -130,9 +139,22 @@ def main():
     ap.add_argument("--n-random", type=int, default=5)
     ap.add_argument("--clf-time", action="store_true")
     ap.add_argument("--descriptor", default="morgan")
+    ap.add_argument(
+        "--allow-kernel-svm",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Force the SVM head policy; omit to use the library default.",
+    )
     args = ap.parse_args()
     names = args.tasks or task_registry.task_names()
-    run(args.label, names, args.n_random, args.clf_time, args.descriptor)
+    run(
+        args.label,
+        names,
+        args.n_random,
+        args.clf_time,
+        args.descriptor,
+        allow_kernel_svm=args.allow_kernel_svm,
+    )
 
 
 if __name__ == "__main__":

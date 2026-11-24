@@ -32,7 +32,9 @@ def test_checkpoint_reproduces_the_fitted_model(name, tmp_path):
     loader, task = CASES[name]
     smiles, y = loader()
     with contextlib.redirect_stdout(io.StringIO()):
-        model = LazyQSAR(task=task, mode="fast")
+        # SVM heads on: export fidelity must hold for every head family, the kernel SVM
+        # (the loosest float32 tolerance) included.
+        model = LazyQSAR(task=task, mode="fast", allow_kernel_svm=True)
         model.fit(smiles, y)
         model.save(str(tmp_path))
         loaded = LazyQSAR.load(str(tmp_path))

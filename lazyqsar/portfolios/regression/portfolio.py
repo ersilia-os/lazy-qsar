@@ -54,7 +54,9 @@ class Portfolio(HeadSelector):
         else:
             self.portfolio = ["xgb", "rf"]
             reason = f"n={n:,} > {_MEDIUM_N:,}: xgb + rf"
-        self.selector_reasons_ = [reason]
+        reasons = [reason]
+        self.portfolio = self._apply_svm_policy(self.portfolio, reasons)
+        self.selector_reasons_ = reasons
         self._log(profile)
 
 

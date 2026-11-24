@@ -96,6 +96,10 @@ relative to all four heads.
 No dataset-profile feature (sparsity, n/p, signal strength) changed the winning subset
 once size was accounted for, so the regression selector has no profile scores.
 
+Since 3.10.0 the SVR is opt-in (`allow_kernel_svm=True`), because its graph stores
+training rows. By default the selector fits `lr + xgb` up to 5,000 rows; the "No SVR"
+row of the size-cap table below measures what that costs between 600 and 2,000 rows.
+
 ## Combining descriptors: stacking
 
 In slow mode a regression model fits one ensemble per descriptor and blends them per

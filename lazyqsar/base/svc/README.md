@@ -3,6 +3,12 @@
 Support Vector Classifier with automatic kernel and `C` selection from dataset profiling,
 then a four-way portfolio comparison — no grid search, no manual tuning.
 
+> **Opt-in in the pipeline since 3.10.0.** A kernel SVM's ONNX graph stores its support
+> vectors, which are rows of the training matrix, so a checkpoint with one exposes part of
+> its training data. The head selector therefore fits an SVM head (`svc` or `svr`) only
+> with `allow_kernel_svm=True`; see "What a checkpoint contains" in the main README. The
+> classes here are unchanged and can still be used directly.
+
 ## Classes
 
 | Class | Description |

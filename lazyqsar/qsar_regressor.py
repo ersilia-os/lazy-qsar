@@ -349,6 +349,7 @@ class LazyRegressorQSAR(_RegressionPredictMixin, _QSARBase):
         return {
             "task": "regression",
             "mode": self.mode,
+            "allow_kernel_svm": getattr(self, "allow_kernel_svm", True),
             "descriptor_types": self.descriptor_types,
             "n_compounds": getattr(self, "n_compounds_", None),
             "y_summary": getattr(self, "y_summary_", None),

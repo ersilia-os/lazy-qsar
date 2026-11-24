@@ -95,18 +95,22 @@ def test_weights_round_trip_through_the_artifact(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "n, expected",
+    "n, expected, expected_with_svr",
     [
-        (150, ["lr", "xgb", "svr"]),
-        (2000, ["lr", "xgb", "svr"]),
-        (3000, ["lr", "xgb"]),
-        (8000, ["xgb", "rf"]),
+        (150, ["lr", "xgb"], ["lr", "xgb", "svr"]),
+        (2000, ["lr", "xgb"], ["lr", "xgb", "svr"]),
+        (3000, ["lr", "xgb"], ["lr", "xgb"]),
+        (8000, ["xgb", "rf"], ["xgb", "rf"]),
     ],
 )
-def test_portfolio_picks_heads_by_size(n, expected):
+def test_portfolio_picks_heads_by_size(n, expected, expected_with_svr):
+    # The SVR head is opt-in (allow_kernel_svm): its graph stores training rows.
     rng = np.random.default_rng(1)
     X = rng.normal(size=(n, 20))
     y = X[:, 0] + rng.normal(size=n)
     pf = Portfolio()
     _quiet(pf.fit, X, y)
     assert pf.get() == expected
+    pf = Portfolio(allow_kernel_svm=True)
+    _quiet(pf.fit, X, y)
+    assert pf.get() == expected_with_svr

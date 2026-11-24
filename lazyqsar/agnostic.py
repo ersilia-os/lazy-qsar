@@ -166,6 +166,20 @@ class LazyClassifier(_AgnosticBase):
 
     Accepts pre-computed feature arrays (X) or Ersilia .h5 files directly.
     Wraps the internal assembler and saves/loads via ONNX.
+
+    Parameters
+    ----------
+    calibrated : bool
+        Whether each head is calibrated on out-of-fold predictions.
+    max_rounds : int or None
+        XGBoost round cap.
+    max_imbalance_ratio : int
+        Negative-to-positive ratio above which imbalanced batching is used.
+    allow_kernel_svm : bool
+        Whether the SVM head may be fitted. A kernel SVM stores its support vectors,
+        which are training rows, in the saved ONNX graph, so a shared checkpoint would
+        expose part of the training data. When False, no SVM head is fitted at all
+        (neither kernel nor linear).
     """
 
     task = "classification"
@@ -176,11 +190,13 @@ class LazyClassifier(_AgnosticBase):
         calibrated: bool = True,
         max_rounds: int | None = None,
         max_imbalance_ratio: int = 100,
+        allow_kernel_svm: bool = False,
     ):
         self._model = None
         self.calibrated = calibrated
         self.max_rounds = max_rounds
         self.max_imbalance_ratio = max_imbalance_ratio
+        self.allow_kernel_svm = allow_kernel_svm
 
     # ------------------------------------------------------------------
     # Fit
@@ -216,6 +232,7 @@ class LazyClassifier(_AgnosticBase):
             calibrated=self.calibrated,
             max_rounds=self.max_rounds,
             max_imbalance_ratio=self.max_imbalance_ratio,
+            allow_kernel_svm=self.allow_kernel_svm,
         )
         self._model.fit(X, y)
         self._build_reference_rank(X, y, reference_X, reference_h5_file)
@@ -446,15 +463,33 @@ class LazyRegressor(_AgnosticBase):
     Accepts pre-computed feature arrays (X) or Ersilia .h5 files directly, with a
     continuous target. Wraps the regression assembler and saves/loads via ONNX.
     Predictions are point estimates in the target's own units.
+
+    Parameters
+    ----------
+    max_rounds : int or None
+        XGBoost round cap.
+    max_batch_size : int
+        Maximum rows per batch.
+    allow_kernel_svm : bool
+        Whether the SVR head may be fitted. A kernel SVR stores its support vectors,
+        which are training rows, in the saved ONNX graph, so a shared checkpoint would
+        expose part of the training data. When False, no SVR head is fitted at all
+        (neither kernel nor linear).
     """
 
     task = "regression"
     _artifact_class = LazyRegressorArtifact
 
-    def __init__(self, max_rounds: int | None = None, max_batch_size: int = 100_000):
+    def __init__(
+        self,
+        max_rounds: int | None = None,
+        max_batch_size: int = 100_000,
+        allow_kernel_svm: bool = False,
+    ):
         self._model = None
         self.max_rounds = max_rounds
         self.max_batch_size = max_batch_size
+        self.allow_kernel_svm = allow_kernel_svm
 
     def fit(self, X=None, y=None, h5_file=None, h5_idxs=None):
         """Fit on ``(X, y)``; ``y`` is a finite, non-constant numeric target."""
@@ -465,7 +500,9 @@ class LazyRegressor(_AgnosticBase):
         y = np.asarray(y, dtype=float)
 
         self._model = _AssemblerRegressor(
-            max_batch_size=self.max_batch_size, max_rounds=self.max_rounds
+            max_batch_size=self.max_batch_size,
+            max_rounds=self.max_rounds,
+            allow_kernel_svm=self.allow_kernel_svm,
         )
         self._model.fit(X, y)
         logger.success("LazyRegressor (agnostic) — fit complete")

@@ -224,12 +224,15 @@ def _cmd_fit(args):
         sys.exit(1)
     from ..api.fit import fit
 
+    # Passed only when given, so the default lives in one place: `fit`'s signature.
+    extra = {"allow_kernel_svm": True} if args.allow_kernel_svm else {}
     fit(
         data_dir=args.input,
         model_dir=args.output,
         models_txt=args.models_txt,
         mode=args.mode,
         task=task,
+        **extra,
     )
 
 
@@ -461,6 +464,15 @@ def main():
         default=None,
         metavar="FILE",
         help="Text file listing task names (CSV stems) to fit, one per line. Fits all tasks if omitted.",
+    )
+    p_fit.add_argument(
+        "--allow_kernel_svm",
+        action="store_true",
+        help=(
+            "Allow the SVM head. A kernel SVM stores training rows (its support "
+            "vectors) in the checkpoint, so use it only when the training data can be "
+            "shared."
+        ),
     )
 
     # --- predict ---

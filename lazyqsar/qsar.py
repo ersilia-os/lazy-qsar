@@ -997,6 +997,7 @@ class LazyClassifierQSAR(_ClassifierPredictMixin, _QSARBase):
         meta = {
             "task": "classification",
             "mode": self.mode,
+            "allow_kernel_svm": getattr(self, "allow_kernel_svm", True),
             "descriptor_types": self.descriptor_types,
             "n_compounds": getattr(self, "n_compounds_", None),
             "n_actives": getattr(self, "n_actives_", None),
@@ -1216,7 +1217,11 @@ class LazyClassifierQSAR(_ClassifierPredictMixin, _QSARBase):
             model_loader=LazyClassifier.load,
         )
 
-        obj = cls(mode=mode)
+        # Checkpoints before 3.10 carry no flag; they could always fit an SVM head.
+        allow = (
+            _meta.get("allow_kernel_svm", True) if os.path.isfile(meta_path) else True
+        )
+        obj = cls(mode=mode, allow_kernel_svm=bool(allow))
         obj.descriptor_types = descriptor_types
         obj.descriptors = descriptors
         obj.models = models
