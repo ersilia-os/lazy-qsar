@@ -1217,10 +1217,11 @@ class LazyClassifierQSAR(_ClassifierPredictMixin, _QSARBase):
             model_loader=LazyClassifier.load,
         )
 
-        obj = cls(mode=mode)
         # Checkpoints before 3.10 carry no flag; they could always fit an SVM head.
-        if os.path.isfile(meta_path):
-            obj.allow_kernel_svm = bool(_meta.get("allow_kernel_svm", True))
+        allow = (
+            _meta.get("allow_kernel_svm", True) if os.path.isfile(meta_path) else True
+        )
+        obj = cls(mode=mode, allow_kernel_svm=bool(allow))
         obj.descriptor_types = descriptor_types
         obj.descriptors = descriptors
         obj.models = models

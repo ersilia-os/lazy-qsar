@@ -97,7 +97,7 @@ class LazyRegressor(_AssemblerBase):
 
     task = "regression"
 
-    def __init__(self, max_batch_size=100_000, max_rounds=None, allow_kernel_svm=True):
+    def __init__(self, max_batch_size=100_000, max_rounds=None, allow_kernel_svm=False):
         self.max_batch_size = max_batch_size
         self.max_rounds = max_rounds
         self.allow_kernel_svm = allow_kernel_svm

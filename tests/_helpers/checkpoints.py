@@ -34,7 +34,8 @@ def build_checkpoint(root, task, descriptors, smiles, y, seed=0):
         os.makedirs(sub, exist_ok=True)
         feat = get_descriptor_type(d)()
         X = feat.transform(smiles)
-        model = LazyClassifier()
+        # SVM heads on, so the inference path is tested against every artifact type.
+        model = LazyClassifier(allow_kernel_svm=True)
         model.fit(X=X, y=np.asarray(y, dtype=int))
         model.save(sub)
         feat.save(sub)

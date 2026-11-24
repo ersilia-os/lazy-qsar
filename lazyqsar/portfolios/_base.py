@@ -24,7 +24,7 @@ class HeadSelector:
     svm = ""  # the SVM head's name for this task
     selector_version = ""
 
-    def __init__(self, allow_kernel_svm: bool = True):
+    def __init__(self, allow_kernel_svm: bool = False):
         self.allow_kernel_svm = bool(allow_kernel_svm)
         self.portfolio = ["xgb", "rf"]
         self.selector_version_ = self.selector_version
@@ -290,6 +290,7 @@ class HeadSelector:
             instance.selector_scores_ = {"lr": 0, "xgb": 0, "rf": 0}
             instance.selector_reasons_ = []
             instance.profile_ = None
+            instance.allow_kernel_svm = True  # predates the flag
         else:
             instance.portfolio = payload.get("portfolio", ["xgb", "rf"])
             instance.selector_version_ = payload.get(

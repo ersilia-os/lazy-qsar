@@ -185,7 +185,7 @@ class LazyClassifier(_AssemblerBase):
         calibrated=True,
         max_rounds=None,
         max_imbalance_ratio=100,
-        allow_kernel_svm=True,
+        allow_kernel_svm=False,
     ):
         self.max_batch_size = max_batch_size
         self.max_imbalance_ratio = max_imbalance_ratio

@@ -351,7 +351,7 @@ class _QSARBase(_EnsemblePredictMixin):
     _prune_floor = 0.0
     _prune_gap = 0.0
 
-    def __init__(self, mode: str = "slow", allow_kernel_svm: bool = True):
+    def __init__(self, mode: str = "slow", allow_kernel_svm: bool = False):
         """Set the descriptor mode and the SVM head policy.
 
         Parameters

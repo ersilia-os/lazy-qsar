@@ -190,7 +190,7 @@ class LazyClassifier(_AgnosticBase):
         calibrated: bool = True,
         max_rounds: int | None = None,
         max_imbalance_ratio: int = 100,
-        allow_kernel_svm: bool = True,
+        allow_kernel_svm: bool = False,
     ):
         self._model = None
         self.calibrated = calibrated
@@ -484,7 +484,7 @@ class LazyRegressor(_AgnosticBase):
         self,
         max_rounds: int | None = None,
         max_batch_size: int = 100_000,
-        allow_kernel_svm: bool = True,
+        allow_kernel_svm: bool = False,
     ):
         self._model = None
         self.max_rounds = max_rounds

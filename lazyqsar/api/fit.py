@@ -101,7 +101,7 @@ def fit(
     models_txt: str = None,
     mode: str = "slow",
     task: str = "classification",
-    allow_kernel_svm: bool = True,
+    allow_kernel_svm: bool = False,
 ):
     """Fit and save one model per CSV in *data_dir*.
 
