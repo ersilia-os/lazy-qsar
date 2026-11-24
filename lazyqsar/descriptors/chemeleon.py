@@ -23,22 +23,15 @@ except ImportError:
     )
 
 try:
-    import chemeleon  # noqa: F401
     from chemprop import featurizers, nn
     from chemprop.data import BatchMolGraph
     from chemprop.nn import RegressionFFN
     from chemprop.models import MPNN
 except ImportError:
-    try:
-        from chemprop import featurizers, nn
-        from chemprop.data import BatchMolGraph
-        from chemprop.nn import RegressionFFN
-        from chemprop.models import MPNN
-    except ImportError:
-        raise ImportError(
-            "chemprop is required for ChemeleonDescriptor. "
-            'Install the full descriptor extras: pip install -e ".[all]"'
-        )
+    raise ImportError(
+        "chemprop is required for ChemeleonDescriptor. "
+        'Install the full descriptor extras: pip install -e ".[all]"'
+    )
 from rdkit.Chem import Mol
 from rdkit import RDLogger
 
